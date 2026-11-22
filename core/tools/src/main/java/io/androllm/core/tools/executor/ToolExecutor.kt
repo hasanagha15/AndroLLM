@@ -210,7 +210,9 @@ class ToolExecutor @Inject constructor(
             settings.shouldConfirm(spec.requiresConfirmation)
         }
         if (mustConfirm) {
-            val base = buildConfirmation(call, spec)
+            // Canonical name: the registry also resolves other-case / padded
+            // names, and tap-only checks must see the real tool name.
+            val base = buildConfirmation(call.copy(name = spec.name), spec)
             val confirmation = if (remote == null) base else base.copy(
                 toolDisplayName = "${remote.label} · ${base.toolDisplayName}",
                 actionSummary = "Run ${base.toolDisplayName}:\n${RemoteToolPolicy.describeArguments(call)}",

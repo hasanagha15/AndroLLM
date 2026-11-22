@@ -145,5 +145,8 @@ class ToolConfirmationManagerTest {
         assertThat(ToolConfirmationManager.isTapOnly(confirmation("a"))).isFalse()
         assertThat(ToolConfirmationManager.isTapOnly(confirmation("b").copy(toolName = "tesla_command"))).isTrue()
         assertThat(ToolConfirmationManager.isTapOnly(confirmation("c").copy(remoteOrigin = "Jarvis"))).isTrue()
+        for (n in listOf("Tesla_Command", "TESLA_COMMAND", " tesla_command ", "Glasses_Show_Text", "WhatsApp_Reply")) {
+            assertThat(ToolConfirmationManager.isTapOnly(confirmation("n").copy(toolName = n))).isTrue()
+        }
     }
 }

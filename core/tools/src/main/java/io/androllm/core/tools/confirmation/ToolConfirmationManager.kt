@@ -176,7 +176,8 @@ class ToolConfirmationManager @Inject constructor() {
         val TAP_ONLY_TOOLS: Set<String> = setOf("tesla_command", "whatsapp_reply", "glasses_show_text")
 
         fun isTapOnly(confirmation: PendingToolConfirmation): Boolean =
-            confirmation.remoteOrigin != null || confirmation.toolName in TAP_ONLY_TOOLS
+            confirmation.remoteOrigin != null ||
+                confirmation.toolName.trim().lowercase() in TAP_ONLY_TOOLS
     }
 }
 
