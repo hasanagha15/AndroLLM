@@ -1,31 +1,40 @@
 package io.androllm.core.jarvislink.protocol
 
-import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.Base64
+import javax.crypto.Cipher
 import javax.crypto.Mac
+import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
 
 /**
- * Wire protocol between Jarvis and the phone. UTF-8 JSON, MQTT v5, QoS 1.
+ * Wire protocol v2 between Jarvis and the phone. MQTT v5, QoS 1.
+ *
+ * Task and result payloads are ENCRYPTED and AUTHENTICATED end-to-end with
+ * AES-256-GCM. Keys are derived with HKDF-SHA256 from the shared 32-byte
+ * `task.key` — one key per direction, so a result can never be replayed as a
+ * task. The broker and every other broker client (e.g. Home Assistant under
+ * the shared user) see only `{"v":2,"kind","n","c"}` and can neither read,
+ * forge, alter nor reflect messages. The plaintext is a JSON object, so field
+ * boundaries are unambiguous.
  *
  * ```
- * task    Jarvis -> phone  {"v":1,"id","text","from","ts","ttl_s","sig"}
- * result  phone -> Jarvis  {"v":1,"id","status","text","ts","sig"}
- * status  phone -> all     retained {"v":1,"state":"online|offline","ts"}
+ * envelope   {"v":2,"kind":"task"|"result","n":b64(12-byte nonce),"c":b64(ciphertext||tag)}
+ * task       {"id","text","from","ts","ttl_s"}        key = HKDF(k, "androllm-jarvislink", "task-v2"),   AAD "androllm/v2/task"
+ * result     {"id","status","text","ts"}              key = HKDF(k, "androllm-jarvislink", "result-v2"), AAD "androllm/v2/result"
+ * status     retained plaintext {"v":2,"state":"online|offline","ts"}
  * ```
- * Every task is authenticated end-to-end: `sig` = hex HMAC-SHA256 with a
- * shared 32-byte key over [taskSigningInput]. The broker (and every other
- * broker client, e.g. Home Assistant under the shared user) can therefore
- * neither forge nor alter tasks. Results are signed the same way so Jarvis
- * can tell a real phone answer from a fake broker. `accepted` is an ack;
- * every other status is final except `duplicate` (informational).
+ * `accepted` is an ack; every other status is final except `duplicate`.
  */
 object JarvisTopics {
     const val TASK = "jarvis/phone/task"
@@ -59,17 +68,14 @@ enum class ResultStatus {
     val isFinal: Boolean get() = this != ACCEPTED && this != DUPLICATE
 
     val wire: String get() = name.lowercase()
+
+    companion object {
+        fun fromWire(s: String?): ResultStatus? = entries.firstOrNull { it.wire == s }
+    }
 }
 
-@Serializable
-data class ResultMessage(
-    val v: Int = JarvisProtocol.VERSION,
-    val id: String,
-    val status: ResultStatus,
-    val text: String = "",
-    val ts: Long,
-    val sig: String = ""
-)
+/** Decrypted result (tests / tooling). */
+data class ResultMessage(val id: String, val status: ResultStatus, val text: String, val ts: Long)
 
 @Serializable
 data class StatusMessage(
@@ -83,14 +89,58 @@ sealed interface TaskParse {
     data class Valid(val task: JarvisTask) : TaskParse
     /**
      * Rejected payload. [id] is only set when the payload was AUTHENTIC
-     * (good signature) — forged payloads are never answered.
+     * (decrypted with our key) — forged payloads are never answered.
      */
     data class Invalid(val reason: String, val id: String?) : TaskParse
     data class Expired(val id: String, val ageMs: Long) : TaskParse
 }
 
+/** HKDF-SHA256 + AES-256-GCM helpers (identical construction in jarvis-phone-task). */
+object JarvisCrypto {
+    const val NONCE_BYTES = 12
+    private const val TAG_BITS = 128
+    private val SALT = "androllm-jarvislink".toByteArray(Charsets.UTF_8)
+    private val random = SecureRandom()
+
+    fun hkdf(ikm: ByteArray, info: String, length: Int = 32): ByteArray {
+        val prk = hmac(SALT, ikm)
+        val out = ByteArray(length)
+        var t = ByteArray(0)
+        var pos = 0
+        var counter = 1
+        while (pos < length) {
+            t = hmac(prk, t + info.toByteArray(Charsets.UTF_8) + byteArrayOf(counter.toByte()))
+            val n = minOf(t.size, length - pos)
+            System.arraycopy(t, 0, out, pos, n)
+            pos += n
+            counter++
+        }
+        return out
+    }
+
+    private fun hmac(key: ByteArray, data: ByteArray): ByteArray =
+        Mac.getInstance("HmacSHA256").run { init(SecretKeySpec(key, "HmacSHA256")); doFinal(data) }
+
+    fun seal(key: ByteArray, aad: String, plaintext: ByteArray, nonce: ByteArray = ByteArray(NONCE_BYTES).also(random::nextBytes)): Pair<ByteArray, ByteArray> {
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, nonce))
+        c.updateAAD(aad.toByteArray(Charsets.UTF_8))
+        return nonce to c.doFinal(plaintext)
+    }
+
+    /** Returns the plaintext, or null when the tag does not verify. */
+    fun open(key: ByteArray, aad: String, nonce: ByteArray, ciphertext: ByteArray): ByteArray? = try {
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BITS, nonce))
+        c.updateAAD(aad.toByteArray(Charsets.UTF_8))
+        c.doFinal(ciphertext)
+    } catch (e: Exception) {
+        null
+    }
+}
+
 object JarvisProtocol {
-    const val VERSION = 1
+    const val VERSION = 2
     const val MAX_ID_LENGTH = 64
     const val MAX_TEXT_LENGTH = 4_000
     const val MAX_PAYLOAD_BYTES = 16_384
@@ -101,26 +151,16 @@ object JarvisProtocol {
     /** Clock skew tolerated between Jarvis and the phone (both NTP-synced). */
     const val CLOCK_SKEW_MS = 120_000L
     const val KEY_BYTES = 32
+    const val AAD_TASK = "androllm/v2/task"
+    const val AAD_RESULT = "androllm/v2/result"
 
     private val ID_RE = Regex("^[A-Za-z0-9._:-]{1,$MAX_ID_LENGTH}$")
+    private val FROM_RE = Regex("^[A-Za-z0-9._-]{1,32}$")
     private val HEX_RE = Regex("^[0-9a-fA-F]{64}$")
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-    private val json = Json {
-        ignoreUnknownKeys = true
-        encodeDefaults = true
-    }
-
-    fun taskSigningInput(id: String, ts: Long, ttl: Long, from: String, text: String): ByteArray =
-        "androllm-task-v1\n$id\n$ts\n$ttl\n$from\n$text".toByteArray(Charsets.UTF_8)
-
-    fun resultSigningInput(id: String, status: String, ts: Long, text: String): ByteArray =
-        "androllm-result-v1\n$id\n$status\n$ts\n$text".toByteArray(Charsets.UTF_8)
-
-    fun hmacHex(key: ByteArray, data: ByteArray): String {
-        val mac = Mac.getInstance("HmacSHA256")
-        mac.init(SecretKeySpec(key, "HmacSHA256"))
-        return mac.doFinal(data).joinToString("") { "%02x".format(it) }
-    }
+    fun taskKey(master: ByteArray) = JarvisCrypto.hkdf(master, "task-v2")
+    fun resultKey(master: ByteArray) = JarvisCrypto.hkdf(master, "result-v2")
 
     /** Parses the 64-hex-char shared key; null when malformed. */
     fun parseKeyHex(hex: String): ByteArray? {
@@ -129,65 +169,83 @@ object JarvisProtocol {
         return ByteArray(KEY_BYTES) { i -> h.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
     }
 
+    /** Builds an encrypted task envelope (used by tests; the Jarvis side does the same in Python). */
+    fun encodeTask(master: ByteArray, id: String, text: String, ts: Long, ttl: Long = DEFAULT_TTL_S, from: String = "jarvis"): ByteArray {
+        val inner = buildJsonObject {
+            put("id", id); put("text", text); put("from", from); put("ts", ts); put("ttl_s", ttl)
+        }.toString().toByteArray(Charsets.UTF_8)
+        return envelope("task", JarvisCrypto.seal(taskKey(master), AAD_TASK, inner))
+    }
+
     /**
-     * Parses, authenticates and validates a task payload. Never throws.
-     * Order: size → JSON → id/ts/text/sig present → signature (constant-time)
-     * → version/limits → time window. Without a [key] nothing is accepted.
+     * Decrypts, authenticates and validates a task envelope. Never throws.
+     * Without a [master] key nothing is accepted; anything that does not
+     * decrypt (plaintext, forged, altered, wrong key, a result) is Invalid
+     * with no id and is never answered.
      */
-    fun parseTask(payload: ByteArray, nowMs: Long, key: ByteArray?): TaskParse {
-        if (key == null || key.size != KEY_BYTES) return TaskParse.Invalid("no task signing key configured", null)
+    fun parseTask(payload: ByteArray, nowMs: Long, master: ByteArray?): TaskParse {
+        if (master == null || master.size != KEY_BYTES) return TaskParse.Invalid("no task key configured", null)
         if (payload.size > MAX_PAYLOAD_BYTES) return TaskParse.Invalid("payload too large", null)
-        val obj: JsonObject = try {
-            json.parseToJsonElement(payload.toString(Charsets.UTF_8)).jsonObject
-        } catch (e: Exception) {
-            return TaskParse.Invalid("not a JSON object", null)
-        }
+        val inner = openEnvelope(payload, "task", taskKey(master), AAD_TASK)
+            ?: return TaskParse.Invalid("not an authentic task envelope", null)
+        val obj = runCatching { json.parseToJsonElement(inner.toString(Charsets.UTF_8)).jsonObject }.getOrNull()
+            ?: return TaskParse.Invalid("bad task body", null)
         fun str(name: String) = (obj[name] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
         fun num(name: String) = (obj[name] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
 
         val id = str("id")?.takeIf { ID_RE.matches(it) } ?: return TaskParse.Invalid("missing or malformed id", null)
-        val ts = num("ts") ?: return TaskParse.Invalid("missing ts", null)
-        val text = str("text") ?: return TaskParse.Invalid("missing text", null)
-        val from = str("from") ?: "jarvis"
-        val ttlRaw = num("ttl_s") ?: DEFAULT_TTL_S
-        val sig = str("sig")?.lowercase() ?: return TaskParse.Invalid("unsigned task", null)
-
-        val expected = hmacHex(key, taskSigningInput(id, ts, ttlRaw, from, text))
-        if (!MessageDigest.isEqual(expected.toByteArray(), sig.toByteArray())) {
-            return TaskParse.Invalid("bad signature", null)
-        }
         // ── authentic from here on: rejections are answered by id ──
-        val version = num("v") ?: VERSION.toLong()
-        if (version != VERSION.toLong()) return TaskParse.Invalid("unsupported protocol version $version", id)
-        val trimmed = text.trim()
-        if (trimmed.isEmpty()) return TaskParse.Invalid("missing text", id)
-        if (trimmed.length > MAX_TEXT_LENGTH) return TaskParse.Invalid("text longer than $MAX_TEXT_LENGTH chars", id)
-        if (ttlRaw < 1 || ttlRaw > MAX_TTL_S) return TaskParse.Invalid("ttl_s must be 1..$MAX_TTL_S", id)
+        val ts = num("ts") ?: return TaskParse.Invalid("missing ts", id)
+        val text = str("text")?.trim() ?: return TaskParse.Invalid("missing text", id)
+        val from = str("from") ?: "jarvis"
+        val ttl = num("ttl_s") ?: DEFAULT_TTL_S
+        if (!FROM_RE.matches(from)) return TaskParse.Invalid("malformed from", id)
+        if (text.isEmpty()) return TaskParse.Invalid("missing text", id)
+        if (text.length > MAX_TEXT_LENGTH) return TaskParse.Invalid("text longer than $MAX_TEXT_LENGTH chars", id)
+        if (ttl < 1 || ttl > MAX_TTL_S) return TaskParse.Invalid("ttl_s must be 1..$MAX_TTL_S", id)
         if (ts - nowMs > CLOCK_SKEW_MS) return TaskParse.Invalid("ts is in the future", id)
-        val task = JarvisTask(id = id, text = trimmed, from = from.take(32), sentAtMs = ts, ttlSeconds = ttlRaw)
+        val task = JarvisTask(id = id, text = text, from = from, sentAtMs = ts, ttlSeconds = ttl)
         if (nowMs > task.expiresAtMs()) return TaskParse.Expired(id, nowMs - ts)
         return TaskParse.Valid(task)
     }
 
-    fun encodeResult(id: String, status: ResultStatus, text: String, nowMs: Long, key: ByteArray?): ByteArray {
+    fun encodeResult(id: String, status: ResultStatus, text: String, nowMs: Long, master: ByteArray): ByteArray {
         val clipped = if (text.length > MAX_RESULT_TEXT) text.take(MAX_RESULT_TEXT) + "\n[…truncated]" else text
-        val sig = if (key != null) hmacHex(key, resultSigningInput(id, status.wire, nowMs, clipped)) else ""
-        return json.encodeToString(
-            ResultMessage.serializer(),
-            ResultMessage(id = id, status = status, text = clipped, ts = nowMs, sig = sig)
-        ).toByteArray(Charsets.UTF_8)
+        val inner = buildJsonObject {
+            put("id", id); put("status", status.wire); put("text", clipped); put("ts", nowMs)
+        }.toString().toByteArray(Charsets.UTF_8)
+        return envelope("result", JarvisCrypto.seal(resultKey(master), AAD_RESULT, inner))
     }
 
-    fun decodeResult(payload: ByteArray): ResultMessage =
-        json.decodeFromString(ResultMessage.serializer(), payload.toString(Charsets.UTF_8))
-
-    fun verifyResult(msg: ResultMessage, key: ByteArray): Boolean =
-        MessageDigest.isEqual(
-            hmacHex(key, resultSigningInput(msg.id, msg.status.wire, msg.ts, msg.text)).toByteArray(),
-            msg.sig.lowercase().toByteArray()
-        )
+    /** Decrypts a result envelope; null when not authentic. */
+    fun decodeResult(payload: ByteArray, master: ByteArray): ResultMessage? {
+        val inner = openEnvelope(payload, "result", resultKey(master), AAD_RESULT) ?: return null
+        val obj = runCatching { json.parseToJsonElement(inner.toString(Charsets.UTF_8)).jsonObject }.getOrNull() ?: return null
+        fun str(name: String) = (obj[name] as? JsonPrimitive)?.contentOrNull
+        val status = ResultStatus.fromWire(str("status")) ?: return null
+        return ResultMessage(str("id") ?: return null, status, str("text").orEmpty(), str("ts")?.toLongOrNull() ?: 0L)
+    }
 
     fun encodeStatus(online: Boolean, nowMs: Long): ByteArray =
         json.encodeToString(StatusMessage.serializer(), StatusMessage(state = if (online) "online" else "offline", ts = nowMs))
             .toByteArray(Charsets.UTF_8)
+
+    private fun envelope(kind: String, sealed: Pair<ByteArray, ByteArray>): ByteArray =
+        buildJsonObject {
+            put("v", VERSION)
+            put("kind", kind)
+            put("n", Base64.getEncoder().encodeToString(sealed.first))
+            put("c", Base64.getEncoder().encodeToString(sealed.second))
+        }.toString().toByteArray(Charsets.UTF_8)
+
+    private fun openEnvelope(payload: ByteArray, kind: String, key: ByteArray, aad: String): ByteArray? {
+        val obj: JsonObject = runCatching { json.parseToJsonElement(payload.toString(Charsets.UTF_8)).jsonObject }.getOrNull()
+            ?: return null
+        if ((obj["v"] as? JsonPrimitive)?.longOrNull != VERSION.toLong()) return null
+        if ((obj["kind"] as? JsonPrimitive)?.contentOrNull != kind) return null
+        val nonce = runCatching { Base64.getDecoder().decode((obj["n"] as JsonPrimitive).content) }.getOrNull() ?: return null
+        val ct = runCatching { Base64.getDecoder().decode((obj["c"] as JsonPrimitive).content) }.getOrNull() ?: return null
+        if (nonce.size != JarvisCrypto.NONCE_BYTES || ct.size < 16) return null
+        return JarvisCrypto.open(key, aad, nonce, ct)
+    }
 }

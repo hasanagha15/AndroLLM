@@ -114,8 +114,8 @@ class RemoteTaskProcessor(
             acceptedAt.size >= maxTasksPerHour
         }
         if (limited) {
-            deduplicator.forget(task.id)
-            reply(task.id, ResultStatus.BUSY, "Rate limit: max $maxTasksPerHour tasks per hour.")
+            // id stays "seen": a captured task cannot be replayed later; Jarvis retries with a NEW id.
+            reply(task.id, ResultStatus.BUSY, "Rate limit: max $maxTasksPerHour tasks per hour; retry later with a new id.", final = true)
             return
         }
         val queued = lock.withLock {
@@ -130,8 +130,8 @@ class RemoteTaskProcessor(
         if (queued) {
             reply(task.id, ResultStatus.ACCEPTED, "")
         } else {
-            deduplicator.forget(task.id) // refused before running — Jarvis may resend
-            reply(task.id, ResultStatus.BUSY, "Phone is busy with other tasks; retry later.")
+            // id stays "seen" (no replay of a captured task); Jarvis retries with a new id.
+            reply(task.id, ResultStatus.BUSY, "Phone is busy with other tasks; retry with a new id.", final = true)
         }
     }
 
@@ -170,7 +170,8 @@ class RemoteTaskProcessor(
     fun pendingCount(): Int = unsent.size
 
     private suspend fun reply(id: String, status: ResultStatus, text: String, final: Boolean = false) {
-        val payload = JarvisProtocol.encodeResult(id, status, text, clock(), signingKey())
+        val key = signingKey() ?: return
+        val payload = JarvisProtocol.encodeResult(id, status, text, clock(), key)
         if (final) lock.withLock { finals[id] = payload }
         if (!safePublish(payload) && final) {
             lock.withLock {

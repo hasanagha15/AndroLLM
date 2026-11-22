@@ -67,7 +67,7 @@ class JarvisLinkViewModel @Inject constructor(
         store.update(host, port.toIntOrNull() ?: JarvisLinkSettings.DEFAULT_PORT, username)
         if (password.isNotEmpty()) store.setPassword(password)
         if (signingKeyHex.isNotBlank() && !store.setSigningKeyHex(signingKeyHex)) {
-            _message.value = "Signing key must be 64 hex characters — not saved"
+            _message.value = "Task key must be 64 hex characters — not saved"
         } else {
             _message.value = if (store.current().hostIsTailscale) null
             else "Host must be a Tailscale address (100.x) or *.ts.net name — the link will not connect to LAN/public hosts"
@@ -101,7 +101,7 @@ fun JarvisLinkSection(viewModel: JarvisLinkViewModel = hiltViewModel()) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Jarvis link (MQTT)", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.ledger.deskPaper)
                     Text(
-                        "Receive signed tasks from Jarvis over Tailscale. Anything beyond read-only tools asks you first.",
+                        "Receive encrypted, signed tasks from Jarvis over Tailscale. Anything beyond read-only tools asks you first.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.ledger.deskInk
                     )
@@ -114,7 +114,7 @@ fun JarvisLinkSection(viewModel: JarvisLinkViewModel = hiltViewModel()) {
             }
             Text(
                 "Status: " + when (val s = state) {
-                    LinkState.Off -> if (settings.isComplete) "off" else "off — enter Tailscale host, user, password and signing key"
+                    LinkState.Off -> if (settings.isComplete) "off" else "off — enter Tailscale host, user, password and task key"
                     LinkState.Connecting -> "connecting…"
                     LinkState.Connected -> "connected"
                     is LinkState.Retrying -> "reconnecting in ${s.inMs / 1000}s"
@@ -144,7 +144,7 @@ fun JarvisLinkSection(viewModel: JarvisLinkViewModel = hiltViewModel()) {
             OutlinedTextField(
                 value = signingKey,
                 onValueChange = { signingKey = it.trim() },
-                label = { Text(if (settings.hasSigningKey) "Task signing key (saved — leave blank to keep)" else "Task signing key (64 hex)") },
+                label = { Text(if (settings.hasSigningKey) "Task key (saved — leave blank to keep)" else "Task key (64 hex, from task.key)") },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),

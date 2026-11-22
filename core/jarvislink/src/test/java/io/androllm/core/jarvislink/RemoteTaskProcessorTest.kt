@@ -28,7 +28,7 @@ class RemoteTaskProcessorTest {
     private var now = 1_800_000_000_000L
     private val published = mutableListOf<ResultMessage>()
     private val tracker = RemoteTaskTracker()
-    private val recorder = ResultPublisher { published += JarvisProtocol.decodeResult(it) }
+    private val recorder = ResultPublisher { published += JarvisProtocol.decodeResult(it, TestTasks.KEY)!! }
 
     private fun task(id: String, text: String = "hello", ts: Long = now, ttl: Long = 600) = signed(id, text, ts = ts, ttl = ttl)
 
@@ -58,7 +58,7 @@ class RemoteTaskProcessorTest {
         runCurrent()
         assertThat(statuses("t1")).containsExactly(ResultStatus.ACCEPTED, ResultStatus.OK).inOrder()
         assertThat(published.last().text).isEqualTo("answer to погода")
-        assertThat(JarvisProtocol.verifyResult(published.last(), TestTasks.KEY)).isTrue()
+
     }
 
     @Test
@@ -66,7 +66,7 @@ class RemoteTaskProcessorTest {
         var runs = 0
         val p = processor({ runs++; TaskOutcome(ResultStatus.OK, "") })
         p.onPayload(signed("evil", "send sms", ts = now, key = TestTasks.OTHER_KEY))
-        p.onPayload(signed("evil2", ts = now, omitSig = true))
+        p.onPayload("""{"v":1,"id":"evil2","text":"x","ts":1}""".toByteArray())
         runCurrent()
         assertThat(runs).isEqualTo(0)
         assertThat(published).isEmpty()
@@ -157,7 +157,7 @@ class RemoteTaskProcessorTest {
                 // what a hung broker connection looks like to the caller
                 withTimeout(30_000) { delay(60_000) }
             }
-            sent += JarvisProtocol.decodeResult(payload)
+            sent += JarvisProtocol.decodeResult(payload, TestTasks.KEY)!!
         }
         val p = processor({ t -> TaskOutcome(ResultStatus.OK, "r-${t.id}") }, publisher = flaky)
         p.onPayload(task("a"))          // accepted goes out
@@ -194,7 +194,7 @@ class RemoteTaskProcessorTest {
         p.onPayload(task("b"))
         p.onPayload(task("c"))
         assertThat(statuses("c")).containsExactly(ResultStatus.BUSY)
-        assertThat(dedupe.contains("c")).isFalse()
+        assertThat(dedupe.contains("c")).isTrue() // busy ids stay seen: no replay of a captured task
         gate.complete(Unit)
         runCurrent()
         assertThat(maxConcurrent).isEqualTo(1)

@@ -2,14 +2,19 @@
 
   JARVIS_BROKER_HOST=<broker tailscale ip/name> JARVIS_BROKER_SSH=<ssh alias> python -I fake_phone.py [seconds]
 
-Behaves like the app's protocol layer: verifies the HMAC on every task (drops
-unsigned/forged ones silently), checks ts/ttl, dedupes ids (replays the stored
-final result), answers accepted + a SIGNED echo result. Never executes anything.
-Secrets are read over ssh into memory and never printed.
+Behaves like the app's protocol layer (v2): decrypts every task with the
+HKDF-derived AES-256-GCM key (drops anything that does not decrypt —
+plaintext, forged, wrong key), checks ts/ttl/from, dedupes ids (replays the
+stored final result), answers accepted + an ENCRYPTED echo result. Never
+executes anything. Secrets are read over ssh into memory and never printed.
 """
-import hashlib, hmac, json, os, subprocess, sys, time
+import base64, json, os, re, subprocess, sys, time
 import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.exceptions import InvalidTag
 
 HOST = os.environ.get("JARVIS_BROKER_HOST") or sys.exit("set JARVIS_BROKER_HOST")
 SSH = os.environ.get("JARVIS_BROKER_SSH") or sys.exit("set JARVIS_BROKER_SSH")
@@ -22,42 +27,48 @@ def secret(name):
                                     f"cat ~/.config/jarvis-phone-mqtt/{name}"], text=True).strip()
 
 
-PW, KEY = secret("phone.pass"), bytes.fromhex(secret("task.key"))
+def hkdf(master, info):
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=b"androllm-jarvislink", info=info.encode()).derive(master)
+
+
+PW = secret("phone.pass")
+_master = bytes.fromhex(secret("task.key"))
+K_TASK, K_RESULT = hkdf(_master, "task-v2"), hkdf(_master, "result-v2")
+del _master
 finals, dropped = {}, 0
 
 
-def sign(*parts):
-    return hmac.new(KEY, "\n".join(str(p) for p in parts).encode(), hashlib.sha256).hexdigest()
-
-
 def result(tid, status, text=""):
-    ts = int(time.time() * 1000)
-    return json.dumps({"v": 1, "id": tid, "status": status, "text": text, "ts": ts,
-                       "sig": sign("androllm-result-v1", tid, status, ts, text)}, ensure_ascii=False)
+    nonce = os.urandom(12)
+    body = json.dumps({"id": tid, "status": status, "text": text, "ts": int(time.time() * 1000)}, ensure_ascii=False)
+    ct = AESGCM(K_RESULT).encrypt(nonce, body.encode(), b"androllm/v2/result")
+    return json.dumps({"v": 2, "kind": "result", "n": base64.b64encode(nonce).decode(), "c": base64.b64encode(ct).decode()})
 
 
 c = mqtt.Client(CallbackAPIVersion.VERSION2, client_id="androllm-phone-sim", protocol=mqtt.MQTTv5)
 c.username_pw_set(USER, PW)
-c.will_set("jarvis/phone/status", json.dumps({"state": "offline"}), 1, True)
+c.will_set("jarvis/phone/status", json.dumps({"v": 2, "state": "offline"}), 1, True)
 
 
 def on_connect(cl, ud, flags, rc, props):
     cl.subscribe("jarvis/phone/task", qos=1)
-    cl.publish("jarvis/phone/status", json.dumps({"state": "online", "ts": int(time.time() * 1000)}), 1, True)
+    cl.publish("jarvis/phone/status", json.dumps({"v": 2, "state": "online", "ts": int(time.time() * 1000)}), 1, True)
     print("sim connected", rc, flush=True)
 
 
 def on_message(cl, ud, m):
     global dropped
+    if m.retain:
+        return
     try:
-        t = json.loads(m.payload)
+        env = json.loads(m.payload)
+        assert env.get("v") == 2 and env.get("kind") == "task"
+        t = json.loads(AESGCM(K_TASK).decrypt(base64.b64decode(env["n"]), base64.b64decode(env["c"]), b"androllm/v2/task"))
         tid, ts, ttl, frm, text = t["id"], int(t["ts"]), int(t.get("ttl_s", 600)), t.get("from", "jarvis"), t["text"]
-        ok = hmac.compare_digest(sign("androllm-task-v1", tid, ts, ttl, frm, text), str(t.get("sig", "")).lower())
-    except (ValueError, KeyError, TypeError):
-        ok = False
-    if not ok:
+        assert re.fullmatch(r"[A-Za-z0-9._-]{1,32}", frm)
+    except (ValueError, KeyError, TypeError, AssertionError, InvalidTag):
         dropped += 1
-        print("sim dropped unsigned/forged task", flush=True)
+        print("sim dropped a task that did not decrypt/validate", flush=True)
         return
     now = int(time.time() * 1000)
     if now > ts + ttl * 1000 + 120_000 or ts - now > 120_000:

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""jarvis-phone-task — send a signed task to the AndroLLM app on the phone and wait for its answer.
+"""jarvis-phone-task — send an encrypted task to the AndroLLM app on the phone and wait for its answer.
 
 Deploy: copy to ~/bin on the broker host and point the shebang at a python
-that has paho-mqtt>=2 (e.g. a venv). Secrets live in $JARVIS_PHONE_DIR
-(default ~/.config/jarvis-phone-mqtt, mode 700):
+that has paho-mqtt>=2 and cryptography (e.g. a venv). Secrets live in
+$JARVIS_PHONE_DIR (default ~/.config/jarvis-phone-mqtt, mode 700):
   ctl.pass   broker password of the publisher user (600)
-  task.key   64 hex chars, shared HMAC key — also entered once in the app (600)
+  task.key   64 hex chars, shared master key — also entered once in the app (600)
 
 Usage:
   jarvis-phone-task "text of the task"          # waits for the final result (default 960 s)
@@ -13,26 +13,32 @@ Usage:
   jarvis-phone-task -t 60 --ttl 300 "text"
   jarvis-phone-task --no-wait "text"            # prints the task id
   jarvis-phone-task --status                    # phone online/offline (retained)
-  jarvis-phone-task --json "text"               # raw (verified) result JSON
+  jarvis-phone-task --json "text"               # decrypted result as JSON
 
-Protocol (MQTT v5, QoS 1): see core/jarvislink/protocol/JarvisProtocol.kt.
-  task   {"v":1,"id","text","from","ts","ttl_s","sig"} + message-expiry = ttl_s
-         sig = hex HMAC-SHA256(key, "androllm-task-v1\\n{id}\\n{ts}\\n{ttl_s}\\n{from}\\n{text}")
-  result {"v":1,"id","status","text","ts","sig"}  — unsigned/forged results are ignored
-         "accepted" and "duplicate" are not final.
+Protocol v2 (MQTT v5, QoS 1) — see core/jarvislink/protocol/JarvisProtocol.kt:
+  envelope {"v":2,"kind":"task"|"result","n":b64(nonce12),"c":b64(AES-256-GCM ct||tag)}
+  task key   = HKDF-SHA256(task.key, salt="androllm-jarvislink", info="task-v2"),   AAD "androllm/v2/task"
+  result key = HKDF-SHA256(task.key, salt="androllm-jarvislink", info="result-v2"), AAD "androllm/v2/result"
+  task body {"id","text","from","ts","ttl_s"}; result body {"id","status","text","ts"}
+  Broker clients see neither task nor answer text; anything that does not decrypt is ignored.
+  "accepted" and "duplicate" are not final. On "busy" retry later with a NEW id.
 
 Exit codes: 0 ok, 1 final non-ok status (error/denied/expired/busy/invalid),
             2 no final result in time, 3 local config / broker / connection error.
 """
-import argparse, hashlib, hmac, json, os, sys, threading, time, uuid
+import argparse, base64, json, os, sys, threading, time, uuid
 
 try:
     import paho.mqtt.client as mqtt
     from paho.mqtt.enums import CallbackAPIVersion
     from paho.mqtt.packettypes import PacketTypes
     from paho.mqtt.properties import Properties
-except ImportError:
-    print("paho-mqtt>=2 is required", file=sys.stderr)
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.exceptions import InvalidTag
+except ImportError as e:
+    print(f"missing dependency ({e.name}): needs paho-mqtt>=2 and cryptography", file=sys.stderr)
     sys.exit(3)
 
 HOST = os.environ.get("JARVIS_PHONE_MQTT_HOST", "127.0.0.1")
@@ -53,31 +59,49 @@ def read_secret(name):
         sys.exit(3)
 
 
-def sign(key, *parts):
-    return hmac.new(key, "\n".join(str(p) for p in parts).encode("utf-8"), hashlib.sha256).hexdigest()
+def hkdf(master, info):
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=b"androllm-jarvislink", info=info.encode()).derive(master)
+
+
+def seal(key, aad, obj, kind):
+    nonce = os.urandom(12)
+    ct = AESGCM(key).encrypt(nonce, json.dumps(obj, ensure_ascii=False).encode("utf-8"), aad.encode())
+    return json.dumps({"v": 2, "kind": kind, "n": base64.b64encode(nonce).decode(), "c": base64.b64encode(ct).decode()})
+
+
+def open_envelope(key, aad, payload, kind):
+    try:
+        env = json.loads(payload)
+        if env.get("v") != 2 or env.get("kind") != kind:
+            return None
+        plain = AESGCM(key).decrypt(base64.b64decode(env["n"]), base64.b64decode(env["c"]), aad.encode())
+        return json.loads(plain)
+    except (ValueError, KeyError, TypeError, InvalidTag):
+        return None
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Send a signed task to the AndroLLM phone over MQTT")
+    ap = argparse.ArgumentParser(description="Send an encrypted task to the AndroLLM phone over MQTT")
     ap.add_argument("text", nargs="*", help="task text, or '-' to read it from stdin")
     ap.add_argument("-t", "--timeout", type=int, default=960, help="seconds to wait for the final result")
     ap.add_argument("--ttl", type=int, default=900, help="task time-to-live in seconds (1..3600)")
     ap.add_argument("--id", help="explicit task id (default: random)")
     ap.add_argument("--no-wait", action="store_true")
     ap.add_argument("--status", action="store_true", help="print phone online/offline status and exit")
-    ap.add_argument("--json", action="store_true", help="print raw result JSON")
+    ap.add_argument("--json", action="store_true", help="print the decrypted result JSON")
     a = ap.parse_args()
     if not 1 <= a.ttl <= 3600:
         ap.error("--ttl must be 1..3600")
 
     password = read_secret("ctl.pass")
-    key_hex = read_secret("task.key")
     try:
-        key = bytes.fromhex(key_hex)
-        assert len(key) == 32
+        master = bytes.fromhex(read_secret("task.key"))
+        assert len(master) == 32
     except (ValueError, AssertionError):
         print("task.key must contain 64 hex characters", file=sys.stderr)
         return 3
+    k_task, k_result = hkdf(master, "task-v2"), hkdf(master, "result-v2")
+    del master
 
     text = ""
     if not a.status:
@@ -105,21 +129,19 @@ def main() -> int:
         subscribed.set()
 
     def on_message(cl, ud, m):
-        try:
-            data = json.loads(m.payload.decode("utf-8")) if m.payload else {}
-        except ValueError:
-            return
         if m.topic == T_STATUS:
-            state["status"] = data
+            try:
+                state["status"] = json.loads(m.payload.decode("utf-8")) if m.payload else None
+            except ValueError:
+                return
             if a.status:
                 done.set()
             return
-        if m.topic != T_RESULT or data.get("id") != task_id:
+        if m.topic != T_RESULT:
             return
-        expected = sign(key, "androllm-result-v1", data.get("id"), data.get("status"), data.get("ts"), data.get("text", ""))
-        if not hmac.compare_digest(expected, str(data.get("sig", "")).lower()):
-            print(f"[jarvis-phone-task] ignoring result with bad signature for {task_id}", file=sys.stderr)
-            return
+        data = open_envelope(k_result, "androllm/v2/result", m.payload, "result")
+        if data is None or data.get("id") != task_id:
+            return  # not ours, or not authentic
         st = data.get("status")
         if st == "accepted":
             state["acked"] = True
@@ -155,12 +177,10 @@ def main() -> int:
         print("[jarvis-phone-task] warning: phone not reported online; task stays queued until ttl expires",
               file=sys.stderr)
 
-    ts = int(time.time() * 1000)
-    payload = {"v": 1, "id": task_id, "text": text, "from": "jarvis", "ts": ts, "ttl_s": a.ttl,
-               "sig": sign(key, "androllm-task-v1", task_id, ts, a.ttl, "jarvis", text)}
+    body = {"id": task_id, "text": text, "from": "jarvis", "ts": int(time.time() * 1000), "ttl_s": a.ttl}
     props = Properties(PacketTypes.PUBLISH)
     props.MessageExpiryInterval = a.ttl
-    info = c.publish(T_TASK, json.dumps(payload, ensure_ascii=False), qos=1, properties=props)
+    info = c.publish(T_TASK, seal(k_task, "androllm/v2/task", body, "task"), qos=1, properties=props)
     info.wait_for_publish(10)
     if a.no_wait:
         print(task_id)
@@ -175,6 +195,8 @@ def main() -> int:
               f" ({'accepted — may still be running' if state['acked'] else 'not acked — phone offline?'})",
               file=sys.stderr)
         return 2
+    if final.get("status") == "busy":
+        print(f"[jarvis-phone-task] {task_id}: phone busy — retry later with a new id", file=sys.stderr)
     print(json.dumps(final, ensure_ascii=False) if a.json else final.get("text", ""))
     return 0 if final.get("status") == "ok" else 1
 

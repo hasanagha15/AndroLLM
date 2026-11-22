@@ -16,7 +16,15 @@ import io.androllm.core.tools.api.ToolSpec
 import io.androllm.core.tools.confirmation.PendingToolConfirmation
 import io.androllm.core.tools.confirmation.ToolConfirmationManager
 import io.androllm.core.tools.executor.ToolExecutor
+import io.androllm.core.tools.agent.AgentContextBuilder
+import io.androllm.core.tools.agent.AgentVariableStore
+import io.androllm.core.tools.agent.DeviceContextProvider
 import io.androllm.core.tools.origin.RemoteToolOrigin
+import io.androllm.core.tools.origin.RemoteToolPolicy
+import io.androllm.core.tools.origin.setForCurrentOrigin
+import io.androllm.core.tools.origin.snapshotForCurrentOrigin
+import io.androllm.core.tools.tool.impl.WebSearchTool
+import io.mockk.every
 import io.androllm.core.tools.registry.ToolRegistry
 import io.androllm.core.tools.settings.AutomationSettings
 import io.androllm.core.tools.settings.AutomationSettingsStore
@@ -82,8 +90,10 @@ class RemoteConfirmationRoutingTest {
     private val sms = FakeTool("send_sms", requiresConfirmation = true)
     private val uiClick = FakeTool("ui_click")                       // unflagged by the base app
     private val mcpRead = FakeTool("mcp_files_list", cacheable = true) // MCP is never auto-allowed
-    private val weather = FakeTool("calc_test", cacheable = true)   // pure read
+    private val weather = FakeTool("calculate", cacheable = true)   // on the remote allowlist
     private val launch = FakeTool("launch_app")
+    private val search = FakeTool("search_web", cacheable = true)   // cacheable, but can reach arbitrary hosts
+    private val uiRun = FakeTool("ui_run")
 
     private var settings = AutomationSettings() // HIGH_RISK by default
     private val manager = ToolConfirmationManager()
@@ -94,7 +104,7 @@ class RemoteConfirmationRoutingTest {
 
     private val executor: ToolExecutor = run {
         val registry = ToolRegistry()
-        listOf(sms, uiClick, mcpRead, weather, launch).forEach { check(registry.register(it)) }
+        listOf(sms, uiClick, mcpRead, weather, launch, search, uiRun).forEach { check(registry.register(it)) }
         val store = mockk<AutomationSettingsStore>()
         coEvery { store.current() } answers { settings }
         ToolExecutor(registry, store, manager, ToolExecutionTraceStore())
@@ -113,7 +123,7 @@ class RemoteConfirmationRoutingTest {
 
     @Test
     fun `remote read-only tool runs without a card`() = runTest {
-        val r = remoteCall(call("calc_test"))
+        val r = remoteCall(call("calculate"))
         runCurrent()
         assertThat(r.await().isSuccess).isTrue()
         assertThat(weather.executions).isEqualTo(1)
@@ -164,7 +174,7 @@ class RemoteConfirmationRoutingTest {
 
     @Test
     fun `switching to NEVER mid task refuses the next remote call instead of skipping the card`() = runTest {
-        val first = remoteCall(call("calc_test"))
+        val first = remoteCall(call("calculate"))
         runCurrent()
         assertThat(first.await().isSuccess).isTrue()
         settings = settings.copy(confirmationMode = ConfirmationMode.NEVER) // e.g. flipped via UI mid-task
@@ -341,5 +351,97 @@ class RemoteConfirmationRoutingTest {
         assertThat(RemoteAgentRunner.classify("I don't have a model loaded yet.", true).status).isEqualTo(ResultStatus.ERROR)
         assertThat(RemoteAgentRunner.classify("", true).status).isEqualTo(ResultStatus.ERROR)
         assertThat(RemoteAgentRunner.classify("partial", false).status).isEqualTo(ResultStatus.ERROR)
+    }
+
+    // ── re-gate B1: explicit allowlist, search_web, Always, ui_run, long args ──
+
+    @Test
+    fun `remote allowlist is exactly calculator, battery and weather`() {
+        assertThat(RemoteToolPolicy.AUTO_ALLOWED).containsExactly("calculate", "get_battery", "get_weather")
+    }
+
+    @Test
+    fun `remote search_web needs a card even though it is cacheable`() = runTest {
+        remoteCall(call("search_web", args = arrayOf("message" to "weather in Baku")))
+        runCurrent()
+        assertThat(manager.pending.value?.toolName).isEqualTo("search_web")
+        assertThat(search.executions).isEqualTo(0)
+    }
+
+    @Test
+    fun `owner mode Always is honoured for remote allowlisted tools`() = runTest {
+        settings = settings.copy(confirmationMode = ConfirmationMode.ALWAYS)
+        remoteCall(call("calculate"))
+        runCurrent()
+        assertThat(manager.pending.value?.toolName).isEqualTo("calculate")
+        assertThat(weather.executions).isEqualTo(0)
+    }
+
+    @Test
+    fun `ui_run is refused for remote origin, untouched for the owner`() = runTest {
+        val r = remoteCall(call("ui_run", args = arrayOf("message" to "open settings")))
+        runCurrent()
+        assertThat(r.await().summary).contains("not available to remote tasks")
+        assertThat(manager.pending.value).isNull()
+        val local = localCall(call("ui_run", id = "own", args = arrayOf("message" to "x")))
+        runCurrent()
+        assertThat(local.await().isSuccess).isTrue()
+    }
+
+    @Test
+    fun `remote argument too long to show in full is refused, never truncated on the card`() = runTest {
+        val r = remoteCall(call("send_sms", args = arrayOf("message" to "z".repeat(RemoteToolPolicy.MAX_ARG_CHARS + 1))))
+        runCurrent()
+        assertThat(r.await().summary).contains("could not be shown in full")
+        assertThat(manager.pending.value).isNull()
+        // at the limit: shown completely
+        val ok = "y".repeat(RemoteToolPolicy.MAX_ARG_CHARS)
+        remoteCall(call("send_sms", id = "c2", args = arrayOf("message" to ok)))
+        runCurrent()
+        assertThat(manager.pending.value!!.actionSummary).contains(ok)
+    }
+
+    @Test
+    fun `web search refuses bang and redirect shortcuts and oversized queries`() {
+        listOf("!g secret", "\\example", "weather !w Baku", "x".repeat(WebSearchTool.MAX_QUERY_CHARS + 1), "")
+            .forEach { assertThat(WebSearchTool.rejectReason(it)).isNotNull() }
+        listOf("weather in Baku", "price of BTC!", "C# vs Kotlin").forEach { assertThat(WebSearchTool.rejectReason(it)).isNull() }
+    }
+
+    // ── re-gate B2 / N2: context and variables of a remote turn ─────────────
+
+    private fun contextBuilder(store: AgentVariableStore): AgentContextBuilder {
+        val device = mockk<DeviceContextProvider>()
+        every { device.collect(any()) } answers {
+            val includePrivate = firstArg<Boolean>()
+            listOf("time: now", "battery: 80%") +
+                if (includePrivate) listOf("clipboard: hunter2", "current_app: Bank") else emptyList()
+        }
+        return AgentContextBuilder(device, store)
+    }
+
+    @Test
+    fun `remote turn context has no clipboard, foreground app or owner variables`() = runTest {
+        val store = AgentVariableStore().apply { beginTurn("owner-chat"); set("last_tool_output", "owner notes: PIN 1234") }
+        val builder = contextBuilder(store)
+        val ownerBlock = builder.buildBlockForCurrentOrigin()
+        assertThat(ownerBlock).contains("clipboard:")
+        assertThat(ownerBlock).contains("PIN 1234")
+        val remoteBlock = withContext(remote) { builder.buildBlockForCurrentOrigin() }
+        assertThat(remoteBlock).doesNotContain("clipboard:")
+        assertThat(remoteBlock).doesNotContain("current_app:")
+        assertThat(remoteBlock).doesNotContain("PIN 1234")
+        assertThat(remoteBlock).contains("battery: 80%")
+    }
+
+    @Test
+    fun `remote turn variables are isolated from the owner's scope in both directions`() = runTest {
+        val store = AgentVariableStore().apply { beginTurn("owner-chat"); set("weather", "owner value") }
+        withContext(remote) {
+            store.setForCurrentOrigin("weather", "remote value")
+            assertThat(store.snapshotForCurrentOrigin()).containsExactly("weather", "remote value")
+        }
+        assertThat(store.snapshot()).containsExactly("weather", "owner value")
+        assertThat(store.snapshotForCurrentOrigin()).containsExactly("weather", "owner value")
     }
 }

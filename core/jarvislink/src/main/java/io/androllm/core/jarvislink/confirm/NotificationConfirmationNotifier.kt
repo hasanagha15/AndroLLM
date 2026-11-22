@@ -44,11 +44,17 @@ class NotificationConfirmationNotifier @Inject constructor(
         val open = context.packageManager.getLaunchIntentForPackage(context.packageName)?.let {
             PendingIntent.getActivity(context, 3, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
-        // Full task text and full arguments: the owner must see exactly what is approved.
+        // The ACTION first (complete arguments — ToolExecutor refuses anything too
+        // long to show), then a short excerpt of the task for context.
         val body = buildString {
-            append(confirmation.remoteOrigin ?: "Jarvis")
-            if (task != null) append(" — задача: «").append(task.text.take(1_000)).append("»")
-            append("\n\n").append(confirmation.actionSummary)
+            append(confirmation.actionSummary)
+            append("\n\n").append(confirmation.remoteOrigin ?: "Jarvis")
+            if (task != null) {
+                append(" — задача: «").append(task.text.take(200))
+                if (task.text.length > 200) append("…")
+                append("»")
+            }
+            append("\nПолный текст — в карточке в приложении.")
         }
         val notification = NotificationCompat.Builder(context, CONFIRM_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)

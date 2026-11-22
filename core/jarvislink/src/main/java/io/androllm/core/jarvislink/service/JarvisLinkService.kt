@@ -205,8 +205,11 @@ class JarvisLinkService : Service() {
             }
             val cm = context.getSystemService(ConnectivityManager::class.java)
                 ?: return@withContext RouteDecision.Wait("no connectivity service")
-            val vpn = cm.allNetworks.firstOrNull {
-                cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            // A VPN network whose own interface address is a Tailscale address
+            // (any other VPN does not count).
+            val vpn = cm.allNetworks.firstOrNull { net ->
+                cm.getNetworkCapabilities(net)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true &&
+                    cm.getLinkProperties(net)?.linkAddresses?.any { TailscaleRoute.isTailscaleAddress(it.address) } == true
             } ?: return@withContext RouteDecision.Wait("Tailscale VPN is not connected")
             val addrs = try {
                 vpn.getAllByName(host).toList()
