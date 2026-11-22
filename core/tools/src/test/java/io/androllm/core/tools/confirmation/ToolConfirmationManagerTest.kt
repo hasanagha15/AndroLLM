@@ -94,7 +94,7 @@ class ToolConfirmationManagerTest {
     }
 
     @Test
-    fun `cancelPending denies every waiter`() = runTest {
+    fun `cancelPending denies a typed-chat waiter`() = runTest {
         val manager = ToolConfirmationManager()
         val result = CompletableDeferred<Boolean>()
         val job = launch { result.complete(manager.awaitDecision(confirmation("c4"))) }
@@ -102,6 +102,87 @@ class ToolConfirmationManagerTest {
         manager.cancelPending()
         job.join()
         assertThat(result.await()).isFalse()
+        assertThat(manager.pending.value).isNull()
+        assertThat(manager.lastOutcome.value).isEqualTo(ConfirmationOutcome("c4", false))
+    }
+
+    @Test
+    fun `typed-chat cancelPending never denies a remote card`() = runTest {
+        val manager = ToolConfirmationManager()
+        val result = CompletableDeferred<Boolean>()
+        val job = launch {
+            result.complete(
+                kotlinx.coroutines.withContext(io.androllm.core.tools.origin.RemoteToolOrigin()) {
+                    manager.awaitDecision(confirmation("r1").copy(toolName = "tesla_command"))
+                }
+            )
+        }
+        while (manager.pending.value == null) kotlinx.coroutines.yield()
+        assertThat(manager.pending.value!!.surface).isEqualTo(ConfirmationSurface.REMOTE)
+        manager.cancelPending() // Stop / conversation switch in typed chat
+        manager.cancelPending(ConfirmationSurface.VOICE) // voice service stop
+        kotlinx.coroutines.yield()
+        assertThat(result.isCompleted).isFalse()
+        assertThat(manager.pending.value?.id).isEqualTo("r1")
+        manager.confirm("r1")
+        job.join()
+        assertThat(result.await()).isTrue()
+        assertThat(manager.lastOutcome.value).isEqualTo(ConfirmationOutcome("r1", true))
+    }
+
+    @Test
+    fun `cancelAllPending denies a remote card`() = runTest {
+        val manager = ToolConfirmationManager()
+        val result = CompletableDeferred<Boolean>()
+        val job = launch {
+            result.complete(
+                kotlinx.coroutines.withContext(io.androllm.core.tools.origin.RemoteToolOrigin()) {
+                    manager.awaitDecision(confirmation("r2"))
+                }
+            )
+        }
+        while (manager.pending.value == null) kotlinx.coroutines.yield()
+        manager.cancelAllPending()
+        job.join()
+        assertThat(result.await()).isFalse()
+    }
+
+    @Test
+    fun `voice turn cards are stamped and cancelled only by the voice scope`() = runTest {
+        val manager = ToolConfirmationManager()
+        val result = CompletableDeferred<Boolean>()
+        val job = launch {
+            result.complete(
+                kotlinx.coroutines.withContext(io.androllm.core.tools.origin.VoiceTurnOrigin("turn-7")) {
+                    manager.awaitDecision(confirmation("v1").copy(toolName = "tesla_command"))
+                }
+            )
+        }
+        while (manager.pending.value == null) kotlinx.coroutines.yield()
+        val card = manager.pending.value!!
+        assertThat(card.voiceTurnId).isEqualTo("turn-7")
+        assertThat(card.surface).isEqualTo(ConfirmationSurface.VOICE)
+        manager.cancelPending() // typed scope: untouched
+        kotlinx.coroutines.yield()
+        assertThat(result.isCompleted).isFalse()
+        manager.cancelPending(ConfirmationSurface.VOICE)
+        job.join()
+        assertThat(result.await()).isFalse()
+    }
+
+    @Test
+    fun `remote origin wins over a voice turn marker`() = runTest {
+        val manager = ToolConfirmationManager()
+        val job = launch {
+            kotlinx.coroutines.withContext(
+                io.androllm.core.tools.origin.VoiceTurnOrigin("t") + io.androllm.core.tools.origin.RemoteToolOrigin()
+            ) { manager.awaitDecision(confirmation("x1")) }
+        }
+        while (manager.pending.value == null) kotlinx.coroutines.yield()
+        assertThat(manager.pending.value!!.surface).isEqualTo(ConfirmationSurface.REMOTE)
+        assertThat(manager.pending.value!!.voiceTurnId).isNull()
+        manager.deny("x1")
+        job.join()
     }
 
     @Test

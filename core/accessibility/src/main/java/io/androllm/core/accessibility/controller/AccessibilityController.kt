@@ -28,10 +28,20 @@ import timber.log.Timber
 import kotlin.coroutines.resume
 
 /** Outcome of a single UI action (tap / type / scroll / navigate). */
-data class UiActionResult(val success: Boolean, val message: String) {
+data class UiActionResult(
+    val success: Boolean,
+    val message: String,
+    /**
+     * False for refusals a retry or another tool cannot fix (SensitiveAppGuard):
+     * the ui_* tools then return a non-retryable failure, so the coordinator
+     * neither repeats the call nor tries an "alternative tool".
+     */
+    val retryable: Boolean = true
+) {
     companion object {
         fun ok(msg: String) = UiActionResult(true, msg)
         fun fail(msg: String) = UiActionResult(false, msg)
+        fun blocked(msg: String) = UiActionResult(false, msg, retryable = false)
     }
 }
 
@@ -91,7 +101,7 @@ class AccessibilityController @Inject constructor(
         val settings = settingsStore.current()
         val root = onMain { service?.rootInActiveWindow }
         if (root == null) return UiActionResult.fail(notConnected())
-        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.fail(it) }
+        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         var node = onMain { LiveTree.find(root, selector) }
         var scrolls = 0
         while (node == null && settings.autoScrollIntoView && scrolls < maxScrolls) {
@@ -115,7 +125,7 @@ class AccessibilityController @Inject constructor(
     /** Double-taps the element matching [selector] (e.g. Maps zoom). */
     suspend fun doubleTap(selector: UiSelector): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
-        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.fail(it) }
+        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
         val bounds = android.graphics.Rect()
@@ -130,7 +140,7 @@ class AccessibilityController @Inject constructor(
      */
     suspend fun drag(selector: UiSelector, dx: Float, dy: Float): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
-        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.fail(it) }
+        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
         val bounds = android.graphics.Rect()
@@ -156,7 +166,7 @@ class AccessibilityController @Inject constructor(
     /** Long-presses the element matching [selector]. */
     suspend fun longClick(selector: UiSelector): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
-        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.fail(it) }
+        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
         val bounds = android.graphics.Rect()
@@ -168,7 +178,7 @@ class AccessibilityController @Inject constructor(
     /** Types [text] into the focused field, or the field matching [into]. */
     suspend fun type(text: String, into: String?): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
-        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.fail(it) }
+        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val field = onMain {
             if (into != null) {
                 LiveTree.find(root, UiSelector(textContains = into, type = UiElementType.TEXT_FIELD))

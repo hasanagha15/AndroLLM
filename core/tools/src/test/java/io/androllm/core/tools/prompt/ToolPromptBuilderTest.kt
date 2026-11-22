@@ -88,4 +88,115 @@ class ToolPromptBuilderTest {
         assertThat(ad).isNotNull()
         assertThat(ad).contains("- get_weather")
     }
+
+    // ── Н10: enum values are listed so a cut description hides no action ──
+
+    private val tesla = ToolSpec(
+        name = "tesla_command",
+        description = "Send a SAFE command to the owner's Tesla via tesla-bridge (always asks the user first): climate_on, climate_off, set_temp (temp_c 15..28), lock, charge_start, charge_stop, set_charge_limit (percent 50..100). Unlocking is NOT possible.",
+        parameters = buildJsonObject {
+            put("type", "object")
+            put(
+                "properties", buildJsonObject {
+                    put(
+                        "action", buildJsonObject {
+                            put("type", "string")
+                            put(
+                                "enum", buildJsonArray {
+                                    listOf(
+                                        "charge_start", "charge_stop", "climate_off", "climate_on",
+                                        "lock", "set_charge_limit", "set_temp"
+                                    ).forEach { add(JsonPrimitive(it)) }
+                                }
+                            )
+                        }
+                    )
+                    put("temp_c", buildJsonObject { put("type", "number") })
+                }
+            )
+            put("required", buildJsonArray { add(JsonPrimitive("action")) })
+        },
+        category = ToolCategory.DEVICE
+    )
+
+    @Test
+    fun `enum arguments list every allowed value even when the description is cut`() {
+        val builder = ToolPromptBuilder(mockk(relaxed = true))
+        for (budget in listOf(0, 1200)) {
+            val text = builder.render(listOf(tesla), maxChars = budget)
+            for (action in listOf("lock", "charge_start", "charge_stop", "set_charge_limit", "climate_on", "set_temp")) {
+                assertThat(text).contains(action)
+            }
+            assertThat(text).contains("action (string: charge_start|charge_stop|climate_off|climate_on|lock|set_charge_limit|set_temp)")
+        }
+    }
+
+    // ── Н4: tight budgets switch to compact lines before dropping tools ──
+
+    private fun synthetic(count: Int): List<ToolSpec> = (1..count).map { i ->
+        ToolSpec(
+            name = "tool_%02d".format(i),
+            description = "Synthetic tool number $i that does something useful for the user on the device. ".repeat(3),
+            parameters = buildJsonObject {
+                put("type", "object")
+                put(
+                    "properties", buildJsonObject {
+                        put("query", buildJsonObject { put("type", "string") })
+                        put("limit", buildJsonObject { put("type", "integer") })
+                    }
+                )
+                put("required", buildJsonArray { add(JsonPrimitive("query")) })
+            },
+            category = ToolCategory.INFORMATION
+        )
+    }
+
+    @Test
+    fun `unbudgeted render keeps the full format`() {
+        val builder = ToolPromptBuilder(mockk(relaxed = true))
+        val specs = synthetic(63)
+        val text = builder.render(specs)
+        assertThat(text).contains("- tool_63")
+        assertThat(text).contains("example: {\"query\": \"value\"}")
+        assertThat(text.length).isGreaterThan(10_000)
+    }
+
+    @Test
+    fun `budgeted render never exceeds the budget and fits more tools compactly`() {
+        val builder = ToolPromptBuilder(mockk(relaxed = true))
+        val specs = synthetic(63)
+        for (ctx in listOf(2048, 4096)) {
+            val budget = ToolAdvertisementBudget.charsFor(ctx)
+            val text = builder.render(specs, maxChars = budget)
+            assertThat(text.length).isAtMost(budget)
+            // Most relevant (first) tools always survive.
+            assertThat(text).contains("- tool_01")
+            // Compact lines: no examples, so more tools than the full format would fit.
+            assertThat(text).doesNotContain("example:")
+            val compactCount = Regex("(?m)^- tool_").findAll(text).count()
+            val fullPerLine = builder.render(specs.take(1)).length - builder.render(emptyList()).length
+            val fullCapacity = (budget - builder.render(emptyList()).length) / fullPerLine
+            assertThat(compactCount).isGreaterThan(fullCapacity)
+        }
+    }
+
+    @Test
+    fun `a budget that fits everything keeps the full format`() {
+        val builder = ToolPromptBuilder(mockk(relaxed = true))
+        val specs = listOf(weather, flashlight)
+        val text = builder.render(specs, maxChars = 50_000)
+        assertThat(text).isEqualTo(builder.render(specs))
+    }
+
+    @Test
+    fun `advertisement forwards budget and query to the router`() = runTest {
+        val planner = mockk<ToolPlanner>()
+        coEvery { planner.routedTools("закрой машину", false) } returns listOf(tesla) + synthetic(62)
+        val builder = ToolPromptBuilder(planner)
+        val budget = ToolAdvertisementBudget.charsFor(4096)
+        val ad = builder.advertisement(maxChars = budget, query = "закрой машину")!!
+        assertThat(ad.length).isAtMost(budget)
+        assertThat(ad).contains("- tesla_command")
+        assertThat(ad).contains("lock")
+    }
 }

@@ -20,7 +20,13 @@ import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 
 /** Outcome of a full automation run. */
-data class AutomationResult(val success: Boolean, val summary: String, val steps: Int)
+data class AutomationResult(
+    val success: Boolean,
+    val summary: String,
+    val steps: Int,
+    /** False when a step was refused by SensitiveAppGuard (retrying cannot help). */
+    val retryable: Boolean = true
+)
 
 /** One executed plan step, recorded for the developer mode. */
 data class ExecutedStep(val action: PlannedAction, val result: UiActionResult)
@@ -115,7 +121,7 @@ class AutomationExecutor @Inject constructor(
                 is PlannedAction.LaunchApp -> {
                     val result = controller.launchApp(action.label)
                     steps += ExecutedStep(action, result)
-                    if (!result.success) return AutomationResult(false, result.message, steps.size)
+                    if (!result.success) return AutomationResult(false, result.message, steps.size, result.retryable)
                 }
 
                 is PlannedAction.Click -> {
@@ -124,18 +130,18 @@ class AutomationExecutor @Inject constructor(
                         if (!approved) return AutomationResult(false, "The user declined the action.", steps.size)
                     }
                     var result = controller.click(UiSelector(textContains = action.target, index = action.index))
-                    if (!result.success) {
+                    if (!result.success && result.retryable) {
                         delay(500) // let the UI settle, then one retry
                         result = controller.click(UiSelector(textContains = action.target, index = action.index))
                     }
                     steps += ExecutedStep(action, result)
-                    if (!result.success) return AutomationResult(false, result.message, steps.size)
+                    if (!result.success) return AutomationResult(false, result.message, steps.size, result.retryable)
                 }
 
                 is PlannedAction.Type -> {
                     val result = controller.type(action.text, action.into)
                     steps += ExecutedStep(action, result)
-                    if (!result.success) return AutomationResult(false, result.message, steps.size)
+                    if (!result.success) return AutomationResult(false, result.message, steps.size, result.retryable)
                 }
 
                 is PlannedAction.Scroll -> {

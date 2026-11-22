@@ -4,6 +4,7 @@ import io.androllm.core.tools.api.ToolCall
 import io.androllm.core.tools.api.ToolSpec
 import io.androllm.core.tools.api.runtimePermissions
 import io.androllm.core.tools.origin.RemoteToolOrigin
+import io.androllm.core.tools.origin.VoiceTurnOrigin
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CompletableDeferred
@@ -40,8 +41,27 @@ data class PendingToolConfirmation(
      * the label shown to the user. Remote confirmations are never answered by
      * the voice responder — only by an explicit tap.
      */
-    val remoteOrigin: String? = null
-)
+    val remoteOrigin: String? = null,
+    /**
+     * Non-null when the card was raised inside a SPOKEN turn (stamped from
+     * [VoiceTurnOrigin]); the voice loop uses it to recognise its own cards.
+     */
+    val voiceTurnId: String? = null
+) {
+    /** Which surface raised the card (scopes [ToolConfirmationManager.cancelPending]). */
+    val surface: ConfirmationSurface
+        get() = when {
+            remoteOrigin != null -> ConfirmationSurface.REMOTE
+            voiceTurnId != null -> ConfirmationSurface.VOICE
+            else -> ConfirmationSurface.TYPED
+        }
+}
+
+/** Origin of a confirmation card. */
+enum class ConfirmationSurface { TYPED, VOICE, REMOTE }
+
+/** Final outcome of one card ([approved] false also covers timeout / cancel). */
+data class ConfirmationOutcome(val id: String, val approved: Boolean)
 
 /**
  * Central hub for high-risk action confirmations, shared by the chat UI and
@@ -67,6 +87,11 @@ class ToolConfirmationManager @Inject constructor() {
     val pending: StateFlow<PendingToolConfirmation?> = _pending
 
     private val responses = java.util.concurrent.ConcurrentHashMap<String, CompletableDeferred<Boolean>>()
+    private val cards = java.util.concurrent.ConcurrentHashMap<String, PendingToolConfirmation>()
+
+    /** Outcome of the most recently closed card (voice loop announces it). */
+    private val _lastOutcome = MutableStateFlow<ConfirmationOutcome?>(null)
+    val lastOutcome: StateFlow<ConfirmationOutcome?> = _lastOutcome
 
     /**
      * Optional voice-mode responder. Set by [io.androllm.feature.voice.service.
@@ -92,13 +117,19 @@ class ToolConfirmationManager @Inject constructor() {
         // Remote-origin work (RemoteToolOrigin in the coroutine context) is
         // labelled even when the caller built the card itself (ui_run steps).
         val remote = currentCoroutineContext()[RemoteToolOrigin]
-        val effective = if (confirmation.remoteOrigin == null && remote != null) {
+        val labelled = if (confirmation.remoteOrigin == null && remote != null) {
             confirmation.copy(
                 remoteOrigin = remote.label,
                 toolDisplayName = "${remote.label} · ${confirmation.toolDisplayName}"
             )
         } else {
             confirmation
+        }
+        val voiceTurn = currentCoroutineContext()[VoiceTurnOrigin]
+        val effective = if (labelled.voiceTurnId == null && voiceTurn != null && labelled.remoteOrigin == null) {
+            labelled.copy(voiceTurnId = voiceTurn.turnId)
+        } else {
+            labelled
         }
         // One card at a time: concurrent requests (typed turn + remote task)
         // queue instead of replacing each other on the single pending slot.
@@ -110,13 +141,15 @@ class ToolConfirmationManager @Inject constructor() {
     private suspend fun decide(confirmation: PendingToolConfirmation): Boolean {
         val deferred = CompletableDeferred<Boolean>()
         responses[confirmation.id] = deferred
+        cards[confirmation.id] = confirmation
         _pending.value = confirmation
+        var outcome = false
         return try {
             // Remote confirmations need an explicit tap — never a spoken "yes".
             // Car / messaging / glasses actions are tap-only too: a spoken reply
             // can be misheard (whisper noise words), so it never approves them.
             val responder = if (isTapOnly(confirmation)) null else voiceResponder
-            if (responder == null) {
+            val decision = if (responder == null) {
                 withTimeoutOrNull(CONFIRMATION_TIMEOUT_MS) { deferred.await() } ?: false
             } else {
                 coroutineScope {
@@ -145,9 +178,13 @@ class ToolConfirmationManager @Inject constructor() {
                     decision
                 }
             }
+            outcome = decision
+            decision
         } finally {
             responses.remove(confirmation.id)
+            cards.remove(confirmation.id)
             if (_pending.value?.id == confirmation.id) _pending.value = null
+            _lastOutcome.value = ConfirmationOutcome(confirmation.id, outcome)
         }
     }
 
@@ -161,11 +198,24 @@ class ToolConfirmationManager @Inject constructor() {
         responses[id]?.complete(false)
     }
 
-    /** Clears any pending card (conversation switch, turn cancel). */
-    fun cancelPending() {
-        responses.values.forEach { it.complete(false) }
-        responses.clear()
-        _pending.value = null
+    /**
+     * Denies the pending cards raised by [surface] only (typed-chat Stop /
+     * conversation switch must not deny a remote task's card, and stopping the
+     * voice service must not deny a typed-chat card). Default = typed chat.
+     */
+    fun cancelPending(surface: ConfirmationSurface = ConfirmationSurface.TYPED) {
+        cancelWhere { it.surface == surface }
+    }
+
+    /** Denies every pending card regardless of origin. */
+    fun cancelAllPending() {
+        cancelWhere { true }
+    }
+
+    private fun cancelWhere(predicate: (PendingToolConfirmation) -> Boolean) {
+        for ((id, card) in cards.entries.toList()) {
+            if (predicate(card)) responses[id]?.complete(false)
+        }
     }
 
     companion object {

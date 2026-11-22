@@ -24,10 +24,13 @@ import io.androllm.core.models.MessageOrigin
 import io.androllm.core.models.MessageRole
 import io.androllm.core.models.ThemeMode
 import io.androllm.core.navigation.Routes
+import io.androllm.core.tools.confirmation.ConfirmationSurface
 import io.androllm.core.tools.confirmation.PendingToolConfirmation
 import io.androllm.core.tools.confirmation.ToolConfirmationManager
 import io.androllm.core.voice.VoiceSettingsStore
+import io.androllm.core.tools.origin.VoiceTurnOrigin
 import io.androllm.core.voice.asr.SpeechRecognizer
+import io.androllm.core.voice.lang.VoiceLanguage
 import io.androllm.core.voice.audio.AudioPlayer
 import io.androllm.core.voice.audio.AudioRecorder
 import io.androllm.core.voice.model.VoiceModels
@@ -292,7 +295,9 @@ class VoiceAssistantService : Service() {
         loopJob?.cancel()
         loopJob = null
         toolConfirmationManager.setVoiceResponder(null)
-        toolConfirmationManager.cancelPending()
+        // Only cards of spoken turns: a typed-chat or remote card stays live.
+        toolConfirmationManager.cancelPending(ConfirmationSurface.VOICE)
+        VoiceCardNotifier.cancel(this)
         confirmationActive.set(false)
         stopElapsedTicker()
         recorder?.stop()
@@ -808,8 +813,13 @@ class VoiceAssistantService : Service() {
         val speechActive = AtomicBoolean(false)
         // Live answer text (status callback updates it too).
         val answer = StringBuilder()
+        val language = VoiceLanguage.fromCode(settings.sttLanguage)
+        // Cards raised by THIS turn carry its id (VoiceTurnOrigin) so the loop
+        // can hold the timeout / barge-in for them and announce tap-only ones.
+        val turnId = UUID.randomUUID().toString()
+        val cardWatcher = VoiceCardWatcher(turnId)
 
-        val genJob = scope.launch {
+        val genJob = scope.launch(VoiceTurnOrigin(turnId)) {
             try {
                 // Step 9: prove the exact transcript reaches the chat pipeline.
                 // Whatever the recognizer produced is what the model must see.
@@ -821,11 +831,15 @@ class VoiceAssistantService : Service() {
                     content = transcript,
                     origin = MessageOrigin.VOICE,
                     lowLatencyMode = settings.lowLatencyMode,
+                    // A remote Jarvis task holding the pipeline answers with a
+                    // spoken "busy" instead of a silent first-token timeout.
+                    busyReply = VoicePhrases.busyRemote(language),
                     onToolStatus = { status ->
                         // Tool planning/execution status: keep the first-token
                         // timeout from firing and surface what is happening on
                         // the overlay while no answer tokens are streaming.
                         turnActivityAt = System.currentTimeMillis()
+                        cardWatcher.onActivity()
                         controller.setPhase(VoicePhase.GENERATING)
                         if (answer.isEmpty()) controller.setAnswer(status)
                     }
@@ -904,12 +918,59 @@ class VoiceAssistantService : Service() {
         var gotFirstDelta = false
         turnActivityAt = System.currentTimeMillis()
         var lastFlushAt = System.currentTimeMillis()
+        // Service phrases (tap-only hint, "cancelled") join the overlay text
+        // and the streaming TTS queue like model text.
+        val announce: (String) -> Unit = { phrase ->
+            val piece = if (answer.isEmpty()) phrase else " $phrase"
+            answer.append(piece)
+            controller.setAnswer(answer.toString())
+            if (ttsJob != null) {
+                assembler.feed(piece).forEach { speechQueue.trySend(it) }
+                assembler.flush(force = true)?.let { speechQueue.trySend(it) }
+            }
+        }
         while (!genJob.isCompleted || !deltas.isEmpty) {
+            // Confirmation cards of this turn: announce tap-only ones (voice
+            // cannot approve them), report a deny/timeout, and hold the turn
+            // while a card waits (up to the manager's 300 s timeout).
+            val tickAt = System.currentTimeMillis()
+            for (event in cardWatcher.update(
+                toolConfirmationManager.pending.value,
+                toolConfirmationManager.lastOutcome.value,
+                tickAt
+            )) {
+                when (event) {
+                    is VoiceCardWatcher.Event.TapOnlyCard -> {
+                        Timber.i("Voice: tap-only card %s pending - asking to confirm in the app", event.card.toolName)
+                        announce(VoicePhrases.confirmInApp(language))
+                        val convId = runCatching {
+                            conversationRepository.observeActive().first().firstOrNull()?.id
+                        }.getOrNull()
+                        VoiceCardNotifier.show(this, event.card, language, convId)
+                    }
+                    is VoiceCardWatcher.Event.Resolved -> {
+                        VoiceCardNotifier.cancel(this)
+                        if (!event.approved) announce(VoicePhrases.cancelled(language))
+                    }
+                }
+            }
+            val holdingForCard = cardWatcher.holdsTurn(tickAt)
+            if (holdingForCard) {
+                // Waiting on the owner (or on the approved tool): not a stall.
+                turnActivityAt = tickAt
+                if (cancelRequested) {
+                    // Overlay Cancel while a card waits: deny this turn's card.
+                    toolConfirmationManager.cancelPending(ConfirmationSurface.VOICE)
+                    interrupted = true
+                    break
+                }
+            }
             // Barge-in VAD — skipped while our own speech is playing (the mic
-            // would otherwise hear the speaker and cancel the answer) AND
-            // while the spoken confirmation is asking/listening (the mic is
-            // owned by the confirmation listener then).
-            if (!speechActive.get() && !confirmationActive.get()) {
+            // would otherwise hear the speaker and cancel the answer), while
+            // the spoken confirmation is asking/listening (the mic is owned by
+            // the confirmation listener then) AND while a card of this turn
+            // waits for a tap (room noise must not tear the card down).
+            if (!speechActive.get() && !confirmationActive.get() && !holdingForCard) {
                 var drained = 0
                 while (drained < 20 && !speechActive.get() && !confirmationActive.get() && currentCoroutineContext().isActive) {
                     val chunk = rec.chunks.tryReceive().getOrNull() ?: break
@@ -943,6 +1004,7 @@ class VoiceAssistantService : Service() {
             }
             gotFirstDelta = true
             turnActivityAt = System.currentTimeMillis()
+            cardWatcher.onActivity()
             if (cancelRequested) {
                 interrupted = true
                 break
@@ -976,6 +1038,7 @@ class VoiceAssistantService : Service() {
             interrupted = false
         }
 
+        VoiceCardNotifier.cancel(this)
         if (interrupted) {
             genJob.cancel()
             ttsJob?.cancel()
@@ -1124,12 +1187,9 @@ class VoiceAssistantService : Service() {
             return null
         }
         if (!voiceConfirmationsEnabled()) {
-            controller.setAnswer("I need your confirmation for this action. Please approve it in the app.")
-            speakSentences(
-                rec,
-                listOf("I need your confirmation for that action. Please approve it in the app."),
-                settings
-            )
+            val hint = VoicePhrases.confirmInApp(VoiceLanguage.fromCode(settings.sttLanguage))
+            controller.setAnswer(hint)
+            speakSentences(rec, listOf(hint), settings)
             return null
         }
 

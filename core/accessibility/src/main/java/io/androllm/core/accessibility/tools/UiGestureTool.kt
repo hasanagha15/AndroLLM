@@ -90,7 +90,7 @@ class UiGestureTool @Inject constructor(
     }
 
     private fun result(r: io.androllm.core.accessibility.controller.UiActionResult): ToolResult =
-        if (r.success) ToolResult.Success(r.message) else ToolResult.Failure(r.message)
+        if (r.success) ToolResult.Success(r.message) else ToolResult.Failure(r.message, retryable = r.retryable)
 
     private fun notConnected(): String =
         "The accessibility service is not enabled. Open Settings → Accessibility → AndroLLM UI Automation and turn it on, then ask again."

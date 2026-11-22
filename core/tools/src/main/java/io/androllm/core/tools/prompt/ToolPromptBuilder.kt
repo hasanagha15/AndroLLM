@@ -57,47 +57,74 @@ class ToolPromptBuilder @Inject constructor(
         return render(specs, maxChars)
     }
 
-    /** Pure renderer (unit-testable): tool list → advertisement text. */
+    /**
+     * Pure renderer (unit-testable): tool list → advertisement text.
+     *
+     * With a budget ([maxChars] > 0) that the full list does not fit, the
+     * lines are rendered COMPACT first (shorter description, no example; the
+     * argument names and enum values stay) so far more tools fit before any
+     * is dropped from the tail. Callers pass the specs most-relevant-first
+     * (the router orders them by the request), so the tail is the least
+     * relevant part.
+     */
     fun render(specs: List<ToolSpec>, maxChars: Int = 0): String {
+        val full = renderLines(specs, maxChars, compact = false)
+        if (maxChars <= 0 || full.second == specs.size) return full.first
+        val compact = renderLines(specs, maxChars, compact = true)
+        return if (compact.second > full.second) compact.first else full.first
+    }
+
+    /** Renders header + as many lines as fit; returns (text, tools rendered). */
+    private fun renderLines(specs: List<ToolSpec>, maxChars: Int, compact: Boolean): Pair<String, Int> {
         val sb = StringBuilder()
-        sb.append(
-            "You are the assistant of an on-device AI agent and you HAVE access to tools. " +
-                "The tools below are available RIGHT NOW — never claim you lack access to them.\n" +
-                "When the user's request involves an app, the web, the device, or communication " +
-                "(weather, search, opening apps, sending messages/calls/emails, clipboard, " +
-                "screenshots, music, settings, alarms, notes, files, calculator, translation, " +
-                "GitHub, image generation, …), use the matching tool and summarize its result " +
-                "for the user. Never say \"I can't do that\" when a tool exists for it.\n\n" +
-                "AVAILABLE TOOLS (name — description | arguments: key (type) | example):\n"
-        )
+        sb.append(HEADER)
+        var count = 0
         for (spec in specs) {
             // Budget guard: keep the header + tools until the budget is
-            // exhausted. The header is ~700 chars; a 2048-token container
-            // (≈ 8K chars) with a 4K output reserve leaves ~1-2K chars —
-            // enough for the most important tools only.
+            // exhausted. The header is ~600 chars; a 2048-token container
+            // gets only ~2K chars in total — enough for the most relevant
+            // tools only.
             if (maxChars > 0 && sb.length >= maxChars) break
             val line = StringBuilder()
             line.append("- ").append(spec.name)
-            line.append(" — ").append(spec.description.take(140))
+            line.append(" — ").append(spec.description.take(if (compact) COMPACT_DESCRIPTION_CHARS else DESCRIPTION_CHARS))
             val params = describeParameters(spec.parameters)
             if (params.isNotBlank()) line.append(" | arguments: ").append(params)
-            val example = exampleArguments(spec.parameters)
-            if (example.isNotBlank()) line.append(" | example: ").append(example)
+            if (!compact) {
+                val example = exampleArguments(spec.parameters)
+                if (example.isNotBlank()) line.append(" | example: ").append(example)
+            }
             line.append('\n')
             if (maxChars > 0 && sb.length + line.length > maxChars) break
             sb.append(line)
+            count++
         }
-        return sb.toString()
+        return sb.toString() to count
     }
 
-    /** Compact "key (type), key (type)" listing of the JSON-schema properties. */
+    /**
+     * Compact "key (type), key (type)" listing of the JSON-schema properties.
+     * Enum-constrained strings list their allowed values ("action (string:
+     * lock|climate_on|…)") so a local model sees every permitted action even
+     * when the description is cut.
+     */
     private fun describeParameters(schema: JsonObject): String {
         val props = schema["properties"] as? JsonObject ?: return ""
         return props.mapNotNull { (name, el) ->
-            val type = (el as? JsonObject)?.get("type")?.let {
+            val obj = el as? JsonObject
+            val type = obj?.get("type")?.let {
                 (it as? JsonPrimitive)?.content
             } ?: "any"
-            "$name ($type)"
+            val enumValues = (obj?.get("enum") as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.content }
+                .orEmpty()
+            if (enumValues.isEmpty()) {
+                "$name ($type)"
+            } else {
+                val shown = enumValues.take(MAX_ENUM_VALUES).joinToString("|")
+                val more = if (enumValues.size > MAX_ENUM_VALUES) "|…" else ""
+                "$name ($type: $shown$more)"
+            }
         }.joinToString(", ")
     }
 
@@ -124,5 +151,26 @@ class ToolPromptBuilder @Inject constructor(
             "\"$key\": $placeholder"
         }
         return if (parts.isEmpty()) "" else "{${parts.joinToString(", ")}}"
+    }
+
+    companion object {
+        /** Description length in the normal line (cloud / roomy contexts). */
+        const val DESCRIPTION_CHARS = 140
+
+        /** Description length in the compact line used when the budget is tight. */
+        const val COMPACT_DESCRIPTION_CHARS = 70
+
+        /** Enum values listed per argument before "|…". */
+        const val MAX_ENUM_VALUES = 12
+
+        private const val HEADER =
+            "You are the assistant of an on-device AI agent and you HAVE access to tools. " +
+                "The tools below are available RIGHT NOW — never claim you lack access to them.\n" +
+                "When the user's request involves an app, the web, the device, or communication " +
+                "(weather, search, opening apps, sending messages/calls/emails, clipboard, " +
+                "screenshots, music, settings, alarms, notes, files, calculator, translation, " +
+                "GitHub, image generation, …), use the matching tool and summarize its result " +
+                "for the user. Never say \"I can't do that\" when a tool exists for it.\n\n" +
+                "AVAILABLE TOOLS (name — description | arguments: key (type) | example):\n"
     }
 }

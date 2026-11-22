@@ -17,6 +17,7 @@ import io.androllm.core.models.Conversation
 import io.androllm.core.tools.agent.AgentVariableStore
 import io.androllm.core.tools.coordinator.ToolRunCoordinator
 import io.androllm.core.tools.origin.currentRemoteOrigin
+import io.androllm.core.tools.prompt.ToolAdvertisementBudget
 import io.androllm.core.tools.prompt.ToolPromptBuilder
 import io.androllm.core.tools.settings.AutomationSettingsStore
 import io.androllm.core.tools.trace.ToolExecutionTraceStore
@@ -77,6 +78,12 @@ class ChatManager @Inject constructor(
     /** Serializes turns run through this pipeline (voice + remote Jarvis tasks). */
     private val turnLock = Mutex()
 
+    /** True while a REMOTE (Jarvis) turn holds [turnLock]. */
+    private val remoteTurnActive = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** True while a remote Jarvis task holds the turn pipeline (it may wait minutes on a card). */
+    fun isRemoteTurnActive(): Boolean = remoteTurnActive.get()
+
     /**
      * Resolves a human-readable label for the currently active model, no matter
      * which provider it comes from (local LiteRT or any cloud provider). The
@@ -124,14 +131,28 @@ class ChatManager @Inject constructor(
         /** False = no memory retrieval and no memory extraction for this turn. */
         useMemory: Boolean = true,
         /** False = the prompt contains only this message, not the conversation history. */
-        includeHistory: Boolean = true
+        includeHistory: Boolean = true,
+        /**
+         * Reply emitted INSTEAD of running the turn when a remote Jarvis task
+         * holds the pipeline (it can wait up to 5 min on a card). Voice passes
+         * a localized "busy, please wait" so the owner hears why instead of a
+         * silent first-token timeout. Null = wait for the lock (old behaviour).
+         */
+        busyReply: String? = null
     ): Flow<String> = channelFlow {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return@channelFlow
+        if (busyReply != null && currentRemoteOrigin() == null && remoteTurnActive.get()) {
+            Timber.tag("CHAT").i("Turn refused: a remote task holds the pipeline")
+            send(busyReply)
+            return@channelFlow
+        }
         turnLock.withLock {
         // Remote (Jarvis) turns never touch the owner's shared turn state:
         // no trace-turn stamp, no variable-scope switch, neutral fallback text.
         val remoteTurn = currentRemoteOrigin() != null
+        if (remoteTurn) remoteTurnActive.set(true)
+        try {
         // Pipeline tracing: stamp this turn so every executed tool call
         // carries the spoken prompt (Tool Debug screen).
         if (!remoteTurn) traceStore.beginTurn(trimmed)
@@ -218,7 +239,13 @@ class ChatManager @Inject constructor(
             // Prompt Builder: advertise the available tools so the model
             // NEVER claims it lacks access — the tool list is part of its
             // instructions (mirrors the text-chat pipeline).
-            toolPromptBuilder.advertisement()?.let {
+            // Budgeted to the local model's real context (4096-token models
+            // cannot absorb the full ~11.7K-char list) and routed by the
+            // request, like the typed chat. Cloud turns stay unbounded.
+            toolPromptBuilder.advertisement(
+                maxChars = localAdvertisementBudget(),
+                query = trimmed
+            )?.let {
                 add(ChatPromptMessage(role = "system", content = it))
             }
             historyMessages.forEach { msg ->
@@ -468,7 +495,27 @@ class ChatManager @Inject constructor(
                 }
             }
         }
+        } finally {
+            if (remoteTurn) remoteTurnActive.set(false)
+        }
         } // turnLock
+    }
+
+    /**
+     * Tool-advertisement budget (chars) for this turn: 0 (unlimited) for a
+     * cloud turn, otherwise derived from the loaded model's context and family
+     * cap ([ToolAdvertisementBudget]).
+     */
+    private suspend fun localAdvertisementBudget(): Int {
+        val isCloud = runCatching { cloudGateway.isConfigured() }.getOrDefault(false)
+        if (isCloud) return 0
+        val model = (runCatching { engineRepository.engineState.value }.getOrNull() as? EngineState.Ready)?.model
+        val contextLength = model?.contextLength?.takeIf { it > 0 }
+            ?: io.androllm.core.common.AppConstants.Model.DEFAULT_CONTEXT_LENGTH
+        return ToolAdvertisementBudget.charsFor(
+            contextLength = contextLength,
+            familyCapChars = model?.toolAdvertisementCapChars ?: Int.MAX_VALUE
+        )
     }
 
     /**

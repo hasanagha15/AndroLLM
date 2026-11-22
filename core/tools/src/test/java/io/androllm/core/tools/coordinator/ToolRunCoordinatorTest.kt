@@ -178,4 +178,39 @@ class ToolRunCoordinatorTest {
 
         assertThat(calls).isEqualTo(1)
     }
+
+    @Test
+    fun `SensitiveAppGuard refusal is neither retried nor re-routed to an alternative tool`() = runTest {
+        // Two accessibility tools of the same category/permission: a retryable
+        // failure of ui_click could be re-routed to ui_type. The guard refusal
+        // is non-retryable, so exactly one execution happens.
+        val click = mockk<Tool>()
+        val type = mockk<Tool>()
+        every { click.spec } returns ToolSpec(
+            name = "ui_click", description = "tap",
+            permission = io.androllm.core.tools.api.ToolPermission.ACCESSIBILITY,
+            category = io.androllm.core.tools.api.ToolCategory.DEVICE
+        )
+        every { type.spec } returns ToolSpec(
+            name = "ui_type", description = "type",
+            permission = io.androllm.core.tools.api.ToolPermission.ACCESSIBILITY,
+            category = io.androllm.core.tools.api.ToolCategory.DEVICE
+        )
+        every { registry.get("ui_click") } returns click
+        every { registry.get("ui_type") } returns type
+        every { registry.all() } returns listOf(click, type)
+        val executed = mutableListOf<String>()
+        coEvery { executor.execute(any()) } answers {
+            executed += firstArg<io.androllm.core.tools.api.ToolCall>().name
+            ToolResult.Failure(
+                "UI automation is blocked in com.teslamotors.tesla for safety. Use the dedicated tool.",
+                retryable = false
+            )
+        }
+        val call = CloudToolCall(id = "c1", function = CloudToolCallFunction("ui_click", """{"label":"Unlock"}"""))
+
+        coordinator().executeCloudToolCalls(listOf(call))
+
+        assertThat(executed).containsExactly("ui_click")
+    }
 }

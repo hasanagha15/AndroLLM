@@ -96,7 +96,7 @@ class UiClickTool @Inject constructor(
         return if (result.success) {
             ToolResult.Success(result.message)
         } else {
-            ToolResult.Failure(result.message)
+            ToolResult.Failure(result.message, retryable = result.retryable)
         }
     }
 }
@@ -130,7 +130,7 @@ class UiTypeTool @Inject constructor(
             ?: return ToolResult.Failure("Missing required argument: text")
         val into = ToolArgs.str(arguments, "into", "field")
         val result = controller.type(text, into)
-        return if (result.success) ToolResult.Success(result.message) else ToolResult.Failure(result.message)
+        return if (result.success) ToolResult.Success(result.message) else ToolResult.Failure(result.message, retryable = result.retryable)
     }
 }
 
@@ -160,7 +160,7 @@ class UiScrollTool @Inject constructor(
         if (!controller.isConnected) return ToolResult.Failure(notConnected())
         val direction = ToolArgs.str(arguments, "direction") ?: "down"
         val result = controller.scroll(direction)
-        return if (result.success) ToolResult.Success(result.message) else ToolResult.Failure(result.message)
+        return if (result.success) ToolResult.Success(result.message) else ToolResult.Failure(result.message, retryable = result.retryable)
     }
 }
 
@@ -190,7 +190,7 @@ class UiSwipeTool @Inject constructor(
         if (!controller.isConnected) return ToolResult.Failure(notConnected())
         val direction = ToolArgs.str(arguments, "direction") ?: "down"
         val result = controller.swipe(direction)
-        return if (result.success) ToolResult.Success(result.message) else ToolResult.Failure(result.message)
+        return if (result.success) ToolResult.Success(result.message) else ToolResult.Failure(result.message, retryable = result.retryable)
     }
 }
 
@@ -224,7 +224,7 @@ class UiNavigateTool @Inject constructor(
         val action = ToolArgs.str(arguments, "action", "name")
             ?: return ToolResult.Failure("Missing required argument: action")
         val result = controller.navigate(action)
-        return if (result.success) ToolResult.Success(result.message) else ToolResult.Failure(result.message)
+        return if (result.success) ToolResult.Success(result.message) else ToolResult.Failure(result.message, retryable = result.retryable)
     }
 }
 
@@ -271,7 +271,7 @@ class UiRunTaskTool @Inject constructor(
                 }
             )
         } else {
-            ToolResult.Failure(result.summary)
+            ToolResult.Failure(result.summary, retryable = result.retryable)
         }
     }
 }
