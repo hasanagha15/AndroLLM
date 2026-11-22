@@ -181,6 +181,21 @@ class ToolExecutor @Inject constructor(
                     error = "remote origin, confirmation mode NEVER"
                 )
             }
+            if (spec.name in RemoteToolPolicy.FORBIDDEN) {
+                return finish(
+                    ToolResult.Failure("Refused: '${spec.name}' is not available to remote tasks.", retryable = false),
+                    error = "remote origin, tool forbidden"
+                )
+            }
+            if (RemoteToolPolicy.hasOversizedArgument(call)) {
+                return finish(
+                    ToolResult.Failure(
+                        "Refused: an argument is longer than ${RemoteToolPolicy.MAX_ARG_CHARS} characters and could not be shown in full for confirmation.",
+                        retryable = false
+                    ),
+                    error = "remote origin, oversized argument"
+                )
+            }
             if (RemoteToolPolicy.targetsOwnApp(call, remote)) {
                 return finish(
                     ToolResult.Failure("Refused: remote tasks may not operate the AndroLLM app itself.", retryable = false),
@@ -189,7 +204,8 @@ class ToolExecutor @Inject constructor(
             }
         }
         val mustConfirm = if (remote != null) {
-            !RemoteToolPolicy.isAutoAllowed(spec)
+            // Never softer than the owner's own setting ("Always" is honoured).
+            !RemoteToolPolicy.isAutoAllowed(spec) || settings.shouldConfirm(spec.requiresConfirmation)
         } else {
             settings.shouldConfirm(spec.requiresConfirmation)
         }
@@ -197,7 +213,7 @@ class ToolExecutor @Inject constructor(
             val base = buildConfirmation(call, spec)
             val confirmation = if (remote == null) base else base.copy(
                 toolDisplayName = "${remote.label} · ${base.toolDisplayName}",
-                actionSummary = "Run ${base.toolDisplayName} — ${RemoteToolPolicy.describeArguments(call)}",
+                actionSummary = "Run ${base.toolDisplayName}:\n${RemoteToolPolicy.describeArguments(call)}",
                 remoteOrigin = remote.label
             )
             val approved = confirmationManager.awaitDecision(confirmation)

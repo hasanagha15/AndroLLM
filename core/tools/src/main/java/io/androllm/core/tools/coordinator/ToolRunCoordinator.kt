@@ -15,6 +15,9 @@ import io.androllm.core.tools.clarification.ClarificationEngine
 import io.androllm.core.tools.executor.ToolExecutor
 import io.androllm.core.tools.monitoring.ToolHealthMonitor
 import io.androllm.core.tools.monitoring.ToolRanker
+import io.androllm.core.tools.origin.currentRemoteOrigin
+import io.androllm.core.tools.origin.setForCurrentOrigin
+import io.androllm.core.tools.origin.snapshotForCurrentOrigin
 import io.androllm.core.tools.planner.ToolPlanner
 import io.androllm.core.tools.registry.ToolRegistry
 import io.androllm.core.tools.settings.AutomationSettingsStore
@@ -97,7 +100,7 @@ class ToolRunCoordinator @Inject constructor(
      * model plans with the real device state.
      */
     suspend fun agentContextMessage(): ChatPromptMessage? {
-        val msg = agentContext.systemMessage()
+        val msg = agentContext.systemMessageForCurrentOrigin()
         return if (msg.content.isBlank()) null else msg
     }
 
@@ -361,7 +364,8 @@ class ToolRunCoordinator @Inject constructor(
                 break
             }
             if (specForValidation?.dependencies?.isNotEmpty() == true) {
-                val missingDeps = specForValidation.dependencies.filter { dep -> !variableStore.snapshot().containsKey(dep) && results.none { it.call.name == dep && it.result.isSuccess } }
+                val vars = variableStore.snapshotForCurrentOrigin()
+                val missingDeps = specForValidation.dependencies.filter { dep -> !vars.containsKey(dep) && results.none { it.call.name == dep && it.result.isSuccess } }
                 if (missingDeps.isNotEmpty()) {
                     Timber.w("ToolRunCoordinator: dependency unsatisfied for '${call.name}' missing $missingDeps — deferring")
                     // Do not fail entire workflow; the planner will reorder in next round
@@ -509,17 +513,19 @@ class ToolRunCoordinator @Inject constructor(
         return null // null = no conditional decision, proceed
     }
 
-    private fun storeToolResultMemory(toolName: String, output: String) {
+    private suspend fun storeToolResultMemory(toolName: String, output: String) {
+        // Remote turns write into their own RemoteToolOrigin scope, never the owner's.
+        val set: suspend (String, String) -> Unit = { k, v -> variableStore.setForCurrentOrigin(k, v) }
         try {
             // Store as workflow variable so next round's planner and next tool receive it automatically
             // Tool Result Memory: every completed call becomes temporary working memory (never re-call unless required)
-            variableStore.set(toolName, output.take(800))
-            variableStore.set("last_${toolName}_output", output.take(800))
+            set(toolName, output.take(800))
+            set("last_${toolName}_output", output.take(800))
             // Also generic last output
-            variableStore.set("last_tool_output", output.take(800))
+            set("last_tool_output", output.take(800))
             // For search results, also store under search_results for SMS draft consumption
-            if (toolName == "search_web") variableStore.set("search_results", output.take(1000))
-            if (toolName == "get_weather") variableStore.set("weather", output.take(500))
+            if (toolName == "search_web") set("search_results", output.take(1000))
+            if (toolName == "get_weather") set("weather", output.take(500))
         } catch (_: Exception) { /* best-effort */ }
     }
 
@@ -561,7 +567,7 @@ class ToolRunCoordinator @Inject constructor(
         // ── Streaming: Planning… (users should never wonder if app froze)
         onActivity("Planning…")
         val plan = try {
-            agentPlanner.createPlan(originalRequest, enabledSpecs, messages.joinToString("\n") { it.content ?: "" }, variableStore.snapshot(), developerMode)
+            agentPlanner.createPlan(originalRequest, enabledSpecs, messages.joinToString("\n") { it.content ?: "" }, variableStore.snapshotForCurrentOrigin(), developerMode)
         } catch (e: Exception) {
             Timber.w(e, "ToolRunCoordinator: agent planner failed — falling back to LLM planner only")
             null
@@ -764,7 +770,9 @@ class ToolRunCoordinator @Inject constructor(
             }
         }
 
-        val requiresConfirmation = spec?.requiresConfirmation == true
+        // Remote-origin calls are confirmation-gated by policy even when the spec
+        // is not: never retry/re-route them (that would raise a second card).
+        val requiresConfirmation = spec?.requiresConfirmation == true || currentRemoteOrigin() != null
         var result = executor.execute(call)
         var retries = 0
         // NEVER retry tools that run behind the confirmation gate (a retry

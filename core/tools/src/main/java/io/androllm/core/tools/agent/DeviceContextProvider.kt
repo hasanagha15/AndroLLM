@@ -34,15 +34,20 @@ class DeviceContextProvider @Inject constructor(
 
     private val timeFormat = SimpleDateFormat("EEE, MMM d, yyyy • h:mm a", Locale.US)
 
-    /** Renders the facts as "key: value" lines, newest-important first. */
-    fun collect(): List<String> {
+    /**
+     * Renders the facts as "key: value" lines, newest-important first.
+     * [includePrivate] = false drops clipboard and foreground app (remote turns).
+     */
+    fun collect(includePrivate: Boolean = true): List<String> {
         val facts = mutableListOf<String>()
         runCatching {
             facts += "time: ${timeFormat.format(Date())}"
         }
         batteryFacts()?.let { facts += it }
-        clipboardFacts()?.let { facts += "clipboard: $it" }
-        foregroundApp()?.let { facts += "current_app: $it" }
+        if (includePrivate) {
+            clipboardFacts()?.let { facts += "clipboard: $it" }
+            foregroundApp()?.let { facts += "current_app: $it" }
+        }
         runCatching {
             facts += "device: ${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, API ${Build.VERSION.SDK_INT})"
         }

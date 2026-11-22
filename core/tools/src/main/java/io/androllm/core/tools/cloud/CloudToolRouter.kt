@@ -4,6 +4,7 @@ import io.androllm.core.cloud.model.CloudChatMessage
 import io.androllm.core.cloud.model.CloudTool
 import io.androllm.core.cloud.model.CloudToolCall
 import io.androllm.core.cloud.model.CloudToolCallFunction
+import io.androllm.core.tools.origin.snapshotForCurrentOrigin
 import io.androllm.core.tools.agent.AgentPlanner
 import io.androllm.core.tools.agent.AgentVariableStore
 import io.androllm.core.tools.api.ToolEvent
@@ -125,7 +126,7 @@ class CloudToolRouter @Inject constructor(
         }
 
         // ── Conditional gating: skip calls whose user-stated condition is false ──
-        val observations = variableStore.snapshot()
+        val observations = variableStore.snapshotForCurrentOrigin()
         val executable = mutableListOf<CloudToolCall>()
         val skips = mutableListOf<CloudConditionalSkip>()
         for (call in calls) {

@@ -65,14 +65,23 @@ class WebSearchTool @Inject constructor(
         category = ToolCategory.INFORMATION
     )
 
+    /**
+     * Search requests never follow redirects: DuckDuckGo answers "!bang"
+     * queries with a 303 to an arbitrary third-party site, which would turn a
+     * "search" into a GET to any host carrying model-chosen text.
+     */
+    private val searchClient: HttpClient by lazy { httpClient.config { followRedirects = false } }
+
     override suspend fun execute(arguments: JsonObject): ToolResult {
-        val query = ToolArgs.str(arguments, "query", "q")
+        val rawQuery = ToolArgs.str(arguments, "query", "q")
             ?: return ToolResult.Failure("Missing required argument: query")
+        val query = rawQuery.trim()
+        rejectReason(query)?.let { return ToolResult.Failure(it, retryable = false) }
         val startedAt = System.currentTimeMillis()
 
         // Provider 1 — Instant Answer (facts/definitions).
         var results = runCatching {
-            val body = fetch("https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&t=androllm&q=${query.encoded()}")
+            val body = fetch("https://api.duckduckgo.com/?format=json&no_html=1&no_redirect=1&skip_disambig=1&t=androllm&q=${query.encoded()}")
             WebSearchParser.parseInstantAnswer(body)
         }.onFailure { t ->
             Timber.w(t, "WebSearchTool: instant-answer provider failed — trying HTML provider")
@@ -154,7 +163,7 @@ class WebSearchTool @Inject constructor(
     }
 
     private suspend fun fetch(url: String): String {
-        val resp = httpClient.get(url) {
+        val resp = searchClient.get(url) {
             // A browser-ish UA keeps the HTML endpoint from blocking bots.
             header(HttpHeaders.UserAgent, "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Mobile Safari/537.36")
         }
@@ -164,4 +173,17 @@ class WebSearchTool @Inject constructor(
     }
 
     private fun String.encoded(): String = java.net.URLEncoder.encode(this, "UTF-8")
+
+    companion object {
+        const val MAX_QUERY_CHARS = 300
+        private val BANG = Regex("""(^|\s)[!\\]\S""")
+
+        /** Non-null = the query is refused (bang/redirect syntax, oversized, blank). */
+        fun rejectReason(query: String): String? = when {
+            query.isEmpty() -> "Missing required argument: query"
+            query.length > MAX_QUERY_CHARS -> "Search query is longer than $MAX_QUERY_CHARS characters."
+            BANG.containsMatchIn(query) -> "Search queries may not use '!' or '\\' redirect shortcuts."
+            else -> null
+        }
+    }
 }
