@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Network to tesla-bridge (HTTPS) and the WhatsApp bot (LAN). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Glasses mirror: a notification the Even app forwards to the G2. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+</manifest>
