@@ -113,7 +113,9 @@ class ToolConfirmationManager @Inject constructor() {
         _pending.value = confirmation
         return try {
             // Remote confirmations need an explicit tap — never a spoken "yes".
-            val responder = if (confirmation.remoteOrigin != null) null else voiceResponder
+            // Car / messaging / glasses actions are tap-only too: a spoken reply
+            // can be misheard (whisper noise words), so it never approves them.
+            val responder = if (isTapOnly(confirmation)) null else voiceResponder
             if (responder == null) {
                 withTimeoutOrNull(CONFIRMATION_TIMEOUT_MS) { deferred.await() } ?: false
             } else {
@@ -169,6 +171,12 @@ class ToolConfirmationManager @Inject constructor() {
     companion object {
         /** How long a chat confirmation card stays live before auto-denying. */
         const val CONFIRMATION_TIMEOUT_MS = 300_000L
+
+        /** Tools whose confirmation may only be given by tapping the card. */
+        val TAP_ONLY_TOOLS: Set<String> = setOf("tesla_command", "whatsapp_reply", "glasses_show_text")
+
+        fun isTapOnly(confirmation: PendingToolConfirmation): Boolean =
+            confirmation.remoteOrigin != null || confirmation.toolName in TAP_ONLY_TOOLS
     }
 }
 

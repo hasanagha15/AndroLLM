@@ -119,4 +119,31 @@ class ToolConfirmationManagerTest {
         val conf = buildConfirmation(call, spec)
         assertThat(conf.speakableQuestion).contains("+919876543210")
     }
+
+    @Test
+    fun `car messaging and glasses tools are tap-only and ignore a spoken yes`() = runBlocking {
+        for (tool in listOf("tesla_command", "whatsapp_reply", "glasses_show_text")) {
+            val manager = ToolConfirmationManager()
+            var asked = false
+            manager.setVoiceResponder { asked = true; true }
+            val c = confirmation("tap-$tool").copy(toolName = tool)
+            val result = CompletableDeferred<Boolean>()
+            val job = launch { result.complete(manager.awaitDecision(c)) }
+            while (manager.pending.value == null) kotlinx.coroutines.yield()
+            kotlinx.coroutines.delay(200)
+            assertThat(result.isCompleted).isFalse()
+            manager.deny("tap-$tool")
+            job.join()
+            assertThat(result.await()).isFalse()
+            assertThat(asked).isFalse()
+            manager.setVoiceResponder(null)
+        }
+    }
+
+    @Test
+    fun `isTapOnly covers remote origin and listed tools only`() {
+        assertThat(ToolConfirmationManager.isTapOnly(confirmation("a"))).isFalse()
+        assertThat(ToolConfirmationManager.isTapOnly(confirmation("b").copy(toolName = "tesla_command"))).isTrue()
+        assertThat(ToolConfirmationManager.isTapOnly(confirmation("c").copy(remoteOrigin = "Jarvis"))).isTrue()
+    }
 }
