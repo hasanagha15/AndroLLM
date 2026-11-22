@@ -146,6 +146,7 @@ dependencies {
     implementation(project(":core:tools"))
     implementation(project(":core:accessibility"))
     implementation(project(":core:mcp"))
+    implementation(project(":core:jarvistools"))
     // Direct dependency (not just via feature:setup) so the app's Hilt
     // aggregation deterministically sees PermissionModule; a missed module
     // silently injects an empty handler set (blank Permissions & Access).

@@ -91,6 +91,7 @@ class AccessibilityController @Inject constructor(
         val settings = settingsStore.current()
         val root = onMain { service?.rootInActiveWindow }
         if (root == null) return UiActionResult.fail(notConnected())
+        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.fail(it) }
         var node = onMain { LiveTree.find(root, selector) }
         var scrolls = 0
         while (node == null && settings.autoScrollIntoView && scrolls < maxScrolls) {
@@ -114,6 +115,7 @@ class AccessibilityController @Inject constructor(
     /** Double-taps the element matching [selector] (e.g. Maps zoom). */
     suspend fun doubleTap(selector: UiSelector): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
+        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.fail(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
         val bounds = android.graphics.Rect()
@@ -128,6 +130,7 @@ class AccessibilityController @Inject constructor(
      */
     suspend fun drag(selector: UiSelector, dx: Float, dy: Float): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
+        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.fail(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
         val bounds = android.graphics.Rect()
@@ -153,6 +156,7 @@ class AccessibilityController @Inject constructor(
     /** Long-presses the element matching [selector]. */
     suspend fun longClick(selector: UiSelector): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
+        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.fail(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
         val bounds = android.graphics.Rect()
@@ -164,6 +168,7 @@ class AccessibilityController @Inject constructor(
     /** Types [text] into the focused field, or the field matching [into]. */
     suspend fun type(text: String, into: String?): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
+        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.fail(it) }
         val field = onMain {
             if (into != null) {
                 LiveTree.find(root, UiSelector(textContains = into, type = UiElementType.TEXT_FIELD))

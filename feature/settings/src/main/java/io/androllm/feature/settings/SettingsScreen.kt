@@ -587,6 +587,7 @@ fun SettingsScreen(
                         onRemove = { viewModel.removeMcpServer(it) },
                         onToggle = { server, enabled -> viewModel.setMcpServerEnabled(server, enabled) }
                     )
+                    JarvisToolsSettingsCard() // branch C: Jarvis tools (Tesla / WhatsApp / G2)
                 }
 
                 settingsAccordionItem(

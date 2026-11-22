@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Branch C (core/jarvistools). Merged into the app via this module's manifest.
+  base-config keeps the app's previous behaviour (the app manifest sets usesCleartextTraffic="true",
+  which Android ignores once a network security config exists), so nothing else changes.
+  Scoped rules for the Jarvis tools:
+   - tesla.lilab.ai: HTTPS only, enforced by the OS (the token can never go out in cleartext);
+   - pi-vision Tailscale MagicDNS name: the ONLY cleartext host for the WhatsApp bot
+     (WireGuard-encrypted inside the tailnet; the name does not resolve outside it).
+  The app code enforces the same (BaseUrlPolicy).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">tesla.lilab.ai</domain>
+    </domain-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">pi-vision.example.ts.net</domain>
+    </domain-config>
+</network-security-config>
