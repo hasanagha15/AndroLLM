@@ -13,6 +13,8 @@ import java.io.InputStream
 import java.nio.file.Files
 import java.security.MessageDigest
 import kotlin.random.Random
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
@@ -137,6 +139,7 @@ class DownloadAndExtractTest {
         data class F(val name: String, val data: ByteArray) : E()
         data class D(val name: String) : E()
         data class Sym(val name: String, val target: String) : E()
+        data class Special(val name: String, val flag: Byte) : E()
     }
 
     private fun tarBz2(entries: List<E>): ByteArray {
@@ -153,6 +156,9 @@ class DownloadAndExtractTest {
                     is E.Sym -> {
                         val te = TarArchiveEntry(e.name, TarArchiveEntry.LF_SYMLINK).apply { linkName = e.target }
                         tar.putArchiveEntry(te); tar.closeArchiveEntry()
+                    }
+                    is E.Special -> {
+                        tar.putArchiveEntry(TarArchiveEntry(e.name, e.flag)); tar.closeArchiveEntry()
                     }
                 }
             }
@@ -232,5 +238,44 @@ class DownloadAndExtractTest {
             SafeTarBz2.extract(a, staging, "$root/", TarLimits(maxTotalBytes = 1_000_000, maxEntryBytes = 10_000_000))
         }
         assertThat(staging.exists()).isFalse()
+    }
+
+    // ── re-gate Р2/Р3 + concurrency ──────────────────────────────────────────
+
+    @Test fun `char device, block device and fifo entries abort extraction`() {
+        listOf(TarArchiveEntry.LF_CHR, TarArchiveEntry.LF_BLK, TarArchiveEntry.LF_FIFO).forEach { flag ->
+            val archive = tarBz2(goodEntries() + E.Special("$root/dev", flag))
+            val a = File(tmp, "dev.tar.bz2").apply { writeBytes(archive) }
+            val staging = File(tmp, "staging")
+            assertThrows(IOException::class.java) { SafeTarBz2.extract(a, staging, "$root/") }
+            assertThat(staging.exists()).isFalse()
+        }
+    }
+
+    @Test fun `stale partial downloads from a killed process are removed before the next download`() =
+        runBlocking<Unit> {
+            val dir = File(tmp, "whisper").apply { mkdirs() }
+            File(dir, "dl-ggml-small-q8_0.bin.123.part").writeBytes(ByteArray(1000))
+            File(dir, "dl-other.456.part").writeBytes(ByteArray(10))
+            File(dir, "keep.txt").writeText("x")
+            val data = Random(7).nextBytes(50_000)
+            val model = fakeModel(data)
+            serve(data)
+            WhisperModelManager { dir }.download(model)
+            assertThat(dir.listFiles()!!.map { it.name }.sorted()).containsExactly("ggml-fake.bin", "keep.txt")
+        }
+
+    @Test fun `two concurrent downloads of one model use one connection and both succeed`() = runBlocking<Unit> {
+        val dir = File(tmp, "whisper")
+        val mgr = WhisperModelManager { dir }
+        val data = Random(8).nextBytes(300_000)
+        val model = fakeModel(data)
+        serve(data)
+        val a = async(Dispatchers.IO) { mgr.download(model) }
+        val b = async(Dispatchers.IO) { mgr.download(model) }
+        a.await(); b.await()
+        assertThat(connections).isEqualTo(1)
+        assertThat(File(dir, "ggml-fake.bin").readBytes()).isEqualTo(data)
+        assertThat(dir.listFiles()!!.map { it.name }).containsExactly("ggml-fake.bin")
     }
 }

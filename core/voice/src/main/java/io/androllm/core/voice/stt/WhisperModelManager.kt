@@ -60,6 +60,8 @@ class WhisperModelManager internal constructor(private val dirProvider: () -> Fi
         onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> }
     ) = mutex.withLock {
         withContext(Dispatchers.IO) {
+            VerifiedDownload.cleanStaleTemps(modelsDir).takeIf { it > 0 }
+                ?.let { Timber.i("removed $it stale partial download(s)") }
             if (isInstalled(model)) return@withContext
             modelsDir.mkdirs()
             val free = freeBytes()

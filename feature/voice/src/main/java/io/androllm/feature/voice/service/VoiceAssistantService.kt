@@ -400,7 +400,7 @@ class VoiceAssistantService : Service() {
         var framesCount = 0L
 
         while (currentCoroutineContext().isActive) {
-            val settings = voiceSettingsStore.current()
+            var settings = voiceSettingsStore.current()
             if (!settings.enabled) break
             if (settings.chargingOnly && !isCharging()) break
 
@@ -441,6 +441,10 @@ class VoiceAssistantService : Service() {
                 if (settings.playStartSound) VoiceSounds.playStart()
             }
             resumeListening = false
+            // Settings may have changed while we waited (possibly hours) for the
+            // wake word — e.g. voice language EN -> RU. Record + answer this turn
+            // with a fresh snapshot so the first utterance already uses it.
+            settings = voiceSettingsStore.current()
 
             // ── LISTEN / RECORDING (Whisper.cpp) ──
             Timber.i("STATE: STARTING STT -> Listening for user speech")
@@ -588,6 +592,7 @@ class VoiceAssistantService : Service() {
     private suspend fun awaitUtterance(
         rec: AudioRecorder,
         settings: VoiceSettings,
+        requireSpeech: Boolean = false,
         onAudioStats: (rms: Float, maxAmp: Float) -> Unit
     ): String? {
         val session = try {
@@ -747,6 +752,13 @@ class VoiceAssistantService : Service() {
             stopReason, durationMs, chunkCount, avgRms, peakAmp, firstSpeechAt, session.sampleCount
         )
 
+        // No speech detected: never transcribe — whisper invents short words on
+        // silence/noise ("Okay.", "Ага.") that must not become a "yes".
+        if (!VoiceTurnPolicy.shouldDecode(stopReason, sawSpeech, requireSpeech)) {
+            session.release()
+            Timber.tag("STT").i("RAW TRANSCRIPT: '' | no speech detected — not transcribed")
+            return ""
+        }
         val result = runCatching { session.finish() }.getOrElse {
             Timber.e(it, "STT: transcription failed")
             null
@@ -1132,7 +1144,9 @@ class VoiceAssistantService : Service() {
             if (interrupted || cancelRequested) return null
             // Listen once for a yes/no answer.
             controller.setPhase(VoicePhase.RECEIVING_AUDIO)
-            val reply = awaitUtterance(rec, settings) { _, _ -> }
+            // requireSpeech: a reply with no detected speech is never decoded
+            // (whisper noise words like "Okay." must not approve an action).
+            val reply = awaitUtterance(rec, settings, requireSpeech = true) { _, _ -> }
             Timber.i("Confirmation reply: '%s' for %s", reply?.take(40), conf.toolName)
             if (cancelRequested) return null
             // A silent/no-speech reply abstains too — the card can still

@@ -109,6 +109,8 @@ class TtsVoiceManager internal constructor(private val rootProvider: () -> File)
         onProgress: (downloaded: Long, total: Long) -> Unit = { _, _ -> }
     ) = mutex.withLock {
         withContext(Dispatchers.IO) {
+            VerifiedDownload.cleanStaleTemps(rootDir).takeIf { it > 0 }
+                ?.let { Timber.i("removed $it stale partial download(s)") }
             if (isInstalled(voice)) return@withContext
             val archive = VerifiedDownload.fetchVerified(
                 url = voice.url,

@@ -64,7 +64,23 @@ class WhisperSpeechRecognizer @Inject constructor(
      * language/model change applies on the next utterance of a running
      * assistant. Cheap when nothing changed (settings read + size checks).
      */
-    override suspend fun ensureInitialized(): Boolean {
+    /** Loads model files; replaceable in unit tests (native lib is absent on the JVM). */
+    internal var contextLoader: (String) -> WhisperContext = { WhisperContext.fromFile(it) }
+
+    /** Whisper language actually used by the last session (debug UI + tests). */
+    @Volatile var lastSessionLanguage: String? = null
+        private set
+
+    override suspend fun ensureInitialized(): Boolean = prepare() != null
+
+    /**
+     * Reads the CURRENT settings once, makes sure the matching model is loaded
+     * and returns that snapshot's voice language (null = no usable model).
+     * The session language comes from this same snapshot, so model and
+     * language can never disagree and a change made while the assistant waited
+     * for the wake word applies to the very first utterance.
+     */
+    private suspend fun prepare(): String? {
         return loadMutex.withLock {
             val settings = settingsStore.current()
             val language = VoiceLanguage.fromCode(settings.sttLanguage)
@@ -82,9 +98,9 @@ class WhisperSpeechRecognizer @Inject constructor(
                             "download a multilingual model in Settings",
                         language.code, settings.whisperModel
                     )
-                    false
+                    null
                 }
-                is WhisperLoadPlan.Keep -> true
+                is WhisperLoadPlan.Keep -> settings.sttLanguage
                 is WhisperLoadPlan.Load -> {
                     val file = modelManager.modelFile(plan.model)
                     loaded?.let { old ->
@@ -93,16 +109,16 @@ class WhisperSpeechRecognizer @Inject constructor(
                         Timber.i("$TAG: unloaded ${old.model.id} (switching to ${plan.model.id})")
                     }
                     try {
-                        val ctx = WhisperContext.fromFile(file.absolutePath)
+                        val ctx = contextLoader(file.absolutePath)
                         loaded = Loaded(ctx, plan.model, file.absolutePath)
                         Timber.i(
                             "$TAG: loaded ${file.name} (${file.length() / (1024 * 1024)} MB) for language=%s",
                             language.code
                         )
-                        true
+                        settings.sttLanguage
                     } catch (t: Throwable) {
                         Timber.e(t, "$TAG: model init failed")
-                        false
+                        null
                     }
                 }
             }
@@ -118,15 +134,19 @@ class WhisperSpeechRecognizer @Inject constructor(
         maxSeconds: Int,
         streamingEnabled: Boolean
     ): SpeechRecognitionSession {
-        if (!ensureInitialized()) {
-            throw NoWhisperModelException(VoiceLanguage.fromCode(language).code)
+        val current = prepare()
+            ?: throw NoWhisperModelException(VoiceLanguage.fromCode(settingsStore.current().sttLanguage).code)
+        val l = loaded ?: throw NoWhisperModelException(VoiceLanguage.fromCode(current).code)
+        if (current != language) {
+            Timber.i("$TAG: session language from current settings '%s' (caller passed '%s')", current, language)
         }
-        val l = loaded ?: throw NoWhisperModelException(VoiceLanguage.fromCode(language).code)
+        val effective = VoiceLanguagePolicy.effectiveWhisperLanguage(current, l.model.multilingual)
+        lastSessionLanguage = effective
         val threads = if (numThreads > 0) numThreads else WhisperCpuConfig.preferredThreadCount
         return WhisperSession(
             context = l.context,
             params = WhisperParams(
-                language = VoiceLanguagePolicy.effectiveWhisperLanguage(language, l.model.multilingual),
+                language = effective,
                 translate = translate,
                 numThreads = threads,
                 beamSize = beamSize,

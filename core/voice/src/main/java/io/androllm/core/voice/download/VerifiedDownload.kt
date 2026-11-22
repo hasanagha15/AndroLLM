@@ -22,7 +22,7 @@ object VerifiedDownload {
 
     /** Opens [url] (redirects followed) and fails on non-2xx. Replaceable in tests. */
     @Volatile
-    var opener: (String) -> InputStream = { url ->
+    internal var opener: (String) -> InputStream = { url ->
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.instanceFollowRedirects = true
         conn.connectTimeout = 20_000
@@ -92,6 +92,17 @@ object VerifiedDownload {
         }
     }
 
+    /**
+     * Deletes temp files left by downloads interrupted by a process kill
+     * (`dl-*.part`). Call under the manager's download mutex, before a new
+     * download, so it can never delete a temp file that is being written.
+     */
+    fun cleanStaleTemps(dir: File): Int {
+        val stale = dir.listFiles { f -> f.isFile && f.name.startsWith("dl-") && f.name.endsWith(".part") }
+            ?: return 0
+        return stale.count { it.delete() }
+    }
+
     private class DisconnectingInputStream(private val conn: HttpURLConnection) :
         java.io.FilterInputStream(conn.inputStream) {
         override fun close() {
@@ -127,9 +138,11 @@ object SafeTarBz2 {
                 while (true) {
                     val entry = tar.nextEntry ?: break
                     if (++entries > limits.maxEntries) throw IOException("Archive has too many entries")
-                    val regularFile = entry.isFile && !entry.isSymbolicLink && !entry.isLink
+                    // commons-compress isFile() is true for links, devices and FIFOs too.
+                    val regularFile = entry.isFile && !entry.isSymbolicLink && !entry.isLink &&
+                        !entry.isCharacterDevice && !entry.isBlockDevice && !entry.isFIFO
                     if (!entry.isDirectory && !regularFile) {
-                        throw IOException("Unsupported tar entry type (link/device): ${entry.name}")
+                        throw IOException("Unsupported tar entry type (link/device/fifo): ${entry.name}")
                     }
                     val rel = TarPaths.relativeInside(entry.name, rootPrefix) ?: continue
                     val target = File(staging, rel)
