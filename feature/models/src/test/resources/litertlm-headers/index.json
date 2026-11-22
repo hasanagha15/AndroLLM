@@ -1,0 +1,50 @@
+{
+  "litertlm-qwen3-4b-instruct-2507": {
+    "file": "litertlm-qwen3-4b-instruct-2507.header.bin",
+    "revision": "9dc4dd564e5c27452a8237d7725a78f228e1486a",
+    "fileName": "qwen3_4b_instruct_2507_mixed_int4.litertlm",
+    "sha256": "9e48b165836256f5344d9d044930607b9c47f6ef34e27f82e96881664f3ba2fd",
+    "llmMetadataSha256": "2867e10469b6b2f1a808bd0ac46db8bbc8167757edaf24dd53fa609beb03c485",
+    "llmMetadataBytes": 2794
+  },
+  "litertlm-qwen3.5-2b": {
+    "file": "litertlm-qwen3.5-2b.header.bin",
+    "revision": "4e5cdbd47c29043a1ff432d71b8668aaa9d200b0",
+    "fileName": "Qwen3.5-2B_int8.litertlm",
+    "sha256": "fa4ac3259404567c7f82533746549eed94e2e1c8222095706c63cce17653c68a",
+    "llmMetadataSha256": "edc4ab993144df3f8a5e9833c3db500ffe9ef8e2b57ae19db7ad8a9e03c6fdc4",
+    "llmMetadataBytes": 729
+  },
+  "litertlm-qwen3.5-4b-int4": {
+    "file": "litertlm-qwen3.5-4b-int4.header.bin",
+    "revision": "190cd3223e7701c271c927fe84f1fa66b498f79d",
+    "fileName": "Qwen3.5-4B_mixed_int4.litertlm",
+    "sha256": "7243c33c9c6192150ab6da7ac13a9efdc24ff1a653eabc93b2757de4b44b012a",
+    "llmMetadataSha256": "7fc50e38ed0bcdebf42fde57a216193962c14271ddfbaac466c68d4cd3601691",
+    "llmMetadataBytes": 4314
+  },
+  "litertlm-ministral-3-3b-instruct": {
+    "file": "litertlm-ministral-3-3b-instruct.header.bin",
+    "revision": "613e437fea973ca9e04a4063953ee514f1d4075e",
+    "fileName": "Ministral-3-3B-Instruct-2512_q4_block32_ekv4096.litertlm",
+    "sha256": "57daeeb4d7127fbea4aa4585cbc2aaa4df2ea828f142f081e73823e1e467803e",
+    "llmMetadataSha256": "3243044599fbef57bfbaae0857f18e40dd3a0a0b59a6165d7f612ac74d1c8adf",
+    "llmMetadataBytes": 3925
+  },
+  "litertlm-falcon-h1-3b-instruct": {
+    "file": "litertlm-falcon-h1-3b-instruct.header.bin",
+    "revision": "5979909b36447edc3b685e7ad93101ab9acb5a43",
+    "fileName": "Falcon-H1-3B-Instruct_int8.litertlm",
+    "sha256": "3cb8e6c4be5169859ffd2bee38469c3ccf997efce1d73fb81fc9e3e652113575",
+    "llmMetadataSha256": "21f14088c38dbbcaa5560d86d6a8739e9ebef002afbffc26b6c6ac0d6e3d42d4",
+    "llmMetadataBytes": 1595
+  },
+  "litertlm-qwen3-4b": {
+    "file": "litertlm-qwen3-4b.header.bin",
+    "revision": "84cc5a35c9c65cd18fcd65bb1f3a7d77a4acfe6e",
+    "fileName": "qwen3_4b_mixed_int4.litertlm",
+    "sha256": "f0794bc77efeaaf4f7af815f04c483b19b8f2ae4a102cef1b7b760a25848a18e",
+    "llmMetadataSha256": "324a53f7b396004f2c8a6b87c2c22576c3ded4b172999e7d3991427e2e42cc33",
+    "llmMetadataBytes": 4332
+  }
+}

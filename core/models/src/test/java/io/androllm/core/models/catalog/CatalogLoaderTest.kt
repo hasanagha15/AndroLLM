@@ -144,6 +144,56 @@ class CatalogLoaderTest {
         assertTrue(state.warnings.any { it.contains("not pinned") })
     }
 
+    // ---- fork: Gate D N6/N8 ----
+
+    @Test
+    fun emptySavedCatalogDoesNotHideTheBundledModels() {
+        val emptySaved = """{"schemaVersion":2,"generatedAt":300,"models":[]}"""
+        val state = CatalogLoader.load(emptySaved, catalogJson(model("bundled-1"), generatedAt = 200), nowMs = 1_000)
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.BUNDLED, state.source)
+    }
+
+    @Test
+    fun emptyRemoteCatalogIsRejected() {
+        val state = CatalogLoader.apply("""{"schemaVersion":2,"generatedAt":1,"models":[]}""", CatalogSource.REMOTE, 1_000)
+        assertTrue((state as CatalogState.Failed).message.contains("no models"))
+    }
+
+    @Test
+    fun futureDatedCatalogIsRejectedAsSavedAndRemote() {
+        val now = 1_800_000_000_000L
+        val future = catalogJson(model("future"), generatedAt = now + CatalogLoader.MAX_FUTURE_SKEW_MS + 1)
+        assertTrue(CatalogLoader.apply(future, CatalogSource.REMOTE, now) is CatalogState.Failed)
+        val state = CatalogLoader.load(future, catalogJson(model("bundled-1"), generatedAt = 1), now)
+        state as CatalogState.Ready
+        assertEquals("bundled-1", state.catalog.models.first().id)
+        // Within the one-day skew allowance it is still accepted.
+        val nearFuture = catalogJson(model("near"), generatedAt = now + 60_000)
+        assertTrue(CatalogLoader.apply(nearFuture, CatalogSource.REMOTE, now) is CatalogState.Ready)
+    }
+
+    @Test
+    fun equalDatesPreferTheSavedCatalog() {
+        val state = CatalogLoader.load(
+            catalogJson(model("saved"), generatedAt = 500),
+            catalogJson(model("bundled"), generatedAt = 500),
+            nowMs = 1_000
+        )
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.SAVED, state.source)
+    }
+
+    @Test
+    fun remoteUpdateNeverMovesBackwards() {
+        val older = CatalogFile(schemaVersion = 2, generatedAt = 100)
+        val newer = CatalogFile(schemaVersion = 2, generatedAt = 200)
+        assertTrue(CatalogLoader.isAcceptableUpdate(null, older))
+        assertTrue(CatalogLoader.isAcceptableUpdate(older, newer))
+        assertTrue(CatalogLoader.isAcceptableUpdate(newer, newer))
+        assertTrue(!CatalogLoader.isAcceptableUpdate(newer, older))
+    }
+
     private companion object {
         const val PIN = "0123456789abcdef0123456789abcdef01234567"
     }

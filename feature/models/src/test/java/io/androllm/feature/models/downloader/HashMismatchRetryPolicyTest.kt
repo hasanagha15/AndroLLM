@@ -89,4 +89,22 @@ class HashMismatchRetryPolicyTest {
         assertTrue(msg.contains("bbbbbbbbbbbbbbbb"))
         assertTrue(msg.contains("automatic retries are stopped"))
     }
+
+    // ---- Gate D, N5: pre-download sha check via preflight X-Linked-ETag ----
+
+    @Test
+    fun serverShaDifferentFromCatalogStopsBeforeDownloading() {
+        val msg = HashMismatchRetryPolicy.serverMismatchMessage("Qwen3 4B", sha, "b".repeat(64))
+        assertTrue(msg!!.contains("nothing was downloaded"))
+        assertTrue(msg.contains("bbbbbbbbbbbbbbbb"))
+    }
+
+    @Test
+    fun matchingOrUnknownShaLetsTheDownloadStart() {
+        assertEquals(null, HashMismatchRetryPolicy.serverMismatchMessage("m", sha, sha.uppercase()))
+        assertEquals(null, HashMismatchRetryPolicy.serverMismatchMessage("m", sha, "\"$sha\""))
+        assertEquals(null, HashMismatchRetryPolicy.serverMismatchMessage("m", sha, null))
+        assertEquals(null, HashMismatchRetryPolicy.serverMismatchMessage("m", null, sha))
+        assertEquals(null, HashMismatchRetryPolicy.serverMismatchMessage("m", sha, "W/\"abc\""))
+    }
 }

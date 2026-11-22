@@ -90,7 +90,7 @@ object ModelMetadataRegistry {
             setOf(ContainerFormat.LITERTLM, ContainerFormat.TFLITE), RuntimeModality.CHAT, "GEMMA"),
         ModelFamilySpec("FUNCTIONGEMMA", "FunctionGemma", setOf("functiongemma"),
             setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "GEMMA"),
-        ModelFamilySpec("QWEN", "Qwen", setOf("qwen2", "qwen2.5-coder", "qwen3", "qwen3-asr", "qwen35"),
+        ModelFamilySpec("QWEN", "Qwen", setOf("qwen2", "qwen2.5-coder", "qwen3", "qwen3-asr"),
             setOf(ContainerFormat.LITERTLM, ContainerFormat.TFLITE), RuntimeModality.CHAT, null),
         ModelFamilySpec("DEEPSEEK", "DeepSeek", setOf("deepseek", "qwen2"),
             setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "DEEPSEEK"),
@@ -120,12 +120,22 @@ object ModelMetadataRegistry {
             setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "QWEN2P5"),
         ModelFamilySpec("VIBETHINKER", "VibeThinker", setOf("qwen2"),
             setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "QWEN2P5"),
-        ModelFamilySpec("MISTRAL", "Mistral", setOf("mistral", "mistral3"),
+        ModelFamilySpec("MISTRAL", "Mistral", setOf("mistral"),
             setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "MISTRAL"),
-        // Falcon-H1 (attention + Mamba2 hybrid). No bespoke engine family: the
-        // container's embedded ChatML-style template drives chat (GENERIC mode).
+        // AndroLLM fork: families whose containers carry their own chat template.
+        // The explicit "GENERIC" engine key makes the resolver pick the container
+        // template at the catalog-family step, BEFORE the stop-token heuristic
+        // (which would send ChatML containers to QWEN2P5) and instead of the
+        // app's built-in Mistral v0.3 template (no system role).
+        // Ministral 3 (mistral3): [SYSTEM_PROMPT] template in the container.
+        ModelFamilySpec("MINISTRAL", "Ministral", setOf("mistral3"),
+            setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "GENERIC"),
+        // Falcon-H1 (attention + Mamba2 hybrid), ChatML-style container template.
         ModelFamilySpec("FALCON", "Falcon", setOf("falcon-h1"),
-            setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, null)
+            setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "GENERIC"),
+        // Qwen3.5 (GatedDeltaNet hybrid): container template, never the Qwen3/2.5 one.
+        ModelFamilySpec("QWEN35", "Qwen3.5", setOf("qwen35"),
+            setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "GENERIC")
     )
 
     private val containerTypesByKey: Map<String, ContainerTypeSpec> =

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "source": "https://huggingface.co · litert-community · AndroLLM fork catalog (hasanagha15): every file pinned to an immutable HF revision checked for LiteRT-LM 0.16.0",
-  "generatedAt": 1795392000000,
+  "generatedAt": 1795478400000,
   "models": [
     {
       "id": "litertlm-gemma-4-e2b",
@@ -2471,7 +2471,7 @@
       ],
       "supportsToolCalling": true,
       "defaultCacheMb": 1536,
-      "estimatedRuntimeRamMb": 4500,
+      "estimatedRuntimeRamMb": 6100,
       "sections": [
         "Qwen",
         "Multilingual"
@@ -2490,7 +2490,7 @@
       ],
       "modality": "TEXT",
       "modelType": "decoder-only",
-      "status": "STABLE",
+      "status": "EXPERIMENTAL",
       "recommended": false,
       "runtimeFormat": "LITERTLM",
       "supportedBackends": [
@@ -2515,8 +2515,8 @@
       ],
       "id": "litertlm-qwen3.5-2b",
       "name": "Qwen3.5 2B LiteRT",
-      "description": "Qwen3.5-2B text decoder (int8) as a LiteRT-LM container - 201-language coverage, good Russian for its size; checked by the converter on LiteRT-LM 0.15/0.16.",
-      "family": "Qwen",
+      "description": "Qwen3.5-2B text decoder (int8) as a LiteRT-LM container - 201-language coverage, good Russian for its size; checked by the converter on LiteRT-LM 0.15/0.16. EXPERIMENTAL: hybrid recurrent model - LiteRT-LM (#3165) carries state between conversations on one Engine; this app reuses one Engine per loaded model (and its warm-up already uses the first conversation), so after the first chat it may ignore the system prompt. Judge quality only right after a fresh model load.",
+      "family": "Qwen3.5",
       "architecture": "qwen35",
       "tags": [
         "instruct",
@@ -2549,14 +2549,14 @@
         "🎮 Vulkan"
       ],
       "defaultCacheMb": 1536,
-      "estimatedRuntimeRamMb": 3500,
+      "estimatedRuntimeRamMb": 4300,
       "sections": [
         "Qwen",
         "Multilingual"
       ],
       "containerType": "generic_model",
       "version": "2026-10-16",
-      "notes": "Pinned to the 2026-10-16 file (CPU arithmetic-loop fix + tokenizer fix), before the 2026-11-09 move to external weights. Manifest min_runtime litert-lm 0.15.0. Galaxy S26: GPU ~19-20 tok/s (peak ~3.3-3.5 GB), CPU ~23 tok/s. GatedDeltaNet hybrid; first GPU engine init can take 50-90 s.",
+      "notes": "Pinned to the 2026-10-16 file (CPU arithmetic-loop fix + tokenizer fix), before the 2026-11-09 move to external weights. Manifest min_runtime litert-lm 0.15.0. Galaxy S26: GPU ~19 tok/s (peak 4.22 GB for this graph), CPU ~23 tok/s (peak 3.16 GB). GatedDeltaNet hybrid; first GPU engine init can take 50-90 s. Model card (pinned revision): needs a fresh Engine per conversation (state carry-over on a reused Engine, LiteRT-LM #3165, measured on 0.18.0).",
       "downloadUrl": "https://huggingface.co/litert-community/Qwen3.5-2B/resolve/4e5cdbd47c29043a1ff432d71b8668aaa9d200b0/Qwen3.5-2B_int8.litertlm",
       "modelSource": "litert-community/Qwen3.5-2B"
     },
@@ -2568,7 +2568,7 @@
       ],
       "modality": "TEXT",
       "modelType": "decoder-only",
-      "status": "STABLE",
+      "status": "EXPERIMENTAL",
       "recommended": false,
       "runtimeFormat": "LITERTLM",
       "supportedBackends": [
@@ -2593,8 +2593,8 @@
       ],
       "id": "litertlm-qwen3.5-4b-int4",
       "name": "Qwen3.5 4B Mixed Int4 LiteRT",
-      "description": "Qwen3.5-4B (mixed INT4) as a LiteRT-LM container - the strongest Russian in the 2-4B range of this catalog; slower than the 2B.",
-      "family": "Qwen",
+      "description": "Qwen3.5-4B (mixed INT4) as a LiteRT-LM container - the strongest Russian in the 2-4B range of this catalog; slower than the 2B. EXPERIMENTAL: hybrid recurrent model - LiteRT-LM (#3165) carries state between conversations on one Engine; this app reuses one Engine per loaded model (and its warm-up already uses the first conversation), so after the first chat it may ignore the system prompt. Judge quality only right after a fresh model load.",
+      "family": "Qwen3.5",
       "architecture": "qwen35",
       "tags": [
         "instruct",
@@ -2609,7 +2609,7 @@
       "fileName": "Qwen3.5-4B_mixed_int4.litertlm",
       "sizeBytes": 2754070624,
       "sha256": "7243c33c9c6192150ab6da7ac13a9efdc24ff1a653eabc93b2757de4b44b012a",
-      "parameters": "4.5B",
+      "parameters": "4B",
       "quantization": "MIXED",
       "contextLength": 4096,
       "recommendedContext": 4096,
@@ -2632,14 +2632,13 @@
       ],
       "containerType": "generic_model",
       "version": "2026-10-16",
-      "notes": "Pinned to the 2026-10-25 revision: tokenizer-fixed file, before the 2026-11-03 qwen3_5 tool-call metadata and the 2026-11-09 external-weights repack. Manifest min_runtime 0.15.0. Android has only a CPU row (Galaxy S26, int8: 8.9 tok/s); GPU on Adreno is not verified by the converter - confirm the backend in logcat.",
+      "notes": "Pinned to the 2026-10-25 revision: tokenizer-fixed file, before the 2026-11-03 qwen3_5 tool-call metadata and the 2026-11-09 external-weights repack. Manifest min_runtime 0.15.0. Galaxy S26 GPU (prebuilt 2026-09-18, not 0.16.0): engine build 73-86 s, correct answer, peak 3.8-4.1 GB, no speed published; CPU int8 8.9 tok/s. Confirm the backend in logcat. Model card (pinned revision): needs a fresh Engine per conversation (state carry-over on a reused Engine, LiteRT-LM #3165, measured on 0.18.0).",
       "downloadUrl": "https://huggingface.co/litert-community/Qwen3.5-4B/resolve/190cd3223e7701c271c927fe84f1fa66b498f79d/Qwen3.5-4B_mixed_int4.litertlm",
       "modelSource": "litert-community/Qwen3.5-4B"
     },
     {
       "categories": [
         "CHAT",
-        "MULTILINGUAL",
         "INSTRUCT"
       ],
       "modality": "TEXT",
@@ -2669,23 +2668,22 @@
       ],
       "id": "litertlm-ministral-3-3b-instruct",
       "name": "Ministral 3 3B Instruct LiteRT",
-      "description": "Mistral's Ministral-3-3B-Instruct-2512 (text-only, int4 block32) as a LiteRT-LM container - fast GPU chat, decent Russian.",
-      "family": "Mistral",
+      "description": "Mistral's Ministral-3-3B-Instruct-2512 (text-only, int4 block32) as a LiteRT-LM container - fast GPU chat. Russian is not an officially supported language; treat as English-first until tested.",
+      "family": "Ministral",
       "architecture": "mistral3",
       "tags": [
         "instruct",
-        "multilingual",
         "litert",
         "gpu"
       ],
       "license": "apache-2.0",
       "author": "Mistral AI",
       "repoId": "litert-community/Ministral-3-3B-Instruct-2512",
-      "revision": "d27c2aff4b5654d161be00dd5bcc3e5d94db6f4a",
+      "revision": "613e437fea973ca9e04a4063953ee514f1d4075e",
       "fileName": "Ministral-3-3B-Instruct-2512_q4_block32_ekv4096.litertlm",
-      "sizeBytes": 2342866928,
-      "sha256": "13c47bcbaf305e4337f280b27c991168b0c624a6d60e00df10f0f23ebd28ad83",
-      "parameters": "3.4B",
+      "sizeBytes": 2340982768,
+      "sha256": "57daeeb4d7127fbea4aa4585cbc2aaa4df2ea828f142f081e73823e1e467803e",
+      "parameters": "3B",
       "quantization": "Q4",
       "contextLength": 4096,
       "recommendedContext": 4096,
@@ -2697,19 +2695,16 @@
         "</s>"
       ],
       "badges": [
-        "🌐 Multilingual",
         "🎮 Vulkan",
         "📱 Mobile Optimized"
       ],
       "defaultCacheMb": 1536,
-      "estimatedRuntimeRamMb": 3000,
-      "sections": [
-        "Multilingual"
-      ],
+      "estimatedRuntimeRamMb": 3700,
+      "sections": [],
       "containerType": "generic_model",
-      "version": "2512",
-      "notes": "Pinned to the 2026-10-25 file (container v1.6.0), before the 2026-10-30 external-weights repack (its GPU path needs 0.19+). Pixel 8a litert-lm 0.16.0 GPU verified; Galaxy S26 GPU 19-22 tok/s, peak 1.28 GB. Russian is not in Mistral's official language list: usable, below Qwen/Gemma.",
-      "downloadUrl": "https://huggingface.co/litert-community/Ministral-3-3B-Instruct-2512/resolve/d27c2aff4b5654d161be00dd5bcc3e5d94db6f4a/Ministral-3-3B-Instruct-2512_q4_block32_ekv4096.litertlm",
+      "version": "2512-2026-09-21",
+      "notes": "Pinned to the 2026-09-21 file (container v1.6.0, chat template accepts string and parts forms): the graph measured on a Pixel 8a with litert-lm 0.16.0 GPU (full delegation, correct answer). The later 2026-10 files (GPU-composite rewrite, then external weights) were not measured on 0.16.0. Runs in the GENERIC (container template) family so the [SYSTEM_PROMPT] block is kept.",
+      "downloadUrl": "https://huggingface.co/litert-community/Ministral-3-3B-Instruct-2512/resolve/613e437fea973ca9e04a4063953ee514f1d4075e/Ministral-3-3B-Instruct-2512_q4_block32_ekv4096.litertlm",
       "modelSource": "litert-community/Ministral-3-3B-Instruct-2512"
     },
     {
@@ -2720,7 +2715,7 @@
       ],
       "modality": "TEXT",
       "modelType": "decoder-only",
-      "status": "STABLE",
+      "status": "EXPERIMENTAL",
       "recommended": false,
       "runtimeFormat": "LITERTLM",
       "supportedBackends": [
@@ -2745,7 +2740,7 @@
       ],
       "id": "litertlm-falcon-h1-3b-instruct",
       "name": "Falcon-H1 3B Instruct LiteRT",
-      "description": "TII Falcon-H1-3B-Instruct (attention + Mamba2 hybrid, int8) as a LiteRT-LM container - Russian is an officially supported language.",
+      "description": "TII Falcon-H1-3B-Instruct (attention + Mamba2 hybrid, int8) as a LiteRT-LM container - Russian is an officially supported language. EXPERIMENTAL: hybrid recurrent model - LiteRT-LM (#3165) carries state between conversations on one Engine; this app reuses one Engine per loaded model (and its warm-up already uses the first conversation), so after the first chat it may ignore the system prompt. Judge quality only right after a fresh model load.",
       "family": "Falcon",
       "architecture": "falcon-h1",
       "tags": [
@@ -2779,13 +2774,13 @@
         "🎮 Vulkan"
       ],
       "defaultCacheMb": 1536,
-      "estimatedRuntimeRamMb": 3600,
+      "estimatedRuntimeRamMb": 4300,
       "sections": [
         "Multilingual"
       ],
       "containerType": "generic_model",
       "version": "2026-10-13",
-      "notes": "Pinned to the 2026-10-13 file (container v1.6.0, min_runtime 0.15), before the 2026-11-09 external-weights repack. Galaxy S26, litert-lm 0.16.0, GPU: 11.5 tok/s, peak 2.1 GB. License: Falcon LLM license (Apache-2.0 based, with an acceptable-use policy).",
+      "notes": "Pinned to the 2026-10-13 file (container v1.6.0, min_runtime 0.15), before the 2026-11-09 external-weights repack. Galaxy S26, litert-lm 0.16.0, GPU: 11.5 tok/s, peak 2.1 GB. License: Falcon LLM license (Apache-2.0 based, with an acceptable-use policy). Model card (pinned revision): needs a fresh Engine per conversation (state carry-over on a reused Engine, LiteRT-LM #3165, measured on 0.18.0).",
       "downloadUrl": "https://huggingface.co/litert-community/Falcon-H1-3B-Instruct/resolve/5979909b36447edc3b685e7ad93101ab9acb5a43/Falcon-H1-3B-Instruct_int8.litertlm",
       "modelSource": "litert-community/Falcon-H1-3B-Instruct"
     }

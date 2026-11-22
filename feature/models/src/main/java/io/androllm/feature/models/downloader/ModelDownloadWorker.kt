@@ -158,6 +158,16 @@ class ModelDownloadWorker(
             return failPermanent(modelId, modelName, failure.formatReport(modelName))
         }
 
+        // Fork (Gate D, N5): Hugging Face announces the LFS sha256 of the file in
+        // X-Linked-ETag. When the catalog declares a different sha256, the file was
+        // replaced on the server: fail BEFORE downloading gigabytes that can only
+        // end in a checksum mismatch.
+        HashMismatchRetryPolicy.serverMismatchMessage(
+            modelName = modelName,
+            catalogSha256 = expectedSha256,
+            serverSha256 = preflight?.lfsSha256,
+        )?.let { message -> return failPermanent(modelId, modelName, message) }
+
         // ---- Stage 2: assess the partial file before resuming ----------------------
         // The server truth may still be unknown (preflight failed, chunked); use
         // whatever size signal exists, or skip the oversize check until GET.

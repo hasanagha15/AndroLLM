@@ -77,7 +77,7 @@ class ModelMetadataRegistryTest {
         // Qwen covers QWEN2/QWEN2P5/QWEN3 — no single engine family; the
         // container type disambiguates at load time.
         assertNull(ModelMetadataRegistry.familyFor("Qwen")?.engineFamilyKey)
-        assertEquals(setOf("qwen2", "qwen2.5-coder", "qwen3", "qwen3-asr", "qwen35"),
+        assertEquals(setOf("qwen2", "qwen2.5-coder", "qwen3", "qwen3-asr"),
             ModelMetadataRegistry.familyFor("Qwen")?.architectures)
     }
 
@@ -137,5 +137,21 @@ class ModelMetadataRegistryTest {
                 assertTrue("${m.id}: tflite must not declare containerType", m.containerType.isNullOrBlank())
             }
         }
+    }
+
+    // ---- fork: container-template families (Gate D, B2) ----
+
+    @Test
+    fun containerTemplateFamiliesUseTheGenericEngineKey() {
+        for (name in listOf("Ministral", "Falcon", "Qwen3.5")) {
+            assertEquals(name, "GENERIC", ModelMetadataRegistry.familyFor(name)?.engineFamilyKey)
+        }
+        assertEquals("MINISTRAL", ModelMetadataRegistry.familyForArchitecture("mistral3")?.familyKey)
+        assertEquals("FALCON", ModelMetadataRegistry.familyForArchitecture("falcon-h1")?.familyKey)
+        assertEquals("QWEN35", ModelMetadataRegistry.familyForArchitecture("qwen35")?.familyKey)
+        // The legacy Mistral family keeps the built-in Mistral template, but no
+        // longer owns Ministral 3.
+        assertEquals("MISTRAL", ModelMetadataRegistry.familyFor("Mistral")?.engineFamilyKey)
+        assertEquals(setOf("mistral"), ModelMetadataRegistry.familyFor("Mistral")?.architectures)
     }
 }

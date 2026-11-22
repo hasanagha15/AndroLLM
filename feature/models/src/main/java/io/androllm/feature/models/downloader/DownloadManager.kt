@@ -218,7 +218,20 @@ class DownloadManager @Inject constructor(
      * Retries a failed download with backoff (transient) — keeps the partial
      * file so the retry resumes instead of restarting.
      */
-    fun retryDownload(model: Model, priority: DownloadPriority = DownloadPriority.NORMAL) {
+    fun retryDownload(
+        model: Model,
+        priority: DownloadPriority = DownloadPriority.NORMAL,
+        resetPartial: Boolean = false,
+    ) {
+        if (resetPartial) {
+            // Fork: the catalog now points at a different file — partial bytes of the
+            // old one must not be resumed. Truncate in place (files are never deleted).
+            val path = model.filePath ?: getTargetFilePath(model)
+            runCatching {
+                val file = java.io.File(path)
+                if (file.exists()) java.io.FileOutputStream(file, false).close()
+            }.onFailure { Timber.w(it, "Could not reset partial file for ${model.name}") }
+        }
         startDownload(model, priority)
     }
 
