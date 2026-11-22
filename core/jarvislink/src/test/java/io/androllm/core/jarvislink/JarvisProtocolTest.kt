@@ -129,9 +129,9 @@ class JarvisProtocolTest {
         assertThat(TailscaleRoute.classify("100.127.255.254")).isEqualTo(TailscaleRoute.HostKind.TAILSCALE_IP)
         assertThat(TailscaleRoute.classify("pi.tailnet-abc.ts.net")).isEqualTo(TailscaleRoute.HostKind.MAGICDNS_NAME)
         assertThat(TailscaleRoute.classify("fd7a:115c:a1e0::1")).isEqualTo(TailscaleRoute.HostKind.TAILSCALE_IP)
-        listOf("192.168.0.11", "100.63.255.255", "100.128.0.1", "10.0.0.5", "broker.example.com", "ts.net", "", "999.1.1.1")
+        listOf("192.168.0.10", "100.63.255.255", "100.128.0.1", "10.0.0.5", "broker.example.com", "ts.net", "", "999.1.1.1")
             .forEach { assertThat(TailscaleRoute.classify(it)).isEqualTo(TailscaleRoute.HostKind.NOT_TAILSCALE) }
         assertThat(TailscaleRoute.isTailscaleAddress(InetAddress.getByName("100.100.1.2"))).isTrue()
-        assertThat(TailscaleRoute.isTailscaleAddress(InetAddress.getByName("192.168.0.11"))).isFalse()
+        assertThat(TailscaleRoute.isTailscaleAddress(InetAddress.getByName("192.168.0.10"))).isFalse()
     }
 }

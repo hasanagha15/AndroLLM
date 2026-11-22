@@ -77,7 +77,7 @@ class JarvisLinkViewModel @Inject constructor(
 }
 
 /**
- * "Jarvis link" card: lets Jarvis (pi-brain) send tasks to the phone over MQTT.
+ * "Jarvis link" card: lets Jarvis send tasks to the phone over MQTT.
  * Off by default. Remote tasks use the same confirmations as typed requests.
  */
 @Composable
