@@ -37,6 +37,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 
@@ -70,6 +72,9 @@ class ChatManager @Inject constructor(
     private val toolPromptBuilder: ToolPromptBuilder
 ) {
     private val scope = CoroutineScope(Dispatchers.Default)
+
+    /** Serializes turns run through this pipeline (voice + remote Jarvis tasks). */
+    private val turnLock = Mutex()
 
     /**
      * Resolves a human-readable label for the currently active model, no matter
@@ -107,10 +112,22 @@ class ChatManager @Inject constructor(
         content: String,
         origin: MessageOrigin = MessageOrigin.VOICE,
         lowLatencyMode: Boolean = false,
-        onToolStatus: suspend (String) -> Unit = {}
+        onToolStatus: suspend (String) -> Unit = {},
+        /**
+         * Optional dedicated conversation (e.g. Jarvis remote tasks). Created
+         * ARCHIVED when missing so it never becomes the owner's active chat.
+         * Null = the active conversation (voice behaviour, unchanged).
+         */
+        conversationId: String? = null,
+        conversationTitle: String? = null,
+        /** False = no memory retrieval and no memory extraction for this turn. */
+        useMemory: Boolean = true,
+        /** False = the prompt contains only this message, not the conversation history. */
+        includeHistory: Boolean = true
     ): Flow<String> = channelFlow {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return@channelFlow
+        turnLock.withLock {
         // Pipeline tracing: stamp this turn so every executed tool call
         // carries the spoken prompt (Tool Debug screen).
         traceStore.beginTurn(trimmed)
@@ -125,10 +142,23 @@ class ChatManager @Inject constructor(
         }
 
         val now = System.currentTimeMillis()
-        var activeConv = conversationRepository.observeActive().first().firstOrNull()
-        var convId = activeConv?.id.orEmpty()
+        var activeConv = if (conversationId == null) conversationRepository.observeActive().first().firstOrNull() else null
+        var convId = conversationId ?: activeConv?.id.orEmpty()
 
-        if (convId.isBlank()) {
+        if (conversationId != null) {
+            val exists = (conversationRepository.existsById(conversationId) as? Result.Success)?.data == true
+            if (!exists) {
+                conversationRepository.upsert(
+                    Conversation(
+                        id = conversationId,
+                        title = conversationTitle ?: "Remote tasks",
+                        createdAt = now,
+                        updatedAt = now,
+                        isArchived = true
+                    )
+                )
+            }
+        } else if (convId.isBlank()) {
             convId = UUID.randomUUID().toString()
             val title = if (trimmed.length > 30) trimmed.take(30) + "..." else trimmed
             activeConv = Conversation(id = convId, title = title, createdAt = now, updatedAt = now)
@@ -154,7 +184,7 @@ class ChatManager @Inject constructor(
         // the identical block is prepended as the first `system` message for
         // both providers below, so memories survive model switching.
         // Low-latency voice skips retrieval for speed (documented trade-off).
-        val memoryContext = if (lowLatencyMode) {
+        val memoryContext = if (lowLatencyMode || !useMemory) {
             io.androllm.core.memory.model.MemoryContext()
         } else {
             withTimeoutOrNull(MEMORY_RETRIEVAL_TIMEOUT_MS) {
@@ -168,7 +198,11 @@ class ChatManager @Inject constructor(
         }
 
         // Build prompt message list from DB history
-        val historyMessages = messageRepository.observeByConversationId(convId).first()
+        val historyMessages = if (includeHistory) {
+            messageRepository.observeByConversationId(convId).first()
+        } else {
+            listOf(userMessage)
+        }
         val promptMessages = buildList {
             if (memoryContext.systemText.isNotBlank()) {
                 add(ChatPromptMessage(role = "system", content = memoryContext.systemText))
@@ -410,7 +444,7 @@ class ChatManager @Inject constructor(
             messageRepository.upsert(assistantMsg)
 
             // Trigger Memory processing pipeline
-            if (memoryManager.currentSettings().enabled) {
+            if (useMemory && memoryManager.currentSettings().enabled) {
                 scope.launch {
                     runCatching {
                         memoryManager.processExchange(
@@ -426,6 +460,7 @@ class ChatManager @Inject constructor(
                 }
             }
         }
+        } // turnLock
     }
 
     /**
