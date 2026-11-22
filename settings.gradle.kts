@@ -23,7 +23,6 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri("https://maven.pkg.jetbrains.space/public/p/compose/dev") }
         // sherpa-onnx Android AAR (keyword spotting + streaming ASR + offline TTS)
         maven { url = uri("https://jitpack.io") }
     }
