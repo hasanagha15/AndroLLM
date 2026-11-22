@@ -316,7 +316,7 @@ class RemoteConfirmationRoutingTest {
             },
             automationSettings = { settings },
             ownerBusy = MutableStateFlow(false),
-            origin = remote
+            originFactory = { remote }
         )
         val out = backgroundScope.async { runner.run(task()) }
         runCurrent()
@@ -443,5 +443,28 @@ class RemoteConfirmationRoutingTest {
         }
         assertThat(store.snapshot()).containsExactly("weather", "owner value")
         assertThat(store.snapshotForCurrentOrigin()).containsExactly("weather", "owner value")
+    }
+
+    @Test
+    fun `each remote task gets a fresh origin - task 2 cannot see task 1 outputs`() = runTest {
+        val store = AgentVariableStore()
+        val seen = mutableListOf<Map<String, String>>()
+        val runner = RemoteAgentRunner(
+            turns = RemoteTurnExecutor {
+                flow {
+                    seen += store.snapshotForCurrentOrigin()
+                    store.setForCurrentOrigin("last_tool_output", "task output")
+                    emit("ok")
+                }
+            },
+            automationSettings = { settings },
+            ownerBusy = MutableStateFlow(false)
+        )
+        runner.run(task("t1"))
+        runner.run(task("t2"))
+        assertThat(seen).hasSize(2)
+        assertThat(seen[0]).isEmpty()
+        assertThat(seen[1]).isEmpty() // not "task output" from t1
+        assertThat(store.snapshot()).isEmpty() // owner scope untouched
     }
 }

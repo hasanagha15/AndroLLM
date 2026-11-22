@@ -58,7 +58,8 @@ class RemoteAgentRunner(
     private val turns: RemoteTurnExecutor,
     private val automationSettings: suspend () -> AutomationSettings,
     private val ownerBusy: StateFlow<Boolean>,
-    private val origin: RemoteToolOrigin = RemoteToolOrigin(),
+    /** A FRESH origin (with its own variable map) is created for every task. */
+    private val originFactory: () -> RemoteToolOrigin = { RemoteToolOrigin() },
     private val idleWaitMs: Long = IDLE_WAIT_MS,
     private val taskTimeoutMs: Long = TASK_TIMEOUT_MS
 ) : JarvisTaskRunner {
@@ -72,7 +73,7 @@ class RemoteAgentRunner(
         }
         val answer = StringBuilder()
         val finished = try {
-            withContext(origin) {
+            withContext(originFactory()) {
                 withTimeoutOrNull(taskTimeoutMs) {
                     turns.run("$PROMPT_PREFIX${task.text}").collect { answer.append(it) }
                     true

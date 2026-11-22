@@ -53,6 +53,6 @@ object JarvisLinkHookModule {
         },
         automationSettings = { automationSettings.current() },
         ownerBusy = traceStore.turnActive,
-        origin = RemoteToolOrigin(ownPackages = setOf(context.packageName, "io.androllm"))
+        originFactory = { RemoteToolOrigin(ownPackages = setOf(context.packageName, "io.androllm")) }
     )
 }
