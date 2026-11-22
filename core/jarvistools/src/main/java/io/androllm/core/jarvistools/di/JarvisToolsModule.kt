@@ -12,8 +12,8 @@ import io.androllm.core.jarvistools.glasses.GlassesShowTextTool
 import io.androllm.core.jarvistools.glasses.NotificationMirrorGlassesDisplay
 import io.androllm.core.jarvistools.net.HttpTransport
 import io.androllm.core.jarvistools.net.OkHttpTransport
-import io.androllm.core.jarvistools.secrets.KeystoreSecretStore
-import io.androllm.core.jarvistools.secrets.SecretStore
+import io.androllm.core.jarvistools.vault.KeystoreSecretStore
+import io.androllm.core.jarvistools.vault.SecretStore
 import io.androllm.core.jarvistools.settings.JarvisEndpoints
 import io.androllm.core.jarvistools.settings.JarvisToolsConfig
 import io.androllm.core.jarvistools.tesla.TeslaCommandTool

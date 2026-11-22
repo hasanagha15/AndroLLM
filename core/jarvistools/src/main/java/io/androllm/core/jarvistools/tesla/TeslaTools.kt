@@ -1,5 +1,6 @@
 package io.androllm.core.jarvistools.tesla
 
+import io.androllm.core.jarvistools.confirm.SideEffectBudget
 import io.androllm.core.jarvistools.confirm.SideEffectGate
 import io.androllm.core.tools.api.PrivacyLevel
 import io.androllm.core.tools.api.Tool
@@ -38,7 +39,8 @@ class TeslaStatusTool @Inject constructor(
         requiresConfirmation = false,
         category = ToolCategory.INFORMATION,
         supportedTasks = listOf("tesla", "car", "машина", "тесла", "battery of the car", "заряд машины"),
-        cacheable = true,
+        // Not cacheable: the bridge already caches; a second cache would show "unlocked" after a lock.
+        cacheable = false,
         estimatedLatencyMs = 3000L,
         privacyLevel = PrivacyLevel.SENSITIVE,
         cost = ToolCost.NETWORK,
@@ -49,7 +51,8 @@ class TeslaStatusTool @Inject constructor(
     override suspend fun execute(arguments: JsonObject): ToolResult =
         when (val r = client.status(fresh = ToolArgs.bool(arguments, "fresh"))) {
             is TeslaBridgeClient.Outcome.Ok -> ToolResult.Success(summarize(r.data), r.data)
-            is TeslaBridgeClient.Outcome.Error -> ToolResult.Failure(r.message, retryable = r.retryable)
+            // retryable=false: the base coordinator's retries/alternative tools only add delay here.
+            is TeslaBridgeClient.Outcome.Error -> ToolResult.Failure(r.message, retryable = false)
         }
 
     internal fun summarize(d: JsonObject): String {
@@ -68,9 +71,10 @@ class TeslaStatusTool @Inject constructor(
 }
 
 /**
- * Side effect: a SAFE Tesla command. Only [TeslaSafetyPolicy.ALLOWED] is
- * reachable (schema enum + policy + client re-check). Unlock, remote start,
- * trunk/frunk, windows are impossible. Always confirmed by the owner.
+ * Side effect: a SAFE (tier A) Tesla command. Only [TeslaSafetyPolicy.ALLOWED]
+ * is reachable (schema enum + policy + client re-check + the bridge's own
+ * phone allowlist). Unlock, remote start, trunk/frunk, windows, horn, lights
+ * and the charge port are impossible. Always confirmed by the owner.
  */
 @Singleton
 class TeslaCommandTool @Inject constructor(
@@ -80,7 +84,7 @@ class TeslaCommandTool @Inject constructor(
 
     override val spec = ToolSpec(
         name = "tesla_command",
-        description = "Send a SAFE command to the owner's Tesla via tesla-bridge (always asks the user first): climate_on, climate_off, set_temp (temp_c 15..28), lock, charge_start, charge_stop, set_charge_limit (percent 50..100), honk, flash_lights. Unlocking, remote start, trunk/frunk and windows are NOT possible.",
+        description = "Send a SAFE command to the owner's Tesla via tesla-bridge (always asks the user first): climate_on, climate_off, set_temp (temp_c 15..28), lock, charge_start, charge_stop, set_charge_limit (percent 50..100). Unlocking, remote start, trunk/frunk, windows, horn and lights are NOT possible.",
         parameters = buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {
@@ -97,8 +101,8 @@ class TeslaCommandTool @Inject constructor(
         requiresConfirmation = true,
         category = ToolCategory.DEVICE,
         confirmationPrompt = "send the Tesla command {action}",
-        executionTimeoutMs = 90_000L,
-        supportedTasks = listOf("tesla", "car climate", "кондиционер машины", "закрой машину", "посигналь", "зарядка машины"),
+        executionTimeoutMs = SideEffectBudget.ONE_CALL_MS,
+        supportedTasks = listOf("tesla", "car climate", "кондиционер машины", "закрой машину", "зарядка машины"),
         cacheable = false,
         estimatedLatencyMs = 15_000L,
         privacyLevel = PrivacyLevel.SENSITIVE,
@@ -108,17 +112,25 @@ class TeslaCommandTool @Inject constructor(
     )
 
     override suspend fun execute(arguments: JsonObject): ToolResult {
+        val started = System.currentTimeMillis()
+        // Long → Int without silent truncation: out-of-Int values become an invalid percent.
+        val percent = ToolArgs.long(arguments, "percent")?.let { if (it in 0L..1000L) it.toInt() else -1 }
         val decision = TeslaSafetyPolicy.evaluate(
             rawAction = ToolArgs.str(arguments, "action", "command"),
             tempC = ToolArgs.double(arguments, "temp_c") ?: ToolArgs.double(arguments, "temperature"),
-            percent = ToolArgs.long(arguments, "percent")?.toInt()
+            percent = percent
         )
         if (decision is TeslaSafetyPolicy.Decision.Refused) {
             return ToolResult.Failure("Refused: ${decision.reason}.", retryable = false)
         }
         decision as TeslaSafetyPolicy.Decision.Allowed
+        // Check URL + token BEFORE asking the owner (no pointless card).
+        client.ready()?.let { return ToolResult.Failure(it, retryable = false) }
         if (!gate.ensureConfirmed(spec, arguments)) {
             return ToolResult.Failure("The user declined the action.", retryable = false)
+        }
+        if (!SideEffectBudget.hasNetworkBudget(started, spec.executionTimeoutMs!!)) {
+            return ToolResult.Failure("Confirmation came too late — nothing was sent. Ask again.", retryable = false)
         }
         return when (val r = client.command(decision)) {
             is TeslaBridgeClient.Outcome.Ok -> ToolResult.Success(

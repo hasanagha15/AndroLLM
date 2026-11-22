@@ -2,12 +2,13 @@ package io.androllm.core.jarvistools.settings
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
-import io.androllm.core.jarvistools.secrets.JarvisSecret
-import io.androllm.core.jarvistools.secrets.SecretStore
+import io.androllm.core.jarvistools.net.BaseUrlPolicy
+import io.androllm.core.jarvistools.vault.JarvisSecret
+import io.androllm.core.jarvistools.vault.SecretStore
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Non-secret endpoint configuration (base URLs). Tokens live in [SecretStore]. */
+/** Non-secret endpoint configuration (raw base URLs; validated by [BaseUrlPolicy] before every use). */
 interface JarvisEndpoints {
     val teslaBaseUrl: String
     val whatsappBaseUrl: String
@@ -20,8 +21,9 @@ data class StaticEndpoints(
 
 /**
  * Settings → Jarvis tools backing store: base URLs in plain prefs, tokens
- * through the Keystore-backed [SecretStore]. The UI only ever learns whether
- * a token is set — never its value.
+ * through the Keystore-backed [SecretStore], each bound to the origin of the
+ * URL it was entered for. Changing a URL therefore makes the token "not set"
+ * until the owner enters it again. The UI only learns "set / not set".
  */
 @Singleton
 class JarvisToolsConfig @Inject constructor(
@@ -37,21 +39,47 @@ class JarvisToolsConfig @Inject constructor(
     override val whatsappBaseUrl: String
         get() = prefs.getString(KEY_WA_URL, null)?.takeIf { it.isNotBlank() } ?: DEFAULT_WHATSAPP_URL
 
-    fun setTeslaBaseUrl(url: String) = prefs.edit().putString(KEY_TESLA_URL, normalizeUrl(url)).apply()
-    fun setWhatsappBaseUrl(url: String) = prefs.edit().putString(KEY_WA_URL, normalizeUrl(url)).apply()
+    /** Saves the URL if valid; returns an error message otherwise (nothing saved). */
+    fun setTeslaBaseUrl(url: String): String? = save(KEY_TESLA_URL, BaseUrlPolicy.parseTesla(url))
+    fun setWhatsappBaseUrl(url: String): String? = save(KEY_WA_URL, BaseUrlPolicy.parseWhatsApp(url))
 
-    fun hasToken(secret: JarvisSecret): Boolean = secrets.has(secret)
-    fun setToken(secret: JarvisSecret, value: String) = secrets.put(secret, value)
+    private fun save(key: String, parsed: BaseUrlPolicy.Parsed): String? = when (parsed) {
+        is BaseUrlPolicy.Parsed.Invalid -> parsed.reason
+        is BaseUrlPolicy.Parsed.Ok -> {
+            prefs.edit().putString(key, parsed.url.toString().trimEnd('/')).apply()
+            null
+        }
+    }
+
+    fun originFor(secret: JarvisSecret): String? {
+        val parsed = when (secret) {
+            JarvisSecret.TESLA_API_TOKEN -> BaseUrlPolicy.parseTesla(teslaBaseUrl)
+            JarvisSecret.WHATSAPP_API_TOKEN -> BaseUrlPolicy.parseWhatsApp(whatsappBaseUrl)
+        }
+        return (parsed as? BaseUrlPolicy.Parsed.Ok)?.origin
+    }
+
+    fun hasToken(secret: JarvisSecret): Boolean = originFor(secret)?.let { secrets.has(secret, it) } ?: false
+
+    /** Returns an error message, or null when saved. */
+    fun setToken(secret: JarvisSecret, value: String): String? {
+        val origin = originFor(secret) ?: return "Fix the URL first."
+        return try {
+            secrets.put(secret, value, origin)
+            null
+        } catch (e: Exception) {
+            "Could not store the token securely (${e.javaClass.simpleName})."
+        }
+    }
+
     fun clearToken(secret: JarvisSecret) = secrets.clear(secret)
 
     companion object {
         /** tesla-bridge via the Cloudflare tunnel on pi-brain. */
         const val DEFAULT_TESLA_URL = "https://tesla.lilab.ai"
-        /** wa-bot /api is LAN-only by design (wa.lilab.ai publishes only /webhook, /v1, /health). */
-        const val DEFAULT_WHATSAPP_URL = "http://192.168.0.10:8090"
-        private const val KEY_TESLA_URL = "tesla_base_url"
-        private const val KEY_WA_URL = "whatsapp_base_url"
-
-        fun normalizeUrl(url: String): String = url.trim().trimEnd('/')
+        /** wa-bot over Tailscale (owner decision 23.11): MagicDNS name of pi-vision, port 8090. */
+        const val DEFAULT_WHATSAPP_URL = "http://" + BaseUrlPolicy.WHATSAPP_TAILNET_HOST + ":8090"
+        private const val KEY_TESLA_URL = "tesla_base_url_v2"
+        private const val KEY_WA_URL = "whatsapp_base_url_v2"
     }
 }

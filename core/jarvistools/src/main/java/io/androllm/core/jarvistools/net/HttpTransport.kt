@@ -6,6 +6,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -14,7 +15,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 /** A fully built HTTP request (pure data, so request building is unit-testable). */
 data class HttpRequest(
     val method: String,
-    val url: String,
+    val url: HttpUrl,
     val headers: Map<String, String> = emptyMap(),
     val jsonBody: String? = null
 ) {
@@ -31,15 +32,21 @@ interface HttpTransport {
     suspend fun execute(request: HttpRequest): HttpResponse
 }
 
-/** OkHttp transport, own client: no logging interceptor (tokens must never reach logs). */
+/**
+ * OkHttp transport, own client: no logging interceptor (tokens must never
+ * reach logs), no redirects (a redirect would carry the token elsewhere), no
+ * silent retry on connection failure (a POST must never be sent twice).
+ */
 @Singleton
 class OkHttpTransport @Inject constructor() : HttpTransport {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS) // a sleeping Tesla can take ~45 s to wake for a command
-        .callTimeout(75, TimeUnit.SECONDS)
+        .callTimeout(NETWORK_BUDGET_MS, TimeUnit.MILLISECONDS)
         .followRedirects(false)
+        .followSslRedirects(false)
+        .retryOnConnectionFailure(false)
         .build()
 
     override suspend fun execute(request: HttpRequest): HttpResponse = withContext(Dispatchers.IO) {
@@ -49,12 +56,15 @@ class OkHttpTransport @Inject constructor() : HttpTransport {
             request.headers.forEach { (k, v) -> header(k, v) }
         }.build()
         client.newCall(req).execute().use { resp ->
-            HttpResponse(resp.code, resp.body?.string().orEmpty().take(MAX_BODY))
+            // Bounded read: never buffer more than MAX_BYTES of a response.
+            HttpResponse(resp.code, resp.peekBody(MAX_BYTES).string())
         }
     }
 
-    private companion object {
-        val JSON = "application/json; charset=utf-8".toMediaType()
-        const val MAX_BODY = 64_000
+    companion object {
+        /** Upper bound of one network call; tools reserve this much after the confirmation. */
+        const val NETWORK_BUDGET_MS = 75_000L
+        private val JSON = "application/json; charset=utf-8".toMediaType()
+        private const val MAX_BYTES = 512L * 1024
     }
 }

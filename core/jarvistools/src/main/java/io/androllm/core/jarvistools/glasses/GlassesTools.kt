@@ -1,5 +1,6 @@
 package io.androllm.core.jarvistools.glasses
 
+import io.androllm.core.jarvistools.confirm.SideEffectBudget
 import io.androllm.core.jarvistools.confirm.SideEffectGate
 import io.androllm.core.tools.api.PrivacyLevel
 import io.androllm.core.tools.api.Tool
@@ -39,6 +40,7 @@ class GlassesShowTextTool @Inject constructor(
         requiresConfirmation = true,
         category = ToolCategory.DEVICE,
         confirmationPrompt = "show this on the glasses: {text}",
+        executionTimeoutMs = SideEffectBudget.ONE_CALL_MS,
         supportedTasks = listOf("glasses", "очки", "even g2", "покажи на очках"),
         cacheable = false,
         supportedBackends = setOf(ToolBackend.LOCAL, ToolBackend.CLOUD),
@@ -58,7 +60,10 @@ class GlassesShowTextTool @Inject constructor(
         }
         val err = display.show(title, text)
         return if (err == null) {
-            ToolResult.Success("Sent to the G2 glasses (via Even app notification mirror): ${GlassesText.sanitize(text, GlassesText.MAX_TEXT)}")
+            ToolResult.Success(
+                "Notification posted on the phone; it appears on the G2 only if the Even app mirrors AndroLLM notifications: " +
+                    GlassesText.sanitize(text, GlassesText.MAX_TEXT)
+            )
         } else {
             ToolResult.Failure(err, retryable = false)
         }

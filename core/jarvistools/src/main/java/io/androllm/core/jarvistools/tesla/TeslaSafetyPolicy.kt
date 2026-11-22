@@ -3,11 +3,10 @@ package io.androllm.core.jarvistools.tesla
 /**
  * Client-side allowlist for the phone ("source" = AndroLLM app). Mirrors the
  * owner's Jarvis policy (~/jarvis/tesla-policy.json on pi-brain):
- *  - tier A (climate_on/off, set_temp, lock, charge_start/stop, set_charge_limit),
- *  - tier B noisy-but-harmless honk / flash_lights — allowed only because every
- *    command here goes through the app's confirmation card (= the owner's «да»).
- * charge_port_open (tier B) is deliberately left out: it physically opens a
- * door on the car and nothing on the phone needs it.
+ * tier A only (climate_on/off, set_temp, lock, charge_start/stop,
+ * set_charge_limit) — like the agent source `openjarvis`. Tier B (honk,
+ * flash_lights, charge_port_open) is NOT available from the phone. The bridge
+ * enforces the same list server-side for the phone token (policy.PHONE_ACTIONS).
  *
  * The four dangerous bridge actions (unlock, remote_start, open_trunk,
  * open_frunk) and anything else not listed are refused BEFORE a request is
@@ -19,8 +18,7 @@ object TeslaSafetyPolicy {
     val ALLOWED: Set<String> = setOf(
         "climate_on", "climate_off", "set_temp",
         "lock",
-        "charge_start", "charge_stop", "set_charge_limit",
-        "honk", "flash_lights"
+        "charge_start", "charge_stop", "set_charge_limit"
     )
 
     /** Never reachable from the app, whatever the bridge or the model says. */
@@ -29,7 +27,8 @@ object TeslaSafetyPolicy {
         "open_trunk", "open_frunk", "actuate_trunk", "trunk", "frunk",
         "window_control", "windows_open", "vent_windows", "sun_roof_control",
         "charge_port_open", "charge_port_door_open", "set_valet_mode", "speed_limit_deactivate",
-        "set_sentry_mode", "door_lock_unlock"
+        "set_sentry_mode", "door_lock_unlock",
+        "honk", "honk_horn", "flash_lights"
     )
 
     val TEMP_RANGE_C = 15.0..28.0
