@@ -104,6 +104,9 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1,LICENSE,NOTICE}"
+            // Netty (HiveMQ MQTT client, core:jarvislink) duplicates — branch b-mqtt
+            excludes += "/META-INF/INDEX.LIST"
+            excludes += "/META-INF/io.netty.versions.properties"
         }
         jniLibs {
             // NPU (Qualcomm QNN) deployment requirement: LiteRT's dispatch
@@ -151,6 +154,8 @@ dependencies {
     // silently injects an empty handler set (blank Permissions & Access).
     implementation(project(":core:permissions"))
     implementation(project(":core:utils"))
+    // Jarvis reverse channel (MQTT) — branch b-mqtt
+    implementation(project(":core:jarvislink"))
     
     // Feature modules
     implementation(project(":feature:home"))

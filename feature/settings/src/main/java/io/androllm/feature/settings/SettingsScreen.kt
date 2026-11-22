@@ -586,6 +586,7 @@ fun SettingsScreen(
                         onRemove = { viewModel.removeMcpServer(it) },
                         onToggle = { server, enabled -> viewModel.setMcpServerEnabled(server, enabled) }
                     )
+                    JarvisLinkSection() // branch b-mqtt: Jarvis reverse channel
                 }
 
                 settingsAccordionItem(
