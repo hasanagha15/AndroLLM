@@ -29,7 +29,7 @@ class NotificationConfirmationNotifier @Inject constructor(
     @ApplicationContext private val context: Context
 ) : ConfirmationNotifier {
 
-    override fun show(confirmation: PendingToolConfirmation, task: JarvisTask) {
+    override fun show(confirmation: PendingToolConfirmation, task: JarvisTask?) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -44,10 +44,15 @@ class NotificationConfirmationNotifier @Inject constructor(
         val open = context.packageManager.getLaunchIntentForPackage(context.packageName)?.let {
             PendingIntent.getActivity(context, 3, it, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         }
-        val body = "Jarvis task: “${task.text.take(120)}”\n${confirmation.actionSummary}"
+        // Full task text and full arguments: the owner must see exactly what is approved.
+        val body = buildString {
+            append(confirmation.remoteOrigin ?: "Jarvis")
+            if (task != null) append(" — задача: «").append(task.text.take(1_000)).append("»")
+            append("\n\n").append(confirmation.actionSummary)
+        }
         val notification = NotificationCompat.Builder(context, CONFIRM_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
-            .setContentTitle("Confirm: ${confirmation.toolDisplayName}")
+            .setContentTitle("Подтвердите: ${confirmation.toolDisplayName}")
             .setContentText(confirmation.actionSummary)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setPriority(NotificationCompat.PRIORITY_HIGH)

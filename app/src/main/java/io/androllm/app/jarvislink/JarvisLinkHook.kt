@@ -1,73 +1,58 @@
 package io.androllm.app.jarvislink
 
-import dagger.Binds
+import android.content.Context
 import dagger.Module
+import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import io.androllm.core.jarvislink.processing.JarvisTaskRunner
-import io.androllm.core.jarvislink.processing.TaskOutcome
-import io.androllm.core.jarvislink.protocol.JarvisTask
-import io.androllm.core.jarvislink.protocol.ResultStatus
+import io.androllm.core.jarvislink.processing.RemoteAgentRunner
+import io.androllm.core.jarvislink.processing.RemoteTurnExecutor
 import io.androllm.core.models.MessageOrigin
+import io.androllm.core.tools.origin.RemoteToolOrigin
 import io.androllm.core.tools.settings.AutomationSettingsStore
-import io.androllm.core.tools.settings.ConfirmationMode
+import io.androllm.core.tools.trace.ToolExecutionTraceStore
 import io.androllm.feature.voice.chat.ChatManager
-import javax.inject.Inject
 import javax.inject.Singleton
-import kotlinx.coroutines.withTimeoutOrNull
-import timber.log.Timber
 
 /**
- * Branch b-mqtt hook: a task received from Jarvis runs through the SAME chat
- * pipeline as a typed or spoken request ([ChatManager] → ToolRunCoordinator →
- * ToolExecutor). Dangerous tools therefore hit the unchanged confirmation gate
- * (ToolConfirmationManager): the chat card, the voice responder and the Jarvis
- * notification are all just surfaces of that one decision. Nothing here can
- * approve anything.
- *
- * Extra rule for the remote channel: when the user has set confirmations to
- * "Never", remote tasks are refused outright (a typed request is the user's
- * own action; a remote one must never run side effects unattended).
+ * Branch b-mqtt hook. A Jarvis task runs as ONE agent turn of the existing
+ * chat pipeline ([ChatManager] → ToolRunCoordinator → ToolExecutor), but:
+ * - inside [RemoteToolOrigin] (set by [RemoteAgentRunner]) — ToolExecutor then
+ *   allows only read-only tools without a tap, refuses NEVER mode and calls
+ *   aimed at AndroLLM itself, and remote cards never accept a spoken "yes";
+ * - in a dedicated, archived conversation, never the owner's active chat;
+ * - without memory retrieval/extraction and without conversation history;
+ * - after the owner's own turn has finished (bounded wait).
  */
-@Singleton
-class ChatPipelineJarvisTaskRunner @Inject constructor(
-    private val chatManager: ChatManager,
-    private val automationSettings: AutomationSettingsStore
-) : JarvisTaskRunner {
-
-    override suspend fun run(task: JarvisTask): TaskOutcome {
-        if (automationSettings.current().confirmationMode == ConfirmationMode.NEVER) {
-            Timber.w("JarvisLink: task %s refused — confirmation mode is NEVER", task.id)
-            return TaskOutcome(
-                ResultStatus.DENIED,
-                "Refused: on the phone Settings → Automation → Confirmations is set to 'Never'. " +
-                    "Remote tasks only run with confirmations enabled."
-            )
-        }
-        val answer = StringBuilder()
-        val finished = withTimeoutOrNull(TASK_TIMEOUT_MS) {
-            chatManager.sendMessageStream(task.text, origin = MessageOrigin.AUTOMATION)
-                .collect { delta -> answer.append(delta) }
-            true
-        }
-        val text = answer.toString().trim()
-        return when {
-            finished == null -> TaskOutcome(ResultStatus.ERROR, "Timed out after ${TASK_TIMEOUT_MS / 60_000} min. Partial answer: $text")
-            text.isEmpty() -> TaskOutcome(ResultStatus.ERROR, "The assistant produced no answer.")
-            else -> TaskOutcome(ResultStatus.OK, text)
-        }
-    }
-
-    companion object {
-        /** Covers several confirmation waits (each up to 5 min) plus generation. */
-        const val TASK_TIMEOUT_MS = 15 * 60_000L
-    }
-}
-
 @Module
 @InstallIn(SingletonComponent::class)
-abstract class JarvisLinkHookModule {
-    @Binds
+object JarvisLinkHookModule {
+
+    const val CONVERSATION_ID = "jarvis-remote-tasks"
+    const val CONVERSATION_TITLE = "Jarvis — удалённые задачи"
+
+    @Provides
     @Singleton
-    abstract fun bindJarvisTaskRunner(impl: ChatPipelineJarvisTaskRunner): JarvisTaskRunner
+    fun provideJarvisTaskRunner(
+        @ApplicationContext context: Context,
+        chatManager: ChatManager,
+        automationSettings: AutomationSettingsStore,
+        traceStore: ToolExecutionTraceStore
+    ): JarvisTaskRunner = RemoteAgentRunner(
+        turns = RemoteTurnExecutor { prompt ->
+            chatManager.sendMessageStream(
+                prompt,
+                origin = MessageOrigin.AUTOMATION,
+                conversationId = CONVERSATION_ID,
+                conversationTitle = CONVERSATION_TITLE,
+                useMemory = false,
+                includeHistory = false
+            )
+        },
+        automationSettings = { automationSettings.current() },
+        ownerBusy = traceStore.turnActive,
+        origin = RemoteToolOrigin(ownPackages = setOf(context.packageName, "io.androllm"))
+    )
 }

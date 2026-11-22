@@ -50,19 +50,28 @@ class JarvisLinkViewModel @Inject constructor(
     val state: StateFlow<LinkState> = status.state
 
     init {
-        // Re-attach the service when the app opens with the link enabled.
+        // Re-attach the service when Settings opens with the link enabled.
         controller.sync()
     }
+
+    private val _message = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message
 
     fun setEnabled(enabled: Boolean) {
         store.setEnabled(enabled)
         controller.sync()
     }
 
-    /** Saves the connection fields. A blank [password] keeps the stored one. */
-    fun save(host: String, port: String, username: String, password: String) {
+    /** Saves the connection fields. Blank [password] / [signingKeyHex] keep the stored ones. */
+    fun save(host: String, port: String, username: String, password: String, signingKeyHex: String) {
         store.update(host, port.toIntOrNull() ?: JarvisLinkSettings.DEFAULT_PORT, username)
         if (password.isNotEmpty()) store.setPassword(password)
+        if (signingKeyHex.isNotBlank() && !store.setSigningKeyHex(signingKeyHex)) {
+            _message.value = "Signing key must be 64 hex characters — not saved"
+        } else {
+            _message.value = if (store.current().hostIsTailscale) null
+            else "Host must be a Tailscale address (100.x) or *.ts.net name — the link will not connect to LAN/public hosts"
+        }
         controller.restart()
     }
 }
@@ -79,6 +88,8 @@ fun JarvisLinkSection(viewModel: JarvisLinkViewModel = hiltViewModel()) {
     var port by remember(settings.port) { mutableStateOf(settings.port.toString()) }
     var user by remember(settings.username) { mutableStateOf(settings.username) }
     var password by remember { mutableStateOf("") }
+    var signingKey by remember { mutableStateOf("") }
+    val message by viewModel.message.collectAsState()
 
     CloudGlassCard(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
         Column(
@@ -90,7 +101,7 @@ fun JarvisLinkSection(viewModel: JarvisLinkViewModel = hiltViewModel()) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Jarvis link (MQTT)", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.ledger.deskPaper)
                     Text(
-                        "Receive tasks from Jarvis. Dangerous actions still ask you first.",
+                        "Receive signed tasks from Jarvis over Tailscale. Anything beyond read-only tools asks you first.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.ledger.deskInk
                     )
@@ -103,11 +114,14 @@ fun JarvisLinkSection(viewModel: JarvisLinkViewModel = hiltViewModel()) {
             }
             Text(
                 "Status: " + when (val s = state) {
-                    LinkState.Off -> if (settings.isComplete) "off" else "off — enter host, user and password"
+                    LinkState.Off -> if (settings.isComplete) "off" else "off — enter Tailscale host, user, password and signing key"
                     LinkState.Connecting -> "connecting…"
                     LinkState.Connected -> "connected"
                     is LinkState.Retrying -> "reconnecting in ${s.inMs / 1000}s"
                     is LinkState.AuthFailed -> "broker rejected credentials"
+                    is LinkState.WaitingForRoute -> "waiting for Tailscale (${s.reason})"
+                    is LinkState.Refused -> "not connecting: ${s.reason}"
+                    is LinkState.ConfigError -> s.reason
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.ledger.deskInk
@@ -127,9 +141,22 @@ fun JarvisLinkSection(viewModel: JarvisLinkViewModel = hiltViewModel()) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 modifier = Modifier.fillMaxWidth()
             )
+            OutlinedTextField(
+                value = signingKey,
+                onValueChange = { signingKey = it.trim() },
+                label = { Text(if (settings.hasSigningKey) "Task signing key (saved — leave blank to keep)" else "Task signing key (64 hex)") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (message != null) {
+                Text(message!!, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
             Button(onClick = {
-                viewModel.save(host, port, user, password)
+                viewModel.save(host, port, user, password, signingKey)
                 password = ""
+                signingKey = ""
             }) { Text("Save & reconnect") }
         }
     }

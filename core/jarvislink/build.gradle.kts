@@ -63,6 +63,8 @@ dependencies {
     implementation(libs.coroutines.android)
     implementation(libs.serialization.core)
     implementation(libs.timber)
+    // Re-attach the service at app start (InitializationProvider is already in the app via WorkManager).
+    implementation("androidx.startup:startup-runtime:1.1.1")
 
     // MQTT 5 client (HiveMQ, Apache-2.0, actively maintained, Android-supported).
     implementation(libs.hivemq.mqtt.client)

@@ -9,12 +9,16 @@ import com.hivemq.client.mqtt.mqtt5.exceptions.Mqtt5ConnAckException
 import com.hivemq.client.mqtt.mqtt5.message.connect.connack.Mqtt5ConnAckReasonCode
 import io.androllm.core.jarvislink.protocol.JarvisProtocol
 import io.androllm.core.jarvislink.protocol.JarvisTopics
-import java.util.concurrent.TimeUnit
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.future.await
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 
 /** Connection state shown in Settings. */
@@ -24,9 +28,12 @@ sealed interface LinkState {
     data object Connected : LinkState
     data class Retrying(val reason: String, val inMs: Long) : LinkState
     data class AuthFailed(val reason: String) : LinkState
+    data class WaitingForRoute(val reason: String) : LinkState
+    data class Refused(val reason: String) : LinkState
+    data class ConfigError(val reason: String) : LinkState
 }
 
-/** Broker endpoint and credentials for one connection attempt (password never logged). */
+/** Broker credentials for the link (password never logged). */
 class LinkConfig(
     val host: String,
     val port: Int,
@@ -36,18 +43,21 @@ class LinkConfig(
 )
 
 /**
- * MQTT 5 link to the Jarvis broker built on the HiveMQ client.
+ * MQTT 5 link to the Jarvis broker on the HiveMQ client.
  *
- * - Persistent session (`cleanStart=false`, 24 h expiry) + QoS 1 subscription
- *   to [JarvisTopics.TASK]: tasks sent while the phone was offline arrive on
- *   reconnect (and are then dropped by ttl if stale — see [JarvisProtocol.parseTask]).
- * - Retained `online` on [JarvisTopics.STATUS] after every connect; the
- *   broker publishes the retained `offline` Last-Will if the phone vanishes.
- * - Reconnect with exponential [Backoff] + jitter; auth failures retry at the
- *   slow cap instead of hammering the broker.
+ * - Before EVERY connect attempt [routeCheck] must approve the route (Tailscale
+ *   address + VPN up); otherwise no CONNECT (and no password) is sent.
+ * - One fresh client per attempt; reconnects are scheduled here with
+ *   exponential [Backoff] + jitter (slow cap on auth failures).
+ * - Persistent session (`cleanStart=false`) + QoS 1 subscription on the task
+ *   topic; retained tasks are ignored. Retained `online` after connect, retained
+ *   `offline` Last-Will.
  */
 class HiveMqJarvisLink(
+    private val scope: CoroutineScope,
     private val onTask: (ByteArray) -> Unit,
+    private val onConnected: () -> Unit,
+    private val routeCheck: suspend (String) -> RouteDecision,
     private val clock: () -> Long = System::currentTimeMillis,
     private val backoff: Backoff = Backoff()
 ) {
@@ -56,22 +66,54 @@ class HiveMqJarvisLink(
 
     @Volatile private var client: Mqtt5AsyncClient? = null
     @Volatile private var stopping = false
+    @Volatile private var config: LinkConfig? = null
+    private val generation = AtomicInteger(0)
 
-    fun connect(config: LinkConfig) {
+    fun start(cfg: LinkConfig) {
         stopping = false
+        config = cfg
         backoff.reset()
+        val gen = generation.incrementAndGet()
+        scope.launch { attempt(gen) }
+    }
+
+    private suspend fun attempt(gen: Int) {
+        val cfg = config ?: return
+        var decision = routeCheck(cfg.host)
+        while (decision is RouteDecision.Wait) {
+            if (stopping || gen != generation.get()) return
+            _state.value = LinkState.WaitingForRoute(decision.reason)
+            delay(ROUTE_RECHECK_MS)
+            decision = routeCheck(cfg.host)
+        }
+        if (stopping || gen != generation.get()) return
+        when (decision) {
+            is RouteDecision.Refuse -> {
+                _state.value = LinkState.Refused(decision.reason)
+                Timber.w("JarvisLink: route refused (%s) — not connecting", decision.reason)
+                return
+            }
+            is RouteDecision.Go -> connect(cfg, decision.host, gen)
+            is RouteDecision.Wait -> Unit
+        }
+    }
+
+    private fun connect(cfg: LinkConfig, host: String, gen: Int) {
         val c = MqttClient.builder()
             .useMqttVersion5()
-            .identifier(config.clientId)
-            .serverHost(config.host)
-            .serverPort(config.port)
+            .identifier(cfg.clientId)
+            .serverHost(host)
+            .serverPort(cfg.port)
             .addConnectedListener {
+                if (gen != generation.get()) return@addConnectedListener
                 backoff.reset()
                 _state.value = LinkState.Connected
-                Timber.i("JarvisLink: connected to %s:%d", config.host, config.port)
+                Timber.i("JarvisLink: connected")
+                afterConnect()
                 onConnected()
             }
             .addDisconnectedListener { ctx ->
+                if (gen != generation.get()) return@addDisconnectedListener
                 if (stopping || ctx.source == MqttDisconnectSource.USER) {
                     _state.value = LinkState.Off
                     return@addDisconnectedListener
@@ -82,19 +124,23 @@ class HiveMqJarvisLink(
                         it == Mqtt5ConnAckReasonCode.BAD_USER_NAME_OR_PASSWORD ||
                         it == Mqtt5ConnAckReasonCode.BAD_AUTHENTICATION_METHOD
                 }
-                val delay = if (authFailed) backoff.authFailureDelayMs() else backoff.nextDelayMs()
-                val reason = cause.message ?: cause::class.java.simpleName
-                _state.value = if (authFailed) LinkState.AuthFailed(reason) else LinkState.Retrying(reason, delay)
-                Timber.w("JarvisLink: disconnected (%s), reconnect in %d ms", reason, delay)
-                ctx.reconnector.reconnect(true).delay(delay, TimeUnit.MILLISECONDS)
+                val delayMs = if (authFailed) backoff.authFailureDelayMs() else backoff.nextDelayMs()
+                val reason = cause.javaClass.simpleName
+                _state.value = if (authFailed) LinkState.AuthFailed(reason) else LinkState.Retrying(reason, delayMs)
+                Timber.w("JarvisLink: disconnected (%s), next attempt in %d ms", reason, delayMs)
+                // No HiveMQ auto-reconnect: the next attempt re-checks the route first.
+                val next = generation.incrementAndGet()
+                scope.launch {
+                    delay(delayMs)
+                    attempt(next)
+                }
             }
             .buildAsync()
         client = c
 
-        // One global callback for the client's lifetime; the subscription is
-        // (re)issued on every connect so it survives an expired session.
         c.publishes(MqttGlobalPublishFilter.SUBSCRIBED) { publish ->
-            if (publish.topic.toString() == JarvisTopics.TASK) {
+            // Retained messages on the task topic are never executed.
+            if (!publish.isRetain && publish.topic.toString() == JarvisTopics.TASK) {
                 onTask(publish.payloadAsBytes)
             }
         }
@@ -105,8 +151,8 @@ class HiveMqJarvisLink(
             .sessionExpiryInterval(SESSION_EXPIRY_S)
             .keepAlive(KEEP_ALIVE_S)
             .simpleAuth()
-            .username(config.username)
-            .password(config.password)
+            .username(cfg.username)
+            .password(cfg.password)
             .applySimpleAuth()
             .willPublish()
             .topic(JarvisTopics.STATUS)
@@ -116,21 +162,17 @@ class HiveMqJarvisLink(
             .applyWillPublish()
             .send()
             .whenComplete { _, error ->
-                // A failed first CONNECT also lands in the disconnected
-                // listener, which schedules the backoff reconnect.
-                if (error != null) Timber.w("JarvisLink: initial connect failed: %s", error.message)
+                if (error != null) Timber.w("JarvisLink: connect failed: %s", error.javaClass.simpleName)
             }
-        // NOTE: config.password is not zeroed here — the client keeps the
-        // CONNECT (credentials included) for automatic reconnects.
     }
 
-    private fun onConnected() {
+    private fun afterConnect() {
         val c = client ?: return
         c.subscribeWith()
             .topicFilter(JarvisTopics.TASK)
             .qos(MqttQos.AT_LEAST_ONCE)
             .send()
-            .whenComplete { _, e -> if (e != null) Timber.w("JarvisLink: subscribe failed: %s", e.message) }
+            .whenComplete { _, e -> if (e != null) Timber.w("JarvisLink: subscribe failed: %s", e.javaClass.simpleName) }
         c.publishWith()
             .topic(JarvisTopics.STATUS)
             .payload(JarvisProtocol.encodeStatus(online = true, nowMs = clock()))
@@ -139,27 +181,36 @@ class HiveMqJarvisLink(
             .send()
     }
 
-    /** Publishes a result (QoS 1). Suspends until the broker's PUBACK or [PUBLISH_TIMEOUT_MS]. */
+    /**
+     * Publishes a result (QoS 1). Throws [IOException] on failure or after
+     * [PUBLISH_TIMEOUT_MS] — never a CancellationException, so a slow network
+     * cannot cancel the caller's worker loop.
+     */
     suspend fun publishResult(payload: ByteArray) {
-        val c = client ?: error("not connected")
-        withTimeout(PUBLISH_TIMEOUT_MS) {
-            val result = c.publishWith()
-                .topic(JarvisTopics.RESULT)
-                .payload(payload)
-                .qos(MqttQos.AT_LEAST_ONCE)
-                .send()
-                .await()
-            result.error.ifPresent { throw it }
-        }
+        val c = client ?: throw IOException("not connected")
+        if (_state.value != LinkState.Connected) throw IOException("not connected")
+        val result = withTimeoutOrNull(PUBLISH_TIMEOUT_MS) {
+            runCatching {
+                c.publishWith()
+                    .topic(JarvisTopics.RESULT)
+                    .payload(payload)
+                    .qos(MqttQos.AT_LEAST_ONCE)
+                    .send()
+                    .await()
+            }
+        } ?: throw IOException("publish timed out")
+        val published = result.getOrElse { throw IOException("publish failed: ${it.javaClass.simpleName}") }
+        published.error.ifPresent { throw IOException("publish rejected: ${it.javaClass.simpleName}") }
     }
 
     /** Graceful stop: retained `offline`, then DISCONNECT (no Last-Will on a clean disconnect). */
     suspend fun disconnect() {
         stopping = true
-        val c = client ?: return
+        generation.incrementAndGet()
+        val c = client ?: run { _state.value = LinkState.Off; return }
         client = null
-        runCatching {
-            withTimeout(3_000) {
+        withTimeoutOrNull(3_000) {
+            runCatching {
                 c.publishWith()
                     .topic(JarvisTopics.STATUS)
                     .payload(JarvisProtocol.encodeStatus(online = false, nowMs = clock()))
@@ -169,13 +220,14 @@ class HiveMqJarvisLink(
                     .await()
             }
         }
-        runCatching { withTimeout(3_000) { c.disconnect().await() } }
+        withTimeoutOrNull(3_000) { runCatching { c.disconnect().await() } }
         _state.value = LinkState.Off
     }
 
     companion object {
         const val SESSION_EXPIRY_S = 86_400L
-        const val KEEP_ALIVE_S = 30
+        const val KEEP_ALIVE_S = 60
         const val PUBLISH_TIMEOUT_MS = 30_000L
+        const val ROUTE_RECHECK_MS = 15_000L
     }
 }

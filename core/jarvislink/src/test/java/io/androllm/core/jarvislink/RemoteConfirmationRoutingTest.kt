@@ -3,14 +3,11 @@ package io.androllm.core.jarvislink
 import com.google.common.truth.Truth.assertThat
 import io.androllm.core.jarvislink.confirm.ConfirmationNotifier
 import io.androllm.core.jarvislink.confirm.RemoteConfirmationRouter
-import io.androllm.core.jarvislink.processing.JarvisTaskRunner
-import io.androllm.core.jarvislink.processing.RemoteTaskProcessor
+import io.androllm.core.jarvislink.processing.RemoteAgentRunner
 import io.androllm.core.jarvislink.processing.RemoteTaskTracker
-import io.androllm.core.jarvislink.processing.TaskDeduplicator
+import io.androllm.core.jarvislink.processing.RemoteTurnExecutor
 import io.androllm.core.jarvislink.processing.TaskOutcome
-import io.androllm.core.jarvislink.protocol.JarvisProtocol
 import io.androllm.core.jarvislink.protocol.JarvisTask
-import io.androllm.core.jarvislink.protocol.ResultMessage
 import io.androllm.core.jarvislink.protocol.ResultStatus
 import io.androllm.core.tools.api.Tool
 import io.androllm.core.tools.api.ToolCall
@@ -19,18 +16,24 @@ import io.androllm.core.tools.api.ToolSpec
 import io.androllm.core.tools.confirmation.PendingToolConfirmation
 import io.androllm.core.tools.confirmation.ToolConfirmationManager
 import io.androllm.core.tools.executor.ToolExecutor
+import io.androllm.core.tools.origin.RemoteToolOrigin
 import io.androllm.core.tools.registry.ToolRegistry
 import io.androllm.core.tools.settings.AutomationSettings
 import io.androllm.core.tools.settings.AutomationSettingsStore
+import io.androllm.core.tools.settings.ConfirmationMode
 import io.androllm.core.tools.trace.ToolExecutionTraceStore
 import io.mockk.coEvery
 import io.mockk.mockk
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -38,161 +41,305 @@ import kotlinx.serialization.json.putJsonObject
 import org.junit.Test
 
 /**
- * Proves a remote task goes through the REAL confirmation gate:
- * JarvisTaskRunner → ToolExecutor → ToolConfirmationManager.awaitDecision.
- * The router only adds a notification surface; nothing approves on its own.
+ * The remote policy is enforced by the REAL ToolExecutor + ToolConfirmationManager
+ * whenever the call runs inside RemoteToolOrigin (which RemoteAgentRunner sets).
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class RemoteConfirmationRoutingTest {
 
-    private class FakeSmsTool : Tool {
+    private class FakeTool(
+        private val name: String,
+        cacheable: Boolean = false,
+        requiresConfirmation: Boolean = false
+    ) : Tool {
         var executions = 0
         override val spec = ToolSpec(
-            name = "send_sms",
-            description = "Send an SMS (test double)",
+            name = name,
+            description = "test double $name",
             parameters = buildJsonObject {
                 put("type", "object")
                 putJsonObject("properties") {
                     putJsonObject("message") { put("type", "string") }
+                    putJsonObject("app") { put("type", "string") }
                 }
             },
-            requiresConfirmation = true,
-            confirmationPrompt = "send the SMS"
+            requiresConfirmation = requiresConfirmation,
+            cacheable = cacheable
         )
         override suspend fun execute(arguments: JsonObject): ToolResult {
             executions++
-            return ToolResult.Success("SMS sent")
+            return ToolResult.Success("$name done")
         }
     }
 
     private class RecordingNotifier : ConfirmationNotifier {
-        val shown = mutableListOf<Pair<PendingToolConfirmation, JarvisTask>>()
-        var cancels = 0
+        val shown = mutableListOf<PendingToolConfirmation>()
         var visible: PendingToolConfirmation? = null
-        override fun show(confirmation: PendingToolConfirmation, task: JarvisTask) {
-            shown += confirmation to task; visible = confirmation
-        }
-        override fun cancel() { cancels++; visible = null }
+        override fun show(confirmation: PendingToolConfirmation, task: JarvisTask?) { shown += confirmation; visible = confirmation }
+        override fun cancel() { visible = null }
     }
 
-    private val now = 1_800_000_000_000L
-    private val sms = FakeSmsTool()
+    private val sms = FakeTool("send_sms", requiresConfirmation = true)
+    private val uiClick = FakeTool("ui_click")                       // unflagged by the base app
+    private val mcpRead = FakeTool("mcp_files_list", cacheable = true) // MCP is never auto-allowed
+    private val weather = FakeTool("calc_test", cacheable = true)   // pure read
+    private val launch = FakeTool("launch_app")
+
+    private var settings = AutomationSettings() // HIGH_RISK by default
     private val manager = ToolConfirmationManager()
     private val tracker = RemoteTaskTracker()
     private val notifier = RecordingNotifier()
     private val router = RemoteConfirmationRouter(manager, tracker, notifier)
-    private val published = mutableListOf<ResultMessage>()
+    private val remote = RemoteToolOrigin(ownPackages = setOf("io.androllm.app"))
 
     private val executor: ToolExecutor = run {
-        val registry = ToolRegistry().apply { check(register(sms)) }
-        val settings = mockk<AutomationSettingsStore>()
-        coEvery { settings.current() } returns AutomationSettings() // default: HIGH_RISK confirmations
-        ToolExecutor(registry, settings, manager, ToolExecutionTraceStore())
+        val registry = ToolRegistry()
+        listOf(sms, uiClick, mcpRead, weather, launch).forEach { check(registry.register(it)) }
+        val store = mockk<AutomationSettingsStore>()
+        coEvery { store.current() } answers { settings }
+        ToolExecutor(registry, store, manager, ToolExecutionTraceStore())
     }
 
-    /** Stands in for the chat pipeline: the "model" decides to call send_sms. */
-    private val agentRunner = JarvisTaskRunner { task ->
-        val result = executor.execute(
-            ToolCall(id = "call-${task.id}", name = "send_sms", arguments = buildJsonObject { put("message", task.text) })
-        )
-        TaskOutcome(ResultStatus.OK, result.summary)
+    private fun call(name: String, id: String = "call-$name", vararg args: Pair<String, String>) =
+        ToolCall(id = id, name = name, arguments = buildJsonObject { args.forEach { (k, v) -> put(k, v) } })
+
+    private fun TestScope.remoteCall(c: ToolCall): Deferred<ToolResult> =
+        backgroundScope.async { withContext(remote) { executor.execute(c) } }
+
+    private fun TestScope.localCall(c: ToolCall): Deferred<ToolResult> =
+        backgroundScope.async { executor.execute(c) }
+
+    // ── B1: what needs a tap ──────────────────────────────────────────────
+
+    @Test
+    fun `remote read-only tool runs without a card`() = runTest {
+        val r = remoteCall(call("calc_test"))
+        runCurrent()
+        assertThat(r.await().isSuccess).isTrue()
+        assertThat(weather.executions).isEqualTo(1)
+        assertThat(notifier.shown).isEmpty()
     }
 
-    private fun TestScope.start(): RemoteTaskProcessor {
+    @Test
+    fun `remote ui tool needs a card even though the base app does not flag it`() = runTest {
         router.start(backgroundScope)
-        return RemoteTaskProcessor(
-            runner = agentRunner,
-            publisher = { published += JarvisProtocol.decodeResult(it) },
-            deduplicator = TaskDeduplicator(),
-            tracker = tracker,
-            clock = { now }
-        ).also { it.start(backgroundScope) }
+        val r = remoteCall(call("ui_click", args = arrayOf("message" to "Send")))
+        runCurrent()
+        assertThat(uiClick.executions).isEqualTo(0)
+        val pending = manager.pending.value!!
+        assertThat(pending.remoteOrigin).isEqualTo(RemoteToolOrigin.DEFAULT_LABEL)
+        assertThat(pending.toolDisplayName).contains("Jarvis (удалённо)")
+        assertThat(notifier.visible?.id).isEqualTo("call-ui_click")
+        assertThat(router.approve("call-ui_click")).isTrue()
+        runCurrent()
+        assertThat(r.await().isSuccess).isTrue()
+        assertThat(uiClick.executions).isEqualTo(1)
     }
 
-    private fun payload(id: String) = """{"id":"$id","text":"tell mom I'm late"}""".toByteArray()
-    private fun final(id: String) = published.last { it.id == id && it.status.isFinal }
+    @Test
+    fun `same ui tool typed locally keeps base behaviour - no card`() = runTest {
+        val r = localCall(call("ui_click"))
+        runCurrent()
+        assertThat(r.await().isSuccess).isTrue()
+        assertThat(manager.pending.value).isNull()
+    }
 
     @Test
-    fun `dangerous tool from remote task waits for approval and runs only after approve`() = runTest {
-        val p = start()
-        p.onPayload(payload("r1"))
+    fun `remote mcp tool needs a card even if cacheable`() = runTest {
+        remoteCall(call("mcp_files_list"))
         runCurrent()
+        assertThat(manager.pending.value?.toolName).isEqualTo("mcp_files_list")
+        assertThat(mcpRead.executions).isEqualTo(0)
+    }
 
-        // Pending in the shared manager (chat card) AND surfaced as notification for this task.
-        assertThat(manager.pending.value?.toolName).isEqualTo("send_sms")
-        assertThat(notifier.visible?.id).isEqualTo("call-r1")
-        assertThat(notifier.shown.single().second.id).isEqualTo("r1")
+    @Test
+    fun `remote card shows full arguments, not 40 chars`() = runTest {
+        val longText = "Привет! " + "x".repeat(200)
+        remoteCall(call("send_sms", args = arrayOf("message" to longText)))
+        runCurrent()
+        assertThat(manager.pending.value!!.actionSummary).contains(longText)
+    }
+
+    // ── B1: NEVER and settings re-checked per call ───────────────────────
+
+    @Test
+    fun `switching to NEVER mid task refuses the next remote call instead of skipping the card`() = runTest {
+        val first = remoteCall(call("calc_test"))
+        runCurrent()
+        assertThat(first.await().isSuccess).isTrue()
+        settings = settings.copy(confirmationMode = ConfirmationMode.NEVER) // e.g. flipped via UI mid-task
+        val second = remoteCall(call("send_sms", args = arrayOf("message" to "hi")))
+        runCurrent()
+        val r = second.await()
+        assertThat(r.isSuccess).isFalse()
+        assertThat(r.summary).contains("Never")
         assertThat(sms.executions).isEqualTo(0)
-        assertThat(published.none { it.id == "r1" && it.status.isFinal }).isTrue()
-
-        assertThat(router.approve("call-r1")).isTrue()
-        runCurrent()
-        assertThat(sms.executions).isEqualTo(1)
-        assertThat(final("r1").status).isEqualTo(ResultStatus.OK)
-        assertThat(final("r1").text).isEqualTo("SMS sent")
-        assertThat(notifier.visible).isNull()
+        assertThat(manager.pending.value).isNull()
     }
 
     @Test
-    fun `deny from notification blocks the tool`() = runTest {
-        val p = start()
-        p.onPayload(payload("r2"))
+    fun `remote call aimed at AndroLLM itself is refused`() = runTest {
+        val r = remoteCall(call("launch_app", args = arrayOf("app" to "AndroLLM")))
+        val r2 = remoteCall(call("ui_click", id = "c2", args = arrayOf("app" to "io.androllm.app")))
         runCurrent()
-        assertThat(router.deny("call-r2")).isTrue()
+        assertThat(r.await().summary).contains("may not operate")
+        assertThat(r2.await().isSuccess).isFalse()
+        assertThat(launch.executions + uiClick.executions).isEqualTo(0)
+    }
+
+    // ── B1: no voice approval for remote cards ───────────────────────────
+
+    @Test
+    fun `voice responder is never asked for a remote card`() = runTest {
+        // (that a LOCAL card does use the responder is covered by ToolConfirmationManagerTest)
+        var voiceAsked = 0
+        manager.setVoiceResponder { voiceAsked++; true } // would approve if it were asked
+        val remoteResult = remoteCall(call("send_sms", args = arrayOf("message" to "hi")))
         runCurrent()
+        Thread.sleep(200) // the responder would run on Dispatchers.Default
+        runCurrent()
+        assertThat(voiceAsked).isEqualTo(0)
         assertThat(sms.executions).isEqualTo(0)
-        assertThat(final("r2").text).contains("declined")
+        assertThat(manager.pending.value?.id).isEqualTo("call-send_sms")
+        manager.deny("call-send_sms")
+        runCurrent()
+        assertThat(remoteResult.await().isSuccess).isFalse()
     }
 
     @Test
-    fun `chat card decision is honoured for remote tasks too`() = runTest {
-        val p = start()
-        p.onPayload(payload("r3"))
+    fun `cards set without the executor (ui_run steps) are labelled remote from context too`() = runTest {
+        var voiceAsked = 0
+        manager.setVoiceResponder { voiceAsked++; true }
+        backgroundScope.async {
+            withContext(remote) {
+                manager.awaitDecision(
+                    PendingToolConfirmation("ui_step", "ui_automation", "UI Automation", "proceed", "Do it?")
+                )
+            }
+        }
         runCurrent()
-        manager.deny(manager.pending.value!!.id) // the user tapped Deny on the in-app card
-        runCurrent()
-        assertThat(sms.executions).isEqualTo(0)
-        assertThat(notifier.visible).isNull()
+        assertThat(manager.pending.value?.remoteOrigin).isNotNull()
+        assertThat(voiceAsked).isEqualTo(0)
     }
 
+    // ── deny / timeout / stale ids ───────────────────────────────────────
+
     @Test
-    fun `unanswered confirmation times out as deny - never auto approve`() = runTest {
-        val p = start()
-        p.onPayload(payload("r4"))
+    fun `deny and unanswered timeout both block the tool`() = runTest {
+        router.start(backgroundScope)
+        val a = remoteCall(call("send_sms", args = arrayOf("message" to "1")))
+        runCurrent()
+        router.deny("call-send_sms")
+        runCurrent()
+        assertThat(a.await().summary).contains("declined")
+        val b = remoteCall(call("send_sms", id = "c-b", args = arrayOf("message" to "2")))
         runCurrent()
         advanceTimeBy(ToolConfirmationManager.CONFIRMATION_TIMEOUT_MS + 1_000)
         runCurrent()
-        assertThat(sms.executions).isEqualTo(0)
-        assertThat(final("r4").text).contains("declined")
-    }
-
-    @Test
-    fun `stale or foreign ids cannot approve`() = runTest {
-        val p = start()
-        p.onPayload(payload("r5"))
-        runCurrent()
-        assertThat(router.approve("call-other")).isFalse()
-        runCurrent()
-        assertThat(sms.executions).isEqualTo(0)
-        assertThat(manager.pending.value?.id).isEqualTo("call-r5")
-        router.deny("call-r5")
-        runCurrent()
-        assertThat(router.approve("call-r5")).isFalse() // already resolved
+        assertThat(b.await().summary).contains("declined")
         assertThat(sms.executions).isEqualTo(0)
     }
 
     @Test
-    fun `confirmation of a local typed request is not routed to the notification`() = runTest {
+    fun `router cannot approve foreign, stale or local cards`() = runTest {
         router.start(backgroundScope)
-        val typed = backgroundScope.launch {
-            executor.execute(ToolCall(id = "typed-1", name = "send_sms", arguments = buildJsonObject { put("message", "hi") }))
-        }
+        localCall(call("send_sms", id = "typed-1", args = arrayOf("message" to "hi")))
         runCurrent()
-        assertThat(manager.pending.value?.id).isEqualTo("typed-1")
-        assertThat(notifier.shown).isEmpty() // chat card only
-        manager.confirm("typed-1")
+        assertThat(notifier.shown).isEmpty()                 // local card is not mirrored
+        assertThat(router.approve("typed-1")).isFalse()      // and cannot be approved from the remote surface
+        manager.deny("typed-1")
         runCurrent()
-        assertThat(typed.isCompleted).isTrue()
+        remoteCall(call("send_sms", id = "r-1", args = arrayOf("message" to "hi")))
+        runCurrent()
+        assertThat(router.approve("other")).isFalse()
+        router.deny("r-1")
+        runCurrent()
+        assertThat(router.approve("r-1")).isFalse()
+        assertThat(sms.executions).isEqualTo(0)
+    }
+
+    // ── B4: cards queue instead of replacing each other ──────────────────
+
+    @Test
+    fun `concurrent local and remote confirmations are queued, not replaced`() = runTest {
+        val local = localCall(call("send_sms", id = "typed", args = arrayOf("message" to "a")))
+        runCurrent()
+        val remoteR = remoteCall(call("send_sms", id = "remote", args = arrayOf("message" to "b")))
+        runCurrent()
+        assertThat(manager.pending.value?.id).isEqualTo("typed") // not replaced by the remote card
+        manager.confirm("typed")
+        runCurrent()
+        assertThat(local.await().isSuccess).isTrue()
+        assertThat(manager.pending.value?.id).isEqualTo("remote")
+        manager.deny("remote")
+        runCurrent()
+        assertThat(remoteR.await().isSuccess).isFalse()
         assertThat(sms.executions).isEqualTo(1)
+    }
+
+    // ── runner level: NEVER refusal, origin propagation, owner busy ───────
+
+    private fun task(id: String = "t1") = JarvisTask(id, "do it", "jarvis", 0L, 600)
+
+    @Test
+    fun `runner refuses the whole task when confirmations are NEVER`() = runTest {
+        settings = settings.copy(confirmationMode = ConfirmationMode.NEVER)
+        var turns = 0
+        val runner = RemoteAgentRunner(
+            turns = RemoteTurnExecutor { turns++; flow { emit("x") } },
+            automationSettings = { settings },
+            ownerBusy = MutableStateFlow(false)
+        )
+        val out = runner.run(task())
+        assertThat(out.status).isEqualTo(ResultStatus.DENIED)
+        assertThat(turns).isEqualTo(0)
+    }
+
+    @Test
+    fun `runner executes the turn inside RemoteToolOrigin so the executor applies the policy`() = runTest {
+        val runner = RemoteAgentRunner(
+            turns = RemoteTurnExecutor { prompt ->
+                flow {
+                    val r = executor.execute(call("ui_click", args = arrayOf("message" to prompt.take(30))))
+                    emit("result: ${r.summary}")
+                }
+            },
+            automationSettings = { settings },
+            ownerBusy = MutableStateFlow(false),
+            origin = remote
+        )
+        val out = backgroundScope.async { runner.run(task()) }
+        runCurrent()
+        assertThat(manager.pending.value?.remoteOrigin).isNotNull() // card raised → origin propagated through the flow
+        manager.deny(manager.pending.value!!.id)
+        runCurrent()
+        assertThat(out.await().text).contains("declined")
+        assertThat(uiClick.executions).isEqualTo(0)
+    }
+
+    @Test
+    fun `runner waits for the owner's turn to finish`() = runTest {
+        val busy = MutableStateFlow(true)
+        var started = false
+        val runner = RemoteAgentRunner(
+            turns = RemoteTurnExecutor { started = true; flow { emit("ok") } },
+            automationSettings = { settings },
+            ownerBusy = busy
+        )
+        val out = backgroundScope.async { runner.run(task()) }
+        runCurrent()
+        assertThat(started).isFalse()
+        busy.value = false
+        runCurrent()
+        assertThat(out.await()).isEqualTo(TaskOutcome(ResultStatus.OK, "ok"))
+    }
+
+    @Test
+    fun `pipeline error strings become generic errors`() {
+        assertThat(RemoteAgentRunner.classify("Error: java.io.IOException /secret", true).status).isEqualTo(ResultStatus.ERROR)
+        assertThat(RemoteAgentRunner.classify("Error: java.io.IOException /secret", true).text).doesNotContain("secret")
+        assertThat(RemoteAgentRunner.classify("I don't have a model loaded yet.", true).status).isEqualTo(ResultStatus.ERROR)
+        assertThat(RemoteAgentRunner.classify("", true).status).isEqualTo(ResultStatus.ERROR)
+        assertThat(RemoteAgentRunner.classify("partial", false).status).isEqualTo(ResultStatus.ERROR)
     }
 }

@@ -5,8 +5,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -15,6 +18,8 @@ import io.androllm.core.jarvislink.confirm.RemoteConfirmationRouter
 import io.androllm.core.jarvislink.mqtt.HiveMqJarvisLink
 import io.androllm.core.jarvislink.mqtt.LinkConfig
 import io.androllm.core.jarvislink.mqtt.LinkState
+import io.androllm.core.jarvislink.mqtt.RouteDecision
+import io.androllm.core.jarvislink.mqtt.TailscaleRoute
 import io.androllm.core.jarvislink.processing.JarvisTaskRunner
 import io.androllm.core.jarvislink.processing.RemoteTaskProcessor
 import io.androllm.core.jarvislink.processing.RemoteTaskTracker
@@ -26,14 +31,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 
 /**
  * Foreground service holding the MQTT link to Jarvis. Runs only while the
- * link is enabled in Settings (off by default). Type `remoteMessaging`: it
- * relays text tasks/results between Jarvis and the on-device agent.
+ * link is enabled in Settings (off by default). Type `remoteMessaging`.
  */
 @AndroidEntryPoint
 class JarvisLinkService : Service() {
@@ -47,31 +51,57 @@ class JarvisLinkService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var link: HiveMqJarvisLink? = null
     private var processor: RemoteTaskProcessor? = null
+    private var inForeground = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         ensureChannel()
-        startInForeground(buildNotification("Connecting…"))
+        // A sticky restart from the background may not be allowed to go
+        // foreground (Android 12+): stop cleanly instead of crash-looping.
+        inForeground = try {
+            startInForeground(buildNotification("Connecting…"))
+            true
+        } catch (e: Exception) {
+            Timber.w(e, "JarvisLink: startForeground not allowed now — stopping")
+            false
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!inForeground) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         val settings = settingsStore.current()
-        val password = settingsStore.password()
-        if (!settings.enabled || !settings.isComplete || password == null) {
+        if (!settings.enabled || !settings.isComplete) {
             Timber.i("JarvisLink: disabled or incomplete settings — stopping service")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        val password = settingsStore.password()
+        if (password == null || settingsStore.signingKey() == null) {
+            // e.g. restored from a backup on a new device: Keystore key is gone.
+            status.set(LinkState.ConfigError("Stored password or signing key unreadable — enter them again"))
             stopSelf()
             return START_NOT_STICKY
         }
         if (link != null) return START_STICKY
 
-        val newLink = HiveMqJarvisLink(onTask = { payload -> scope.launch { processor?.onPayload(payload) } })
-        val newProcessor = RemoteTaskProcessor(
+        lateinit var newProcessor: RemoteTaskProcessor
+        val newLink = HiveMqJarvisLink(
+            scope = scope,
+            onTask = { payload -> scope.launch { newProcessor.onPayload(payload) } },
+            onConnected = { scope.launch { newProcessor.flushPending() } },
+            routeCheck = { host -> checkRoute(applicationContext, host) }
+        )
+        newProcessor = RemoteTaskProcessor(
             runner = runner,
             publisher = { bytes -> newLink.publishResult(bytes) },
             deduplicator = TaskDeduplicator(store = settingsStore),
-            tracker = tracker
+            tracker = tracker,
+            signingKey = { settingsStore.signingKey() }
         )
         processor = newProcessor
         link = newLink
@@ -83,7 +113,7 @@ class JarvisLinkService : Service() {
                 updateNotification(describe(st))
             }
         }
-        newLink.connect(
+        newLink.start(
             LinkConfig(
                 host = settings.host,
                 port = settings.port,
@@ -101,9 +131,11 @@ class JarvisLinkService : Service() {
         val l = link
         link = null
         processor = null
-        // Publish retained "offline" and disconnect cleanly (bounded wait).
-        if (l != null) runBlocking { withTimeoutOrNull(4_000) { l.disconnect() } }
-        status.set(LinkState.Off)
+        // Publish retained "offline" and disconnect off the main thread (bounded).
+        if (l != null) {
+            CoroutineScope(Dispatchers.IO).launch { withTimeoutOrNull(7_000) { l.disconnect() } }
+        }
+        if (status.state.value !is LinkState.ConfigError) status.set(LinkState.Off)
         scope.cancel()
         super.onDestroy()
     }
@@ -114,6 +146,9 @@ class JarvisLinkService : Service() {
         LinkState.Connected -> "Connected — waiting for Jarvis tasks"
         is LinkState.Retrying -> "Reconnecting in ${st.inMs / 1000}s"
         is LinkState.AuthFailed -> "Broker rejected the credentials"
+        is LinkState.WaitingForRoute -> "Waiting for Tailscale"
+        is LinkState.Refused -> "Not connecting: ${st.reason}"
+        is LinkState.ConfigError -> st.reason
     }
 
     private fun startInForeground(notification: Notification) {
@@ -148,7 +183,7 @@ class JarvisLinkService : Service() {
         if (nm.getNotificationChannel(SERVICE_CHANNEL) == null) {
             nm.createNotificationChannel(
                 NotificationChannel(SERVICE_CHANNEL, "Jarvis link", NotificationManager.IMPORTANCE_LOW).apply {
-                    description = "Connection to Jarvis (MQTT) while remote tasks are enabled"
+                    description = "Connection to Jarvis (MQTT over Tailscale) while remote tasks are enabled"
                 }
             )
         }
@@ -157,5 +192,30 @@ class JarvisLinkService : Service() {
     companion object {
         const val SERVICE_CHANNEL = "jarvis_link"
         const val NOTIFICATION_ID = 0x4A4C01
+
+        /**
+         * Only over Tailscale: host must be a Tailscale IP or *.ts.net name,
+         * a VPN network must be up, and the name must resolve (through that
+         * VPN network) to a Tailscale address. Connects to the resolved IP.
+         */
+        @Suppress("DEPRECATION")
+        suspend fun checkRoute(context: Context, host: String): RouteDecision = withContext(Dispatchers.IO) {
+            if (TailscaleRoute.classify(host) == TailscaleRoute.HostKind.NOT_TAILSCALE) {
+                return@withContext RouteDecision.Refuse("host is not a Tailscale address (100.64.0.0/10) or *.ts.net name")
+            }
+            val cm = context.getSystemService(ConnectivityManager::class.java)
+                ?: return@withContext RouteDecision.Wait("no connectivity service")
+            val vpn = cm.allNetworks.firstOrNull {
+                cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+            } ?: return@withContext RouteDecision.Wait("Tailscale VPN is not connected")
+            val addrs = try {
+                vpn.getAllByName(host).toList()
+            } catch (e: Exception) {
+                return@withContext RouteDecision.Wait("cannot resolve the broker via the VPN")
+            }
+            val ts = addrs.firstOrNull(TailscaleRoute::isTailscaleAddress)
+                ?: return@withContext RouteDecision.Refuse("broker name does not resolve to a Tailscale address")
+            RouteDecision.Go(ts.hostAddress ?: host)
+        }
     }
 }

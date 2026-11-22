@@ -14,7 +14,7 @@ class InMemorySeenIdStore : SeenIdStore {
 }
 
 /**
- * Remembers the last [capacity] task ids (LRU, oldest evicted first).
+ * Remembers the last [capacity] task ids (2048 > max tasks per ttl window) (LRU, oldest evicted first).
  *
  * MQTT QoS 1 is at-least-once: the broker redelivers a task when our PUBACK
  * was lost, and a persistent session replays queued tasks after reconnect.
@@ -58,6 +58,6 @@ class TaskDeduplicator(
     fun size(): Int = synchronized(lock) { seen.size }
 
     companion object {
-        const val DEFAULT_CAPACITY = 256
+        const val DEFAULT_CAPACITY = 2048
     }
 }

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Jarvis link (MQTT over Tailscale) — only active when enabled in Settings. -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -28,5 +29,16 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- Re-attach the link on app start when it is enabled (androidx.startup). -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="io.androllm.core.jarvislink.service.JarvisLinkStartup"
+                android:value="androidx.startup" />
+        </provider>
     </application>
 </manifest>

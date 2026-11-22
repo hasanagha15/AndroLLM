@@ -14,23 +14,22 @@ import kotlinx.coroutines.launch
 
 /** Surface that shows a pending confirmation to the user (notification on device). */
 interface ConfirmationNotifier {
-    fun show(confirmation: PendingToolConfirmation, task: JarvisTask)
+    fun show(confirmation: PendingToolConfirmation, task: JarvisTask?)
     fun cancel()
 }
 
 /**
- * Routes confirmations raised while a REMOTE task runs to a heads-up
- * notification, so the owner sees them even when the chat screen is closed.
+ * Mirrors REMOTE-origin confirmations (those carrying
+ * [PendingToolConfirmation.remoteOrigin], set by ToolExecutor /
+ * ToolConfirmationManager inside RemoteToolOrigin) to a heads-up notification.
  *
  * It adds a surface, never a decision path of its own:
- * - Confirmations are still raised by `ToolExecutor` → [ToolConfirmationManager.awaitDecision]
- *   exactly as for typed requests; the chat card stays live in parallel and the
- *   first answer wins.
- * - [approve]/[deny] are only reachable from the user's tap on the notification
- *   (non-exported receiver, immutable PendingIntent, device unlock required),
- *   and they only act on the id that is pending right now.
- * - No answer → the manager's own timeout denies. Nothing here ever approves
- *   automatically, and Jarvis has no MQTT message that could approve.
+ * - the decision is still `ToolConfirmationManager.awaitDecision`; the chat card
+ *   stays live in parallel, first answer wins;
+ * - confirmations of the owner's own typed/voice requests are NOT mirrored;
+ * - [approve]/[deny] only act on the id pending right now and only for a
+ *   remote-origin card (tap on our own notification; receiver not exported);
+ * - no answer → the manager's timeout denies. Nothing approves automatically.
  */
 @Singleton
 class RemoteConfirmationRouter @Inject constructor(
@@ -46,7 +45,7 @@ class RemoteConfirmationRouter @Inject constructor(
             combine(confirmationManager.pending, tracker.active) { pending, task -> pending to task }
                 .distinctUntilChanged()
                 .collect { (pending, task) ->
-                    if (pending != null && task != null) notifier.show(pending, task) else notifier.cancel()
+                    if (pending?.remoteOrigin != null) notifier.show(pending, task) else notifier.cancel()
                 }
         }
     }
@@ -57,17 +56,14 @@ class RemoteConfirmationRouter @Inject constructor(
         notifier.cancel()
     }
 
-    /** User tapped Approve on the notification for confirmation [id]. */
-    fun approve(id: String): Boolean {
-        if (confirmationManager.pending.value?.id != id) return false
-        confirmationManager.confirm(id)
-        return true
-    }
+    fun approve(id: String): Boolean = decide(id) { confirmationManager.confirm(it) }
 
-    /** User tapped Deny on the notification for confirmation [id]. */
-    fun deny(id: String): Boolean {
-        if (confirmationManager.pending.value?.id != id) return false
-        confirmationManager.deny(id)
+    fun deny(id: String): Boolean = decide(id) { confirmationManager.deny(it) }
+
+    private inline fun decide(id: String, action: (String) -> Unit): Boolean {
+        val pending = confirmationManager.pending.value ?: return false
+        if (pending.id != id || pending.remoteOrigin == null) return false
+        action(id)
         return true
     }
 }

@@ -6,7 +6,9 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.androllm.core.jarvislink.mqtt.TailscaleRoute
 import io.androllm.core.jarvislink.processing.SeenIdStore
+import io.androllm.core.jarvislink.protocol.JarvisProtocol
 import java.security.KeyStore
 import java.util.UUID
 import javax.crypto.Cipher
@@ -19,29 +21,31 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** Non-secret Jarvis link settings. The password is never part of this object. */
+/** Non-secret Jarvis link settings. Secrets are never part of this object. */
 data class JarvisLinkSettings(
     val enabled: Boolean = false,
-    val host: String = DEFAULT_HOST,
+    val host: String = "",
     val port: Int = DEFAULT_PORT,
-    val username: String = DEFAULT_USER,
-    val hasPassword: Boolean = false
+    val username: String = "",
+    val hasPassword: Boolean = false,
+    val hasSigningKey: Boolean = false
 ) {
-    val isComplete: Boolean get() = host.isNotBlank() && port in 1..65535 && username.isNotBlank() && hasPassword
+    val hostIsTailscale: Boolean get() = TailscaleRoute.classify(host) != TailscaleRoute.HostKind.NOT_TAILSCALE
+
+    val isComplete: Boolean
+        get() = hostIsTailscale && port in 1..65535 && username.isNotBlank() && hasPassword && hasSigningKey
 
     companion object {
-        /** pi-brain over Tailscale (the phone is not on the home LAN when away). */
-        const val DEFAULT_HOST = "100.64.0.10"
         const val DEFAULT_PORT = 1883
-        const val DEFAULT_USER = "androllm-phone"
     }
 }
 
 /**
  * Persists the link settings. Host/port/user/enable live in private
- * SharedPreferences; the broker password is encrypted with an AES-256/GCM key
- * that never leaves the Android Keystore (alias [KEY_ALIAS]) and only the
- * ciphertext is stored. Off by default.
+ * SharedPreferences; the broker password and the task signing key are
+ * encrypted with an AES-256/GCM key that never leaves the Android Keystore
+ * (alias [KEY_ALIAS]) — only ciphertext is stored. Off by default; no host
+ * or user is preconfigured.
  */
 @Singleton
 class JarvisLinkSettingsStore @Inject constructor(
@@ -68,19 +72,24 @@ class JarvisLinkSettingsStore @Inject constructor(
         _settings.value = read()
     }
 
-    /** Stores [password] encrypted; blank clears it. The value is never logged. */
+    /** Stores [password] encrypted; blank clears it. Never logged. */
     fun setPassword(password: String) {
-        val edit = prefs.edit()
-        if (password.isEmpty()) edit.remove(K_PASSWORD) else edit.putString(K_PASSWORD, encrypt(password))
-        edit.apply()
-        _settings.value = read()
+        putSecret(K_PASSWORD, password.takeIf { it.isNotEmpty() }?.toByteArray(Charsets.UTF_8))
     }
 
-    /** Decrypted password for the MQTT CONNECT, or null. Callers must not log it. */
-    fun password(): ByteArray? {
-        val ct = prefs.getString(K_PASSWORD, null) ?: return null
-        return runCatching { decrypt(ct) }.getOrNull()
+    /** Stores the 64-hex-char task signing key; returns false when malformed. */
+    fun setSigningKeyHex(hex: String): Boolean {
+        if (hex.isBlank()) { putSecret(K_SIGNING_KEY, null); return true }
+        val key = JarvisProtocol.parseKeyHex(hex) ?: return false
+        putSecret(K_SIGNING_KEY, key)
+        return true
     }
+
+    /** Decrypted password, or null (missing or undecryptable, e.g. after a backup restore). */
+    fun password(): ByteArray? = getSecret(K_PASSWORD)
+
+    /** Decrypted 32-byte signing key, or null. */
+    fun signingKey(): ByteArray? = getSecret(K_SIGNING_KEY)?.takeIf { it.size == JarvisProtocol.KEY_BYTES }
 
     /** Stable per-install MQTT client id (persistent session key). */
     fun clientId(): String {
@@ -94,16 +103,30 @@ class JarvisLinkSettingsStore @Inject constructor(
     override fun load(): List<String> =
         prefs.getString(K_SEEN, null)?.split('\n')?.filter { it.isNotBlank() }.orEmpty()
 
+    /** commit(), not apply(): an id must be on disk before its task runs. */
     override fun save(ids: List<String>) {
-        prefs.edit().putString(K_SEEN, ids.joinToString("\n")).apply()
+        prefs.edit().putString(K_SEEN, ids.joinToString("\n")).commit()
+    }
+
+    private fun putSecret(name: String, value: ByteArray?) {
+        val edit = prefs.edit()
+        if (value == null) edit.remove(name) else edit.putString(name, encrypt(value))
+        edit.apply()
+        _settings.value = read()
+    }
+
+    private fun getSecret(name: String): ByteArray? {
+        val ct = prefs.getString(name, null) ?: return null
+        return runCatching { decrypt(ct) }.getOrNull()
     }
 
     private fun read() = JarvisLinkSettings(
         enabled = prefs.getBoolean(K_ENABLED, false),
-        host = prefs.getString(K_HOST, null) ?: JarvisLinkSettings.DEFAULT_HOST,
+        host = prefs.getString(K_HOST, null).orEmpty(),
         port = prefs.getInt(K_PORT, JarvisLinkSettings.DEFAULT_PORT),
-        username = prefs.getString(K_USER, null) ?: JarvisLinkSettings.DEFAULT_USER,
-        hasPassword = prefs.contains(K_PASSWORD)
+        username = prefs.getString(K_USER, null).orEmpty(),
+        hasPassword = prefs.contains(K_PASSWORD),
+        hasSigningKey = prefs.contains(K_SIGNING_KEY)
     )
 
     // ── Android Keystore AES/GCM ────────────────────────────────────────────
@@ -122,10 +145,10 @@ class JarvisLinkSettingsStore @Inject constructor(
         return gen.generateKey()
     }
 
-    private fun encrypt(plain: String): String {
+    private fun encrypt(plain: ByteArray): String {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
-        val ct = cipher.doFinal(plain.toByteArray(Charsets.UTF_8))
+        val ct = cipher.doFinal(plain)
         return Base64.encodeToString(cipher.iv + ct, Base64.NO_WRAP)
     }
 
@@ -136,18 +159,19 @@ class JarvisLinkSettingsStore @Inject constructor(
         return cipher.doFinal(all, IV_LEN, all.size - IV_LEN)
     }
 
-    private companion object {
+    companion object {
         const val PREFS = "jarvis_link"
         const val K_ENABLED = "enabled"
         const val K_HOST = "host"
         const val K_PORT = "port"
         const val K_USER = "username"
         const val K_PASSWORD = "password_ct"
-        const val K_CLIENT_ID = "client_id"
-        const val K_SEEN = "seen_task_ids"
-        const val ANDROID_KEYSTORE = "AndroidKeyStore"
-        const val KEY_ALIAS = "androllm_jarvislink_mqtt"
-        const val TRANSFORMATION = "AES/GCM/NoPadding"
-        const val IV_LEN = 12
+        const val K_SIGNING_KEY = "signing_key_ct"
+        private const val K_CLIENT_ID = "client_id"
+        private const val K_SEEN = "seen_task_ids"
+        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        private const val KEY_ALIAS = "androllm_jarvislink_mqtt"
+        private const val TRANSFORMATION = "AES/GCM/NoPadding"
+        private const val IV_LEN = 12
     }
 }
