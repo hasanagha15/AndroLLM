@@ -296,11 +296,13 @@ object CatalogSections {
     const val SPEECH = "Speech"
     /** Models with good non-English (notably Russian) chat quality. */
     const val MULTILINGUAL = "Multilingual"
+    /** Mistral-family models (Ministral 3). */
+    const val MISTRAL = "Mistral"
 
     /** All section chips in display order. */
     val ALL: List<String> = listOf(
         FEATURED, GOOGLE, GEMMA, QWEN, DEEPSEEK, PHI, TINY,
-        GEMMA_VARIANTS, VISION, EMBEDDING, SPEECH, MULTILINGUAL
+        GEMMA_VARIANTS, VISION, EMBEDDING, SPEECH, MULTILINGUAL, MISTRAL
     )
 }
 

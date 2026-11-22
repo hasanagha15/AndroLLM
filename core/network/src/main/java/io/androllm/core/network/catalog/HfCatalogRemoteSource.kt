@@ -33,6 +33,8 @@ class HfCatalogRemoteSource @Inject constructor(
                 } else {
                     FetchResult(error = "HTTP ${response.status.value}")
                 }
+            } catch (c: kotlinx.coroutines.CancellationException) {
+                throw c
             } catch (t: Throwable) {
                 FetchResult(error = t.message ?: t.javaClass.simpleName)
             }
@@ -45,8 +47,10 @@ class HfCatalogRemoteSource @Inject constructor(
     companion object {
         /**
          * AndroLLM fork: the catalog is refreshed ONLY from the owner's fork,
-         * never from upstream (upstream's catalog uses mutable `resolve/main`
-         * URLs whose files were re-exported for newer LiteRT-LM releases).
+         * never from upstream. A catalog is accepted only with the fork's
+         * provenance marker in `source` ([CatalogLoader.FORK_CATALOG_MARKER])
+         * and pinned URLs, so upstream's catalog on the fork's `main` (or on
+         * `jarvis/integration` before branch D is merged) is always rejected.
          *
          * Several branches are tried so the address does not depend on where
          * the catalog branch ends up after merging: `main` (today it still

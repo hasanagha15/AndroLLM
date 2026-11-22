@@ -223,16 +223,21 @@ class DownloadManager @Inject constructor(
         priority: DownloadPriority = DownloadPriority.NORMAL,
         resetPartial: Boolean = false,
     ) {
-        if (resetPartial) {
+        if (!resetPartial) {
+            startDownload(model, priority)
+            return
+        }
+        scope.launch {
             // Fork: the catalog now points at a different file — partial bytes of the
-            // old one must not be resumed. Truncate in place (files are never deleted).
+            // old one must not be resumed. Truncate in place (files are never deleted),
+            // off the main thread, then start the download.
             val path = model.filePath ?: getTargetFilePath(model)
             runCatching {
                 val file = java.io.File(path)
                 if (file.exists()) java.io.FileOutputStream(file, false).close()
             }.onFailure { Timber.w(it, "Could not reset partial file for ${model.name}") }
+            startDownload(model, priority)
         }
-        startDownload(model, priority)
     }
 
     /**

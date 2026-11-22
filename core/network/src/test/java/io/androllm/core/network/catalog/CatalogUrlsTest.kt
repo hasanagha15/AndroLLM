@@ -40,8 +40,8 @@ class CatalogUrlsTest {
             """"parameters":"1B","quantization":"Q4","version":"1","runtimeFormat":"LITERTLM",""" +
             """"fileFormat":"LITERTLM","mimeType":"application/x-litertlm","containerType":"qwen3"}"""
 
-    private fun catalog(generatedAt: Long, vararg models: String) =
-        """{"schemaVersion":2,"generatedAt":$generatedAt,"models":[${models.joinToString(",")}]}"""
+    private fun catalog(generatedAt: Long, vararg models: String, source: String = "AndroLLM fork catalog (hasanagha15)") =
+        """{"schemaVersion":2,"source":"$source","generatedAt":$generatedAt,"models":[${models.joinToString(",")}]}"""
 
     @Test
     fun newestValidCatalogWinsAndUnpinnedMainIsIgnored() {
@@ -89,5 +89,16 @@ class CatalogUrlsTest {
             assertTrue(e.message, e.message!!.contains("no models"))
             assertTrue(e.message, e.message!!.contains("future"))
         }
+    }
+
+    @Test
+    fun pinnedUpstreamCatalogOnMainWithNewerDateDoesNotWin() {
+        val upstreamPinned = catalog(now, model("upstream"), source = "official LiteRT-LM catalog")
+        val dModels = catalog(now - 5000, model("d"))
+        val body = HfCatalogRemoteSource.selectNewestValid(
+            listOf("main" to FetchResult(body = upstreamPinned), "d" to FetchResult(body = dModels)),
+            now
+        )
+        assertEquals(dModels, body)
     }
 }

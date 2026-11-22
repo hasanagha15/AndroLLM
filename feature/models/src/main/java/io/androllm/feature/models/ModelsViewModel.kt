@@ -42,6 +42,7 @@ import io.androllm.core.models.catalog.CatalogFilters
 import io.androllm.core.models.catalog.CatalogModel
 import io.androllm.core.models.catalog.CatalogRepository
 import io.androllm.feature.models.catalog.withCurrentCatalogArtifact
+import io.androllm.feature.models.catalog.withCatalogFamilyMigrations
 import io.androllm.core.models.catalog.CatalogSortOption
 import io.androllm.core.models.catalog.CatalogState
 import io.androllm.core.models.catalog.ModelSearchEngine
@@ -308,6 +309,18 @@ class ModelsViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             engineRepository.initialize()
+        }
+        // Fork (Gate D re-gate, N3): carry catalog family/architecture changes
+        // over to already-downloaded models (the engine reads them from the row).
+        viewModelScope.launch {
+            catalogRepository.state.collect { state ->
+                val ready = state as? io.androllm.core.models.catalog.CatalogState.Ready ?: return@collect
+                runCatching {
+                    modelRepository.observeAllModels().first()
+                        .withCatalogFamilyMigrations(ready.catalog.models)
+                        .forEach { modelRepository.upsert(it) }
+                }
+            }
         }
         searchHuggingFace("")
         refreshStorageStats()

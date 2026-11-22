@@ -183,7 +183,9 @@ class CatalogAssetTest {
         for (id in listOf("litertlm-qwen3.5-2b", "litertlm-qwen3.5-4b-int4", "litertlm-falcon-h1-3b-instruct")) {
             val m = byId.getValue(id)
             assertEquals(id, "EXPERIMENTAL", m.status)
-            assertTrue(id, m.description.contains("fresh model load"))
+            // Re-gate N1: the warning must be at the START (cards show 3 lines).
+            assertTrue(id, m.description.startsWith("Experimental:"))
+            assertTrue(id, m.description.take(110).contains("fresh load"))
         }
         assertEquals("STABLE", byId.getValue("litertlm-qwen3-4b-instruct-2507").status)
         // Gate D, B2 / N9: Ministral runs in its own GENERIC family and is not
@@ -191,6 +193,7 @@ class CatalogAssetTest {
         val ministral = byId.getValue("litertlm-ministral-3-3b-instruct")
         assertEquals("Ministral", ministral.family)
         assertTrue(CatalogSections.MULTILINGUAL !in ministral.sections)
+        assertEquals(listOf(CatalogSections.MISTRAL), ministral.sections)
         assertEquals("613e437fea973ca9e04a4063953ee514f1d4075e", ministral.revision)
         assertEquals("Falcon", byId.getValue("litertlm-falcon-h1-3b-instruct").family)
         assertEquals("Qwen3.5", byId.getValue("litertlm-qwen3.5-2b").family)
@@ -198,6 +201,25 @@ class CatalogAssetTest {
         val qwen06 = byId.getValue("litertlm-qwen3-0.6b-int4")
         assertEquals("7c650468cc1598861b1a0deb0ab25be6b20cab13", qwen06.revision)
         assertEquals("7900eb4e7362d88c58782c6f9999bb7a129e03544aa98b8f338ea0cc5d8c22c1", qwen06.sha256)
+    }
+
+    // ---- Gate D re-gate, B1: the fork's own catalog must pass as a network catalog ----
+
+    @Test
+    fun bundledCatalogIsAcceptedAsNetworkCatalogWithRealClock() {
+        val text = File("src/main/assets/catalog_v1.json").readText()
+        val state = CatalogLoader.apply(text, CatalogSource.REMOTE, System.currentTimeMillis())
+        assertTrue("bundled catalog rejected as REMOTE: ${(state as? CatalogState.Failed)?.message}", state is CatalogState.Ready)
+        assertTrue(bundled().source!!.contains(CatalogLoader.FORK_CATALOG_MARKER))
+    }
+
+    @Test
+    fun bundledGeneratedAtIsARealEditTimeNotTheFuture() {
+        // CI-style guard: set generatedAt to the actual edit time (UTC epoch ms).
+        val generatedAt = bundled().generatedAt
+        val oneHour = 60L * 60 * 1000
+        assertTrue("generatedAt $generatedAt is in the future", generatedAt <= System.currentTimeMillis() + oneHour)
+        assertTrue("generatedAt $generatedAt is implausibly old", generatedAt > 1_790_000_000_000L)
     }
 }
 

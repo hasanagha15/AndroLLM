@@ -34,6 +34,14 @@ interface CatalogRemoteSource {
  */
 object CatalogLoader {
 
+    /**
+     * Provenance marker carried in the fork catalog's `source` field. Saved and
+     * network catalogs without it are rejected (Gate D re-gate, B2): pinned URLs
+     * alone do not prove the catalog is the fork's (upstream may pin too, and the
+     * fork's `main` mirrors upstream).
+     */
+    const val FORK_CATALOG_MARKER = "AndroLLM fork catalog (hasanagha15)"
+
     /** A saved/remote catalog dated further ahead than this is rejected (clock skew allowance). */
     const val MAX_FUTURE_SKEW_MS: Long = 24L * 60 * 60 * 1000
 
@@ -93,6 +101,10 @@ object CatalogLoader {
             }
             if (report.errors.isNotEmpty()) {
                 CatalogState.Failed("Catalog failed validation: ${report.errors.first()}")
+            } else if (source != CatalogSource.BUNDLED &&
+                result.catalog.source?.contains(FORK_CATALOG_MARKER) != true
+            ) {
+                CatalogState.Failed("Catalog rejected: not the fork's catalog (source marker missing)")
             } else if (source != CatalogSource.BUNDLED && result.catalog.models.isEmpty()) {
                 // An empty saved/remote catalog would hide every model until a newer one appears.
                 CatalogState.Failed("Catalog rejected: it lists no models")

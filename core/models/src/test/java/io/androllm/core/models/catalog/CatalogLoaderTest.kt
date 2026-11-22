@@ -7,7 +7,7 @@ import org.junit.Test
 class CatalogLoaderTest {
 
     private fun catalogJson(model: String, generatedAt: Long = 0) =
-        """{"schemaVersion":2,"generatedAt":$generatedAt,"models":[$model]}"""
+        """{"schemaVersion":2,"source":"AndroLLM fork catalog (hasanagha15) test","generatedAt":$generatedAt,"models":[$model]}"""
 
     private fun model(
         id: String = "test-1",
@@ -148,7 +148,7 @@ class CatalogLoaderTest {
 
     @Test
     fun emptySavedCatalogDoesNotHideTheBundledModels() {
-        val emptySaved = """{"schemaVersion":2,"generatedAt":300,"models":[]}"""
+        val emptySaved = """{"schemaVersion":2,"source":"AndroLLM fork catalog (hasanagha15) test","generatedAt":300,"models":[]}"""
         val state = CatalogLoader.load(emptySaved, catalogJson(model("bundled-1"), generatedAt = 200), nowMs = 1_000)
         state as CatalogState.Ready
         assertEquals(CatalogSource.BUNDLED, state.source)
@@ -156,7 +156,7 @@ class CatalogLoaderTest {
 
     @Test
     fun emptyRemoteCatalogIsRejected() {
-        val state = CatalogLoader.apply("""{"schemaVersion":2,"generatedAt":1,"models":[]}""", CatalogSource.REMOTE, 1_000)
+        val state = CatalogLoader.apply("""{"schemaVersion":2,"source":"AndroLLM fork catalog (hasanagha15) test","generatedAt":1,"models":[]}""", CatalogSource.REMOTE, 1_000)
         assertTrue((state as CatalogState.Failed).message.contains("no models"))
     }
 
@@ -192,6 +192,26 @@ class CatalogLoaderTest {
         assertTrue(CatalogLoader.isAcceptableUpdate(older, newer))
         assertTrue(CatalogLoader.isAcceptableUpdate(newer, newer))
         assertTrue(!CatalogLoader.isAcceptableUpdate(newer, older))
+    }
+
+    // ---- Gate D re-gate, B2: fork provenance marker ----
+
+    @Test
+    fun pinnedCatalogWithoutForkMarkerIsRejectedAsRemoteAndSaved() {
+        // Upstream-like: pinned URLs, newer date, but not the fork's catalog.
+        val upstreamLike = """{"schemaVersion":2,"source":"official LiteRT-LM catalog","generatedAt":900,"models":[${model("up")}]}"""
+        val remote = CatalogLoader.apply(upstreamLike, CatalogSource.REMOTE, nowMs = 1_000)
+        assertTrue((remote as CatalogState.Failed).message.contains("source marker"))
+        val state = CatalogLoader.load(upstreamLike, catalogJson(model("bundled-1"), generatedAt = 100), nowMs = 1_000)
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.BUNDLED, state.source)
+        assertEquals("bundled-1", state.catalog.models.first().id)
+    }
+
+    @Test
+    fun bundledCatalogNeedsNoMarker() {
+        val noMarker = """{"schemaVersion":2,"generatedAt":1,"models":[${model("b")}]}"""
+        assertTrue(CatalogLoader.load(null, noMarker, nowMs = 1_000) is CatalogState.Ready)
     }
 
     private companion object {

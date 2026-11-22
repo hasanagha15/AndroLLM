@@ -1102,10 +1102,8 @@ private fun CatalogCardBody(
             overflow = TextOverflow.Ellipsis
         )
 
-        val badgeList = buildList {
-            if (recommended) add("⭐ Recommended")
-            addAll(model.badges)
-        }
+        // Fork: status badge (e.g. "🧪 Experimental") first so it is always visible.
+        val badgeList = io.androllm.feature.models.catalog.catalogCardBadges(model, recommended)
         if (badgeList.isNotEmpty()) {
             Spacer(modifier = Modifier.height(12.dp))
             FlowRow(
