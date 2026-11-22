@@ -6,13 +6,19 @@ import org.junit.Test
 
 class CatalogLoaderTest {
 
-    private fun catalogJson(model: String) = """{"schemaVersion":2,"models":[$model]}"""
+    private fun catalogJson(model: String, generatedAt: Long = 0) =
+        """{"schemaVersion":2,"generatedAt":$generatedAt,"models":[$model]}"""
 
-    private fun model(id: String = "test-1", arch: String = "qwen3", quant: String = "Q4_K_M") =
+    private fun model(
+        id: String = "test-1",
+        arch: String = "qwen3",
+        quant: String = "Q4_K_M",
+        revision: String = PIN,
+    ) =
         """{"id":"$id","name":"Test Model","family":"Qwen","architecture":"$arch",""" +
             """"categories":["CHAT"],"tags":["fast"],"license":"Apache-2.0","author":"T",""" +
-            """"repoId":"t/test-litertlm","fileName":"test-$quant.litertlm",""" +
-            """"downloadUrl":"https://huggingface.co/t/test-litertlm/resolve/main/test-$quant.litertlm",""" +
+            """"repoId":"t/test-litertlm","revision":"$revision","fileName":"test-$quant.litertlm",""" +
+            """"downloadUrl":"https://huggingface.co/t/test-litertlm/resolve/$revision/test-$quant.litertlm",""" +
             """"sizeBytes":1000000000,"parameters":"1.5B","quantization":"$quant",""" +
             """"contextLength":8192,"minRamGb":2.0,"recommendedRamGb":4.0,"downloads":100,"likes":5,""" +
             """"version":"1.0.0","runtimeFormat":"LITERTLM","fileFormat":"LITERTLM",""" +
@@ -84,5 +90,61 @@ class CatalogLoaderTest {
     fun applyRejectsGarbageJson() {
         val state = CatalogLoader.apply("{broken", CatalogSource.REMOTE)
         assertTrue(state is CatalogState.Failed)
+    }
+
+    // ---- fork: immutable-revision policy + stale saved catalog ----
+
+    @Test
+    fun applyRejectsRemoteCatalogWithUnpinnedUrls() {
+        // Upstream's catalog uses mutable resolve/main links: never applied.
+        val state = CatalogLoader.apply(catalogJson(model("remote-1", revision = "main")), CatalogSource.REMOTE)
+        assertTrue(state is CatalogState.Failed)
+        assertTrue((state as CatalogState.Failed).message.contains("not pinned"))
+    }
+
+    @Test
+    fun unpinnedSavedCatalogFallsBackToBundled() {
+        val saved = catalogJson(model("upstream-1", revision = "main"), generatedAt = 9_999_999_999_999)
+        val state = CatalogLoader.load(saved, catalogJson(model("bundled-1"), generatedAt = 1))
+        assertTrue(state is CatalogState.Ready)
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.BUNDLED, state.source)
+        assertEquals("bundled-1", state.catalog.models.first().id)
+    }
+
+    @Test
+    fun olderSavedCatalogDoesNotShadowNewerBundled() {
+        val state = CatalogLoader.load(
+            catalogJson(model("saved-old"), generatedAt = 100),
+            catalogJson(model("bundled-new"), generatedAt = 200)
+        )
+        assertTrue(state is CatalogState.Ready)
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.BUNDLED, state.source)
+        assertEquals("bundled-new", state.catalog.models.first().id)
+    }
+
+    @Test
+    fun newerPinnedSavedCatalogWins() {
+        val state = CatalogLoader.load(
+            catalogJson(model("saved-new"), generatedAt = 300),
+            catalogJson(model("bundled-old"), generatedAt = 200)
+        )
+        assertTrue(state is CatalogState.Ready)
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.SAVED, state.source)
+        assertEquals("saved-new", state.catalog.models.first().id)
+    }
+
+    @Test
+    fun bundledCatalogMayStillCarryUnpinnedEntriesAsWarnings() {
+        val state = CatalogLoader.load(null, catalogJson(model(revision = "main")))
+        assertTrue(state is CatalogState.Ready)
+        state as CatalogState.Ready
+        assertTrue(state.warnings.any { it.contains("not pinned") })
+    }
+
+    private companion object {
+        const val PIN = "0123456789abcdef0123456789abcdef01234567"
     }
 }

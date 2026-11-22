@@ -10,8 +10,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Fetches the latest model catalog JSON from a remote endpoint, trying the
- * primary catalog host first and falling back to the project's GitHub copy.
+ * Fetches the latest model catalog JSON from the AndroLLM fork's GitHub copy
+ * (see [CATALOG_URLS]; upstream hosts were removed on purpose).
  *
  * Future-proofing: the catalog is plain metadata, so new official LiteRT-LM
  * models can be added server-side without an app update. When every endpoint
@@ -42,13 +42,24 @@ class HfCatalogRemoteSource @Inject constructor(
 
     companion object {
         /**
-         * Endpoints tried in order. The primary host can publish new LiteRT
-         * models at any time; the GitHub copy mirrors this repo's bundled
-         * catalog so a working copy always exists after a release.
+         * Endpoints tried in order. AndroLLM fork: the catalog is refreshed ONLY
+         * from the owner's fork, never from upstream. Upstream's catalog uses
+         * mutable `resolve/main` URLs whose files were re-exported for newer
+         * LiteRT-LM releases (hash mismatches / 404s on this app's 0.16.0
+         * runtime), and a fetched catalog overrides the bundled one. The fork's
+         * catalog pins every file to an immutable Hugging Face commit, and
+         * CatalogLoader additionally rejects any catalog with unpinned URLs,
+         * so even a wrong endpoint cannot replace the bundled catalog.
+         *
+         * `refs/heads/...` makes the branch ref unambiguous for a name with a
+         * slash. When the catalog branch is merged elsewhere, update [FORK_BRANCH].
          */
+        const val FORK_REPO = "hasanagha15/AndroLLM"
+        const val FORK_BRANCH = "jarvis/d-models"
+        const val CATALOG_PATH = "core/models/src/main/assets/catalog_v1.json"
+
         val CATALOG_URLS: List<String> = listOf(
-            "https://models.androllm.com/catalog.json",
-            "https://raw.githubusercontent.com/ShadowSafin/AndroLLM/main/core/models/src/main/assets/catalog_v1.json"
+            "https://raw.githubusercontent.com/$FORK_REPO/refs/heads/$FORK_BRANCH/$CATALOG_PATH"
         )
     }
 }

@@ -133,6 +133,10 @@ object CatalogValidator {
             if (!model.downloadUrl.startsWith("https://")) {
                 errors += "$id: downloadUrl must be https"
             }
+            // Fork policy: mutable `resolve/main` URLs drift (upstream re-exports
+            // files in place). Only a warning here so ad-hoc/test catalogs still
+            // validate; CatalogLoader rejects unpinned SAVED/REMOTE catalogs.
+            CatalogPinPolicy.problem(model)?.let { warnings += it }
 
             if (model.sizeBytes <= 0) warnings += "$id: sizeBytes is missing or non-positive"
             if (model.contextLength < 256) warnings += "$id: contextLength ${model.contextLength} is suspiciously small"

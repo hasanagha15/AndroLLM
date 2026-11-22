@@ -294,11 +294,13 @@ object CatalogSections {
     const val VISION = "Vision"
     const val EMBEDDING = "Embedding"
     const val SPEECH = "Speech"
+    /** Models with good non-English (notably Russian) chat quality. */
+    const val MULTILINGUAL = "Multilingual"
 
     /** All section chips in display order. */
     val ALL: List<String> = listOf(
         FEATURED, GOOGLE, GEMMA, QWEN, DEEPSEEK, PHI, TINY,
-        GEMMA_VARIANTS, VISION, EMBEDDING, SPEECH
+        GEMMA_VARIANTS, VISION, EMBEDDING, SPEECH, MULTILINGUAL
     )
 }
 

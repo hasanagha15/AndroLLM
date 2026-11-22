@@ -90,7 +90,7 @@ object ModelMetadataRegistry {
             setOf(ContainerFormat.LITERTLM, ContainerFormat.TFLITE), RuntimeModality.CHAT, "GEMMA"),
         ModelFamilySpec("FUNCTIONGEMMA", "FunctionGemma", setOf("functiongemma"),
             setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "GEMMA"),
-        ModelFamilySpec("QWEN", "Qwen", setOf("qwen2", "qwen2.5-coder", "qwen3", "qwen3-asr"),
+        ModelFamilySpec("QWEN", "Qwen", setOf("qwen2", "qwen2.5-coder", "qwen3", "qwen3-asr", "qwen35"),
             setOf(ContainerFormat.LITERTLM, ContainerFormat.TFLITE), RuntimeModality.CHAT, null),
         ModelFamilySpec("DEEPSEEK", "DeepSeek", setOf("deepseek", "qwen2"),
             setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "DEEPSEEK"),
@@ -120,8 +120,12 @@ object ModelMetadataRegistry {
             setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "QWEN2P5"),
         ModelFamilySpec("VIBETHINKER", "VibeThinker", setOf("qwen2"),
             setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "QWEN2P5"),
-        ModelFamilySpec("MISTRAL", "Mistral", setOf("mistral"),
-            setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "MISTRAL")
+        ModelFamilySpec("MISTRAL", "Mistral", setOf("mistral", "mistral3"),
+            setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, "MISTRAL"),
+        // Falcon-H1 (attention + Mamba2 hybrid). No bespoke engine family: the
+        // container's embedded ChatML-style template drives chat (GENERIC mode).
+        ModelFamilySpec("FALCON", "Falcon", setOf("falcon-h1"),
+            setOf(ContainerFormat.LITERTLM), RuntimeModality.CHAT, null)
     )
 
     private val containerTypesByKey: Map<String, ContainerTypeSpec> =

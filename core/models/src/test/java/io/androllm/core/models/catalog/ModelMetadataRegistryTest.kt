@@ -77,7 +77,7 @@ class ModelMetadataRegistryTest {
         // Qwen covers QWEN2/QWEN2P5/QWEN3 — no single engine family; the
         // container type disambiguates at load time.
         assertNull(ModelMetadataRegistry.familyFor("Qwen")?.engineFamilyKey)
-        assertEquals(setOf("qwen2", "qwen2.5-coder", "qwen3", "qwen3-asr"),
+        assertEquals(setOf("qwen2", "qwen2.5-coder", "qwen3", "qwen3-asr", "qwen35"),
             ModelMetadataRegistry.familyFor("Qwen")?.architectures)
     }
 

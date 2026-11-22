@@ -35,10 +35,24 @@ interface CatalogRemoteSource {
 object CatalogLoader {
 
     fun load(savedJson: String?, bundledJson: String): CatalogState {
+        val bundled = loadBundled(bundledJson)
         if (!savedJson.isNullOrBlank()) {
-            val state = apply(savedJson, CatalogSource.SAVED)
-            if (state is CatalogState.Ready) return state
+            val saved = apply(savedJson, CatalogSource.SAVED)
+            if (saved is CatalogState.Ready) {
+                // A saved catalog older than the one shipped in this APK must
+                // not shadow it (e.g. after an app update with a fixed catalog).
+                val bundledReady = bundled as? CatalogState.Ready
+                if (bundledReady == null ||
+                    saved.catalog.generatedAt >= bundledReady.catalog.generatedAt
+                ) {
+                    return saved
+                }
+            }
         }
+        return bundled
+    }
+
+    private fun loadBundled(bundledJson: String): CatalogState {
         return try {
             val result = CatalogParser.parse(bundledJson)
             val report = CatalogValidator.validate(result.catalog.models)
@@ -61,8 +75,20 @@ object CatalogLoader {
         return try {
             val result = CatalogParser.parse(jsonText)
             val report = CatalogValidator.validate(result.catalog.models)
+            val unpinned = if (source == CatalogSource.BUNDLED) {
+                emptyList()
+            } else {
+                CatalogPinPolicy.problems(result.catalog.models)
+            }
             if (report.errors.isNotEmpty()) {
                 CatalogState.Failed("Catalog failed validation: ${report.errors.first()}")
+            } else if (unpinned.isNotEmpty()) {
+                // Fork policy: a saved/remote catalog with mutable URLs (e.g. the
+                // upstream catalog's resolve/main links) is never applied.
+                CatalogState.Failed(
+                    "Catalog rejected: ${unpinned.size} entr${if (unpinned.size == 1) "y is" else "ies are"} " +
+                        "not pinned to an immutable revision (${unpinned.first()})"
+                )
             } else {
                 CatalogState.Ready(result.catalog, source, result.warnings + report.warnings)
             }

@@ -65,14 +65,18 @@ class CatalogRepository @Inject constructor(
             when (val fetch = remoteSource.fetchCatalogJson()) {
                 is Result.Error -> fetch
                 is Result.Success -> {
-                    when (val state = CatalogLoader.apply(fetch.data, CatalogSource.REMOTE)) {
-                        is CatalogState.Ready -> {
+                    val current = (_state.value as? CatalogState.Ready)?.catalog?.generatedAt ?: 0L
+                    val state = CatalogLoader.apply(fetch.data, CatalogSource.REMOTE)
+                    when {
+                        state is CatalogState.Ready && state.catalog.generatedAt < current ->
+                            Result.error("Remote catalog is older than the installed one - kept the current catalog")
+                        state is CatalogState.Ready -> {
                             CatalogLoader.persistText(catalogFile, fetch.data)
                             _state.update { state }
                             Result.success(state)
                         }
-                        is CatalogState.Failed -> Result.error(state.message)
-                        CatalogState.Loading -> Result.error("Unexpected catalog state")
+                        state is CatalogState.Failed -> Result.error(state.message)
+                        else -> Result.error("Unexpected catalog state")
                     }
                 }
             }

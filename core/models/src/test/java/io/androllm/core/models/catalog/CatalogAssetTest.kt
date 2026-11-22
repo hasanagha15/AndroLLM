@@ -22,7 +22,7 @@ class CatalogAssetTest {
         // LiteRT catalog: 32 curated, downloadable models — chat containers,
         // and speech/ASR flatbuffers (audio pipeline). Gated models are not
         // shipped (they cannot be downloaded or validated without credentials).
-        assertEquals(32, result.catalog.models.size)
+        assertEquals(37, result.catalog.models.size)
         // No gated model may ship: the app cannot download or verify them.
         val gated = result.catalog.models.filter { it.isGated }
         assertTrue("gated models must be removed from the catalog: ${gated.map { it.id }}", gated.isEmpty())
@@ -136,6 +136,50 @@ class CatalogAssetTest {
             assertTrue("badge must end in an ASCII label: '$badge'", words.last().all { it.isAsciiPrintable() })
             assertTrue("badge label must be non-blank: '$badge'", words.last().isNotBlank())
         }
+    }
+
+    // ---- fork: pinned, LiteRT-LM 0.16.0-checked catalog ----
+
+    private fun bundled(): CatalogFile =
+        CatalogParser.parse(File("src/main/assets/catalog_v1.json").readText()).catalog
+
+    @Test
+    fun everyBundledEntryIsPinnedToAnImmutableRevision() {
+        val catalog = bundled()
+        val problems = CatalogPinPolicy.problems(catalog.models)
+        assertTrue("unpinned entries: ${problems.joinToString("; ")}", problems.isEmpty())
+        catalog.models.forEach { m ->
+            assertTrue("${m.id}: revision must be a 40-hex commit", m.revision.matches(Regex("^[0-9a-f]{40}$")))
+            assertTrue("${m.id}: sha256 required", !m.sha256.isNullOrBlank())
+            assertTrue("${m.id}: sizeBytes required", m.sizeBytes > 0)
+        }
+    }
+
+    @Test
+    fun bundledCatalogCarriesTheRussianCapableAdditions() {
+        val byId = bundled().models.associateBy { it.id }
+        val added = listOf(
+            "litertlm-qwen3-4b-instruct-2507",
+            "litertlm-qwen3.5-2b",
+            "litertlm-qwen3.5-4b-int4",
+            "litertlm-ministral-3-3b-instruct",
+            "litertlm-falcon-h1-3b-instruct",
+        )
+        added.forEach { id ->
+            val m = byId[id]
+            assertTrue("missing $id", m != null)
+            m!!
+            assertTrue("$id must be in the Multilingual section", CatalogSections.MULTILINGUAL in m.sections)
+            assertTrue("$id must not be gated", !m.isGated)
+            assertTrue("$id must be a .litertlm chat container", m.fileName.endsWith(".litertlm") && "CHAT" in m.categories)
+            // 2-4B class, must fit a 12 GB phone with headroom.
+            assertTrue("$id size out of 2-4B class: ${m.sizeBytes}", m.sizeBytes in 2_000_000_000L..3_500_000_000L)
+            assertTrue("$id runtime RAM must fit 12 GB", m.estimatedRuntimeRamMb in 1..8_000)
+        }
+        // The previously dead Qwen3-0.6B link is pinned to the revision that still has the file.
+        val qwen06 = byId.getValue("litertlm-qwen3-0.6b-int4")
+        assertEquals("7c650468cc1598861b1a0deb0ab25be6b20cab13", qwen06.revision)
+        assertEquals("7900eb4e7362d88c58782c6f9999bb7a129e03544aa98b8f338ea0cc5d8c22c1", qwen06.sha256)
     }
 }
 
