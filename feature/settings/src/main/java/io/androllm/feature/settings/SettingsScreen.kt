@@ -588,6 +588,7 @@ fun SettingsScreen(
                         onToggle = { server, enabled -> viewModel.setMcpServerEnabled(server, enabled) }
                     )
                     JarvisToolsSettingsCard() // branch C: Jarvis tools (Tesla / WhatsApp / G2)
+                    JarvisLinkSection() // branch b-mqtt: Jarvis reverse channel
                 }
 
                 settingsAccordionItem(

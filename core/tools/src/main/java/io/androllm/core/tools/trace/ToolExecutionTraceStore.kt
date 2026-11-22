@@ -46,6 +46,14 @@ class ToolExecutionTraceStore @Inject constructor() {
     val traces: StateFlow<List<ToolExecutionTrace>> = _traces.asStateFlow()
 
     @Volatile private var currentPrompt: String? = null
+
+    /**
+     * True between [beginTurn] and [endTurn] — a chat/voice turn is running.
+     * The Jarvis link waits for it to clear before starting a remote task so
+     * remote work does not interleave with the owner's own turn.
+     */
+    private val _turnActive = MutableStateFlow(false)
+    val turnActive: StateFlow<Boolean> = _turnActive.asStateFlow()
     private val inFlightIds = mutableListOf<String>()
 
     /** Call at the start of a chat turn so tool traces get the prompt. */
@@ -53,6 +61,7 @@ class ToolExecutionTraceStore @Inject constructor() {
         synchronized(lock) {
             currentPrompt = prompt?.take(240)
             inFlightIds.clear()
+            _turnActive.value = true
         }
     }
 
@@ -63,6 +72,7 @@ class ToolExecutionTraceStore @Inject constructor() {
             val output = llmOutput?.take(600)
             currentPrompt = null
             inFlightIds.clear()
+            _turnActive.value = false
             if (ids.isEmpty() || output == null) return
             _traces.value = _traces.value.map { trace ->
                 if (trace.id in ids) trace.copy(llmOutput = output) else trace

@@ -6,8 +6,11 @@ import io.androllm.core.tools.clarification.ClarificationEngine
 import io.androllm.core.tools.confirmation.ToolConfirmationManager
 import io.androllm.core.tools.confirmation.buildConfirmation
 import io.androllm.core.tools.monitoring.ToolHealthMonitor
+import io.androllm.core.tools.origin.RemoteToolOrigin
+import io.androllm.core.tools.origin.RemoteToolPolicy
 import io.androllm.core.tools.registry.ToolRegistry
 import io.androllm.core.tools.settings.AutomationSettingsStore
+import io.androllm.core.tools.settings.ConfirmationMode
 import io.androllm.core.tools.trace.ToolExecutionTraceStore
 import io.androllm.core.tools.validation.PromptInjectionDetector
 import io.androllm.core.tools.validation.ToolCallValidator
@@ -18,6 +21,7 @@ import java.util.concurrent.CancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withTimeout
 import timber.log.Timber
 
@@ -165,8 +169,54 @@ class ToolExecutor @Inject constructor(
         // ── Confirmation gate (Permission Manager) ──────────────────────────
         // Sensitive tools require confirmation: SMS, Phone Calls, Payments, Email, Calendar Changes, Deleting Files, System Changes, External API with side effects.
         // Everything else executes automatically (spec.requiresConfirmation).
-        if (settings.shouldConfirm(spec.requiresConfirmation)) {
-            val approved = confirmationManager.awaitDecision(buildConfirmation(call, spec))
+        // ── Remote-origin policy (Jarvis link) — re-evaluated on EVERY call ──
+        val remote = currentCoroutineContext()[RemoteToolOrigin]
+        if (remote != null) {
+            if (settings.confirmationMode == ConfirmationMode.NEVER) {
+                return finish(
+                    ToolResult.Failure(
+                        "Refused: remote tasks cannot run tools while confirmations are set to 'Never'.",
+                        retryable = false
+                    ),
+                    error = "remote origin, confirmation mode NEVER"
+                )
+            }
+            if (spec.name in RemoteToolPolicy.FORBIDDEN) {
+                return finish(
+                    ToolResult.Failure("Refused: '${spec.name}' is not available to remote tasks.", retryable = false),
+                    error = "remote origin, tool forbidden"
+                )
+            }
+            if (RemoteToolPolicy.hasOversizedArgument(call)) {
+                return finish(
+                    ToolResult.Failure(
+                        "Refused: an argument is longer than ${RemoteToolPolicy.MAX_ARG_CHARS} characters and could not be shown in full for confirmation.",
+                        retryable = false
+                    ),
+                    error = "remote origin, oversized argument"
+                )
+            }
+            if (RemoteToolPolicy.targetsOwnApp(call, remote)) {
+                return finish(
+                    ToolResult.Failure("Refused: remote tasks may not operate the AndroLLM app itself.", retryable = false),
+                    error = "remote origin targets own app"
+                )
+            }
+        }
+        val mustConfirm = if (remote != null) {
+            // Never softer than the owner's own setting ("Always" is honoured).
+            !RemoteToolPolicy.isAutoAllowed(spec) || settings.shouldConfirm(spec.requiresConfirmation)
+        } else {
+            settings.shouldConfirm(spec.requiresConfirmation)
+        }
+        if (mustConfirm) {
+            val base = buildConfirmation(call, spec)
+            val confirmation = if (remote == null) base else base.copy(
+                toolDisplayName = "${remote.label} · ${base.toolDisplayName}",
+                actionSummary = "Run ${base.toolDisplayName}:\n${RemoteToolPolicy.describeArguments(call)}",
+                remoteOrigin = remote.label
+            )
+            val approved = confirmationManager.awaitDecision(confirmation)
             if (!approved) {
                 Timber.i("ToolExecutor: '${spec.name}' declined by user")
                 healthMonitor.recordFailure(spec.name, 0L, "user declined", isTimeout = false)

@@ -192,7 +192,7 @@ class ToolPlanner @Inject constructor(
             ?.model?.contextLength
             ?: io.androllm.core.common.AppConstants.Model.DEFAULT_CONTEXT_LENGTH
         val planSystemChars = ((realContext - 512 - 256).coerceAtLeast(0)) * 4
-        val basePlanSystem = ToolPrompts.system(specs, agentContext.buildBlock(), maxChars = planSystemChars)
+        val basePlanSystem = ToolPrompts.system(specs, agentContext.buildBlockForCurrentOrigin(), maxChars = planSystemChars)
         val baseUserContent = ToolPrompts.buildUserContent(messages)
 
         val config = GenerationConfig(

@@ -16,6 +16,7 @@ import io.androllm.core.memory.model.MemoryExchange
 import io.androllm.core.models.Conversation
 import io.androllm.core.tools.agent.AgentVariableStore
 import io.androllm.core.tools.coordinator.ToolRunCoordinator
+import io.androllm.core.tools.origin.currentRemoteOrigin
 import io.androllm.core.tools.prompt.ToolPromptBuilder
 import io.androllm.core.tools.settings.AutomationSettingsStore
 import io.androllm.core.tools.trace.ToolExecutionTraceStore
@@ -37,6 +38,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import timber.log.Timber
 
@@ -70,6 +73,9 @@ class ChatManager @Inject constructor(
     private val toolPromptBuilder: ToolPromptBuilder
 ) {
     private val scope = CoroutineScope(Dispatchers.Default)
+
+    /** Serializes turns run through this pipeline (voice + remote Jarvis tasks). */
+    private val turnLock = Mutex()
 
     /**
      * Resolves a human-readable label for the currently active model, no matter
@@ -107,13 +113,28 @@ class ChatManager @Inject constructor(
         content: String,
         origin: MessageOrigin = MessageOrigin.VOICE,
         lowLatencyMode: Boolean = false,
-        onToolStatus: suspend (String) -> Unit = {}
+        onToolStatus: suspend (String) -> Unit = {},
+        /**
+         * Optional dedicated conversation (e.g. Jarvis remote tasks). Created
+         * ARCHIVED when missing so it never becomes the owner's active chat.
+         * Null = the active conversation (voice behaviour, unchanged).
+         */
+        conversationId: String? = null,
+        conversationTitle: String? = null,
+        /** False = no memory retrieval and no memory extraction for this turn. */
+        useMemory: Boolean = true,
+        /** False = the prompt contains only this message, not the conversation history. */
+        includeHistory: Boolean = true
     ): Flow<String> = channelFlow {
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return@channelFlow
+        turnLock.withLock {
+        // Remote (Jarvis) turns never touch the owner's shared turn state:
+        // no trace-turn stamp, no variable-scope switch, neutral fallback text.
+        val remoteTurn = currentRemoteOrigin() != null
         // Pipeline tracing: stamp this turn so every executed tool call
         // carries the spoken prompt (Tool Debug screen).
-        traceStore.beginTurn(trimmed)
+        if (!remoteTurn) traceStore.beginTurn(trimmed)
         // Step 9: confirm ChatManager receives the recognizer's exact text —
         // it must only ever strip surrounding whitespace, never edit words.
         if (origin == MessageOrigin.VOICE) {
@@ -125,10 +146,27 @@ class ChatManager @Inject constructor(
         }
 
         val now = System.currentTimeMillis()
-        var activeConv = conversationRepository.observeActive().first().firstOrNull()
-        var convId = activeConv?.id.orEmpty()
+        var activeConv = if (conversationId == null) conversationRepository.observeActive().first().firstOrNull() else null
+        var convId = conversationId ?: activeConv?.id.orEmpty()
 
-        if (convId.isBlank()) {
+        if (conversationId != null) {
+            val exists = (conversationRepository.existsById(conversationId) as? Result.Success)?.data == true
+            if (!exists) {
+                conversationRepository.upsert(
+                    Conversation(
+                        id = conversationId,
+                        title = conversationTitle ?: "Remote tasks",
+                        createdAt = now,
+                        updatedAt = now,
+                        isArchived = true
+                    )
+                )
+            } else {
+                // Keep it archived even if the owner un-archived it, so it can
+                // never become the active chat for voice turns.
+                conversationRepository.setArchived(conversationId, true)
+            }
+        } else if (convId.isBlank()) {
             convId = UUID.randomUUID().toString()
             val title = if (trimmed.length > 30) trimmed.take(30) + "..." else trimmed
             activeConv = Conversation(id = convId, title = title, createdAt = now, updatedAt = now)
@@ -136,7 +174,7 @@ class ChatManager @Inject constructor(
         }
         // Fresh workflow variables for this turn (voice mode uses the real
         // conversation scope so multi-step voice tasks can chain tools).
-        variableStore.beginTurn(convId)
+        if (!remoteTurn) variableStore.beginTurn(convId)
 
         // Save user message in shared DB
         val userMsgId = UUID.randomUUID().toString()
@@ -154,7 +192,7 @@ class ChatManager @Inject constructor(
         // the identical block is prepended as the first `system` message for
         // both providers below, so memories survive model switching.
         // Low-latency voice skips retrieval for speed (documented trade-off).
-        val memoryContext = if (lowLatencyMode) {
+        val memoryContext = if (lowLatencyMode || !useMemory) {
             io.androllm.core.memory.model.MemoryContext()
         } else {
             withTimeoutOrNull(MEMORY_RETRIEVAL_TIMEOUT_MS) {
@@ -168,7 +206,11 @@ class ChatManager @Inject constructor(
         }
 
         // Build prompt message list from DB history
-        val historyMessages = messageRepository.observeByConversationId(convId).first()
+        val historyMessages = if (includeHistory) {
+            messageRepository.observeByConversationId(convId).first()
+        } else {
+            listOf(userMessage)
+        }
         val promptMessages = buildList {
             if (memoryContext.systemText.isNotBlank()) {
                 add(ChatPromptMessage(role = "system", content = memoryContext.systemText))
@@ -394,10 +436,10 @@ class ChatManager @Inject constructor(
         if (finalAnswer.isBlank() && toolsRan) {
             // Never-blank after tool execution: speak the real tool result
             // instead of silence.
-            finalAnswer = buildToolFallbackText()
+            finalAnswer = if (remoteTurn) "Done." else buildToolFallbackText()
             Timber.i("ChatManager: turn empty after tool calls — injected tool-summary reply")
         }
-        traceStore.endTurn(finalAnswer)
+        if (!remoteTurn) traceStore.endTurn(finalAnswer)
         if (finalAnswer.isNotBlank()) {
             // Persist Assistant response in shared DB
             val assistantMsg = Message(
@@ -410,7 +452,7 @@ class ChatManager @Inject constructor(
             messageRepository.upsert(assistantMsg)
 
             // Trigger Memory processing pipeline
-            if (memoryManager.currentSettings().enabled) {
+            if (useMemory && memoryManager.currentSettings().enabled) {
                 scope.launch {
                     runCatching {
                         memoryManager.processExchange(
@@ -426,6 +468,7 @@ class ChatManager @Inject constructor(
                 }
             }
         }
+        } // turnLock
     }
 
     /**

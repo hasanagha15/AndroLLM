@@ -65,6 +65,9 @@ mcpKotlinSdk = "0.10.0"
 # QR decoding (pure-Java, no Play Services)
 zxing = "3.5.4"
 
+# Jarvis link (core:jarvislink) — MQTT 5 client
+hivemqMqttClient = "1.4.2"
+
 # Document parsing + OCR (Knowledge Base RAG)
 pdfbox = "2.0.27.0"
 mlkitTextRecognition = "16.0.1"
@@ -192,6 +195,9 @@ mcp-kotlin-sdk-client = { group = "io.modelcontextprotocol", name = "kotlin-sdk-
 
 # Ktor bundled client plugins (SSE transport used by the MCP SDK)
 ktor-client-plugins = { group = "io.ktor", name = "ktor-client-plugins", version.ref = "ktor" }
+
+# Jarvis link (core:jarvislink)
+hivemq-mqtt-client = { group = "com.hivemq", name = "hivemq-mqtt-client", version.ref = "hivemqMqttClient" }
 
 # QR
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
