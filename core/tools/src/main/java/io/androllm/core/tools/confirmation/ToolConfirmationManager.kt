@@ -3,14 +3,18 @@ package io.androllm.core.tools.confirmation
 import io.androllm.core.tools.api.ToolCall
 import io.androllm.core.tools.api.ToolSpec
 import io.androllm.core.tools.api.runtimePermissions
+import io.androllm.core.tools.origin.RemoteToolOrigin
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -30,7 +34,13 @@ data class PendingToolConfirmation(
      * card requests them (system dialog) when the user approves while they
      * are still missing, so approving a message actually lets it through.
      */
-    val requiredPermissions: List<String> = emptyList()
+    val requiredPermissions: List<String> = emptyList(),
+    /**
+     * Non-null when the action was requested by a REMOTE task (Jarvis link):
+     * the label shown to the user. Remote confirmations are never answered by
+     * the voice responder — only by an explicit tap.
+     */
+    val remoteOrigin: String? = null
 )
 
 /**
@@ -79,11 +89,31 @@ class ToolConfirmationManager @Inject constructor() {
      * on an unanswered card.
      */
     suspend fun awaitDecision(confirmation: PendingToolConfirmation): Boolean {
+        // Remote-origin work (RemoteToolOrigin in the coroutine context) is
+        // labelled even when the caller built the card itself (ui_run steps).
+        val remote = currentCoroutineContext()[RemoteToolOrigin]
+        val effective = if (confirmation.remoteOrigin == null && remote != null) {
+            confirmation.copy(
+                remoteOrigin = remote.label,
+                toolDisplayName = "${remote.label} · ${confirmation.toolDisplayName}"
+            )
+        } else {
+            confirmation
+        }
+        // One card at a time: concurrent requests (typed turn + remote task)
+        // queue instead of replacing each other on the single pending slot.
+        return decisionLock.withLock { decide(effective) }
+    }
+
+    private val decisionLock = Mutex()
+
+    private suspend fun decide(confirmation: PendingToolConfirmation): Boolean {
         val deferred = CompletableDeferred<Boolean>()
         responses[confirmation.id] = deferred
         _pending.value = confirmation
         return try {
-            val responder = voiceResponder
+            // Remote confirmations need an explicit tap — never a spoken "yes".
+            val responder = if (confirmation.remoteOrigin != null) null else voiceResponder
             if (responder == null) {
                 withTimeoutOrNull(CONFIRMATION_TIMEOUT_MS) { deferred.await() } ?: false
             } else {
