@@ -8,6 +8,8 @@ import io.androllm.core.voice.asr.SpeechRecognitionSession
 import io.androllm.core.voice.asr.SpeechRecognizer
 import io.androllm.core.voice.lang.VoiceLanguage
 import io.androllm.core.voice.lang.VoiceLanguagePolicy
+import io.androllm.core.voice.lang.WhisperLoadPlan
+import io.androllm.core.voice.asr.NoWhisperModelException
 import io.androllm.core.whisper.WhisperContext
 import io.androllm.core.whisper.WhisperCpuConfig
 import io.androllm.core.whisper.WhisperParams
@@ -42,59 +44,67 @@ class WhisperSpeechRecognizer @Inject constructor(
     private val settingsStore: VoiceSettingsStore
 ) : SpeechRecognizer {
 
-    @Volatile private var loadedContext: WhisperContext? = null
-    @Volatile private var loadedModelPath: String? = null
+    /** Context + the model it was loaded from, published atomically. */
+    private class Loaded(val context: WhisperContext, val model: WhisperModel, val path: String)
+
+    @Volatile private var loaded: Loaded? = null
     private val loadMutex = Mutex()
 
     override val engineLabel: String get() = "whisper.cpp"
 
-    override val isInitialized: Boolean get() = loadedContext?.isReady == true
+    override val isInitialized: Boolean get() = loaded?.context?.isReady == true
 
     /** The whisper model file currently loaded (for debug UI). */
-    val activeModelFile: File? get() = loadedModelPath?.let { File(it) }
+    val activeModelFile: File? get() = loaded?.path?.let { File(it) }
 
-    /** Whether the currently loaded model is multilingual (false for *.en). */
-    @Volatile private var loadedMultilingual: Boolean = true
-
+    /**
+     * Picks the model for the CURRENT settings (voice language + selection)
+     * and (re)loads it if it differs from the loaded one. Called at service
+     * start and again at the start of every recognition session, so a
+     * language/model change applies on the next utterance of a running
+     * assistant. Cheap when nothing changed (settings read + size checks).
+     */
     override suspend fun ensureInitialized(): Boolean {
         return loadMutex.withLock {
             val settings = settingsStore.current()
             val language = VoiceLanguage.fromCode(settings.sttLanguage)
-            val model = VoiceLanguagePolicy.resolveModel(
+            val current = loaded?.takeIf { it.context.isReady }
+            val plan = VoiceLanguagePolicy.planLoad(
+                loadedModelId = current?.model?.id,
                 selectedId = settings.whisperModel,
                 language = language,
                 installed = modelManager.installedModels()
             )
-            if (model == null) {
-                Timber.w(
-                    "$TAG: no whisper model installed that can transcribe '%s' (selected=%s) — " +
-                        "download a multilingual model in Settings",
-                    language.code, settings.whisperModel
-                )
-                return false
-            }
-            val file = modelManager.modelFile(model)
-            // Reuse the cached context only if it is the model we want now
-            // (the voice language may have changed since it was loaded).
-            loadedContext?.let { ctx ->
-                if (ctx.isReady && loadedModelPath == file.absolutePath) return true
-                runCatching { ctx.release() }
-                loadedContext = null
-                loadedModelPath = null
-            }
-            return try {
-                val ctx = WhisperContext.fromFile(file.absolutePath)
-                loadedContext = ctx
-                loadedModelPath = file.absolutePath
-                loadedMultilingual = model.multilingual
-                Timber.i(
-                    "$TAG: loaded ${file.name} (${file.length() / (1024 * 1024)} MB) for language=%s",
-                    language.code
-                )
-                true
-            } catch (t: Throwable) {
-                Timber.e(t, "$TAG: model init failed")
-                false
+            when (plan) {
+                is WhisperLoadPlan.NoModel -> {
+                    Timber.w(
+                        "$TAG: no whisper model installed that can transcribe '%s' (selected=%s) — " +
+                            "download a multilingual model in Settings",
+                        language.code, settings.whisperModel
+                    )
+                    false
+                }
+                is WhisperLoadPlan.Keep -> true
+                is WhisperLoadPlan.Load -> {
+                    val file = modelManager.modelFile(plan.model)
+                    loaded?.let { old ->
+                        loaded = null
+                        runCatching { old.context.release() }
+                        Timber.i("$TAG: unloaded ${old.model.id} (switching to ${plan.model.id})")
+                    }
+                    try {
+                        val ctx = WhisperContext.fromFile(file.absolutePath)
+                        loaded = Loaded(ctx, plan.model, file.absolutePath)
+                        Timber.i(
+                            "$TAG: loaded ${file.name} (${file.length() / (1024 * 1024)} MB) for language=%s",
+                            language.code
+                        )
+                        true
+                    } catch (t: Throwable) {
+                        Timber.e(t, "$TAG: model init failed")
+                        false
+                    }
+                }
             }
         }
     }
@@ -108,12 +118,15 @@ class WhisperSpeechRecognizer @Inject constructor(
         maxSeconds: Int,
         streamingEnabled: Boolean
     ): SpeechRecognitionSession {
-        val ctx = loadedContext ?: throw IllegalStateException("Whisper not initialized")
+        if (!ensureInitialized()) {
+            throw NoWhisperModelException(VoiceLanguage.fromCode(language).code)
+        }
+        val l = loaded ?: throw NoWhisperModelException(VoiceLanguage.fromCode(language).code)
         val threads = if (numThreads > 0) numThreads else WhisperCpuConfig.preferredThreadCount
         return WhisperSession(
-            context = ctx,
+            context = l.context,
             params = WhisperParams(
-                language = VoiceLanguagePolicy.effectiveWhisperLanguage(language, loadedMultilingual),
+                language = VoiceLanguagePolicy.effectiveWhisperLanguage(language, l.model.multilingual),
                 translate = translate,
                 numThreads = threads,
                 beamSize = beamSize,
@@ -125,9 +138,11 @@ class WhisperSpeechRecognizer @Inject constructor(
     }
 
     override suspend fun release() {
-        runCatching { loadedContext?.let { runCatching { it.release() } } }
-        loadedContext = null
-        loadedModelPath = null
+        loadMutex.withLock {
+            val old = loaded
+            loaded = null
+            runCatching { old?.context?.release() }
+        }
     }
 
     /**

@@ -47,6 +47,8 @@ class SherpaOnnxOfflineTtsEngine @Inject constructor(
     private var tts: OfflineTts? = null
     private var russianTts: OfflineTts? = null
     private var russianVoiceId: String? = null
+    /** "<voice id>:<model mtime>" of a voice that failed to load — not retried per sentence. */
+    private var russianFailedKey: String? = null
 
     /** Voice language mirrored from settings (ensureInitialized is not suspend). */
     @Volatile private var language: VoiceLanguage = VoiceLanguage.DEFAULT
@@ -149,6 +151,8 @@ class SherpaOnnxOfflineTtsEngine @Inject constructor(
         val voice = TtsVoices.DEFAULT_RU
         if (russianTts != null && russianVoiceId == voice.id) return true
         val installed = voiceManager.installed(voice) ?: return false
+        val key = "${voice.id}:${installed.model.lastModified()}"
+        if (russianFailedKey == key) return false
         for (provider in providerPriority) {
             val candidate = probe(provider, "тест") {
                 val vits = OfflineTtsVitsModelConfig().apply {
@@ -171,6 +175,8 @@ class SherpaOnnxOfflineTtsEngine @Inject constructor(
                 return true
             }
         }
+        russianFailedKey = key
+        Timber.w("SherpaOnnxOfflineTtsEngine: Russian voice ${voice.id} failed on all providers — not retrying until reinstalled")
         return false
     }
 

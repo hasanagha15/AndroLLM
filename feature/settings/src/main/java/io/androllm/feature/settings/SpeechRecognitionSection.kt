@@ -177,15 +177,12 @@ fun SpeechRecognitionSection(
 
         HorizontalDivider(color = MaterialTheme.ledger.deskHairline)
 
-        // ── Language ──
-        ToggleRowStt(
+        // ── Language ── (set in the "Язык голоса" card above; one source of truth)
+        SectionRow(
             icon = Icons.Filled.Translate,
             title = "Language",
-            subtitle = if (settings.sttLanguage == "auto") "Auto-detect" else settings.sttLanguage,
-            checked = settings.sttLanguage == "auto",
-            onCheckedChange = { auto ->
-                onUpdate(settings.copy(sttLanguage = if (auto) "auto" else "en"))
-            }
+            subtitle = io.androllm.core.voice.lang.VoiceLanguage.fromCode(settings.sttLanguage).label +
+                " · change in «Язык голоса» above"
         )
         ToggleRowStt(
             icon = Icons.Filled.Translate,
@@ -246,8 +243,8 @@ fun SpeechRecognitionSection(
             TextButton(onClick = {
                 onUpdate(
                     settings.copy(
-                        whisperModel = "base.en",
-                        sttLanguage = "auto",
+                        whisperModel = VoiceSettings().whisperModel,
+                        sttLanguage = VoiceSettings().sttLanguage,
                         sttTranslate = false,
                         sttThreads = -1,
                         sttBeamSize = 1,

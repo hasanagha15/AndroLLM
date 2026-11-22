@@ -31,6 +31,16 @@ enum class VoiceLanguage(val code: String, val label: String) {
     }
 }
 
+/** What the recognizer must do before a session (see [VoiceLanguagePolicy.planLoad]). */
+sealed interface WhisperLoadPlan {
+    /** Nothing installed can transcribe the language. */
+    data object NoModel : WhisperLoadPlan
+    /** The loaded model is still the right one. */
+    data class Keep(val model: WhisperModel) : WhisperLoadPlan
+    /** Load [model] (unloading whatever is loaded now). */
+    data class Load(val model: WhisperModel) : WhisperLoadPlan
+}
+
 /** Which offline TTS voice speaks a sentence. */
 enum class TtsVoiceKind { BUNDLED_ENGLISH, RUSSIAN }
 
@@ -108,6 +118,21 @@ object VoiceLanguagePolicy {
         }
         installed.firstOrNull { isCompatible(it, language) }?.let { return it }
         return if (language == VoiceLanguage.AUTO) selected ?: installed.first() else null
+    }
+
+    /**
+     * Decides, before every recognition session, whether the loaded model
+     * ([loadedModelId], null = none) can stay or another one must be loaded
+     * for the current language/selection.
+     */
+    fun planLoad(
+        loadedModelId: String?,
+        selectedId: String,
+        language: VoiceLanguage,
+        installed: List<WhisperModel>
+    ): WhisperLoadPlan {
+        val target = resolveModel(selectedId, language, installed) ?: return WhisperLoadPlan.NoModel
+        return if (target.id == loadedModelId) WhisperLoadPlan.Keep(target) else WhisperLoadPlan.Load(target)
     }
 
     private val CYRILLIC = Regex("\\p{IsCyrillic}")

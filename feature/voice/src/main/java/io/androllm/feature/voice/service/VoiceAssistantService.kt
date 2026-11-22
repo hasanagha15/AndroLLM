@@ -351,7 +351,11 @@ class VoiceAssistantService : Service() {
         }
     }
 
+    /** Why the last STT session could not start (e.g. no model for the voice language). */
+    @Volatile private var sttStartError: String? = null
+
     private suspend fun runLoopImpl() {
+        sttStartError = null
         Timber.i("VoiceService initialized")
         val initial = voiceSettingsStore.current()
         if (!initial.enabled) {
@@ -532,6 +536,8 @@ class VoiceAssistantService : Service() {
         controller.updateDebugMetrics(micOwner = "Released", onnxStatus = "Idle")
         controller.setActive(false)
         controller.resetAll()
+        // Order matters: the error must be set after setActive()/resetAll().
+        sttStartError?.let { controller.setError(it) }
     }
 
     /** Consumes mic chunks until a wake word fires. */
@@ -594,8 +600,16 @@ class VoiceAssistantService : Service() {
                 maxSeconds = settings.sttMaxSeconds,
                 streamingEnabled = settings.sttStreaming
             )
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Throwable) {
             Timber.e(e, "STT: session start failed")
+            // Surfaced after the loop ends (setActive/resetAll clear the error field).
+            sttStartError = if (e is io.androllm.core.voice.asr.NoWhisperModelException) {
+                "No speech model for voice language '${e.language}' — download one in Settings → Voice language"
+            } else {
+                "Speech recognition failed to start: ${e.message}"
+            }
             return null
         }
 
@@ -1135,14 +1149,8 @@ class VoiceAssistantService : Service() {
     private suspend fun voiceConfirmationsEnabled(): Boolean =
         runCatching { automationSettingsStore.current().voiceConfirmations }.getOrDefault(true)
 
-    /** Maps a spoken reply to yes/no. Any "no"-word wins over "yes". */
-    private fun matchYesNo(reply: String?): Boolean {
-        val t = reply?.trim()?.lowercase() ?: return false
-        val noWords = listOf("no", "nope", "cancel", "don't", "dont", "stop", "never", "forget it", "no thanks")
-        val yesWords = listOf("yes", "yeah", "yep", "yup", "sure", "ok", "okay", "go ahead", "do it", "confirm", "send it", "please")
-        if (noWords.any { t == it || t.startsWith("$it ") || t.contains(" $it ") }) return false
-        return yesWords.any { t == it || t.startsWith("$it ") || t.contains(" $it ") }
-    }
+    /** Maps a spoken reply (en/ru/az) to yes/no; unknown = null (abstain). */
+    private fun matchYesNo(reply: String?): Boolean? = VoiceReplyMatcher.matchYesNo(reply)
 
     /**
      * Discards mic audio after the assistant speaks so the echo/reverb of its
@@ -1288,10 +1296,7 @@ class VoiceAssistantService : Service() {
      * lookback deliberately replays the keyword tail so the question start is
      * captured; the residue is cosmetic and must not reach the model.
      */
-    private fun stripWakePrefix(text: String): String {
-val m = WAKE_PREFIX.find(text) ?: return text
-        return text.substring(m.range.last + 1).trim()
-    }
+    private fun stripWakePrefix(text: String): String = VoiceReplyMatcher.stripWakePrefix(text)
 
     companion object {
         const val ACTION_START = "io.androllm.voice.START"
@@ -1300,10 +1305,7 @@ val m = WAKE_PREFIX.find(text) ?: return text
         /** Spoken reply whenever speech was heard but not understood. */
         private const val CATCH_FALLBACK = "Sorry — I didn't catch that. Could you say it again?"
 
-        /** Leading wake word ("hey andro") at the start of a transcript. */
-        private val WAKE_PREFIX = Regex(
-            """^\s*(?i:(?:(?:hey|hai|hei|hi)\s+)?(?:andro\w*|andrew\w*|android\w*))[,.!?\s]*"""
-        )
+        // Wake-word residue regex lives in VoiceReplyMatcher.WAKE_PREFIX (en + ru).
 
         /** One mic chunk duration in ms (3200 samples @ 16 kHz). */
         private const val CHUNK_MS = 200L

@@ -74,3 +74,7 @@ interface SpeechRecognitionResult {
     val language: String?
     val engine: String
 }
+
+/** No installed model can transcribe the selected voice language (user must download one). */
+class NoWhisperModelException(val language: String) :
+    IllegalStateException("No speech model installed for voice language '$language'")

@@ -77,8 +77,11 @@ class VoiceLanguageViewModel @Inject constructor(
         combine(settingsStore.settings, transient) { s, t ->
             val lang = VoiceLanguage.fromCode(s.sttLanguage)
             val selected = WhisperModels.byId(s.whisperModel)
-            val model = selected?.takeIf { VoiceLanguagePolicy.isCompatible(it, lang) }
-                ?: VoiceLanguagePolicy.recommendedModel(lang, ramGb())
+            // EN: offer the small base.en unless a compatible model is already installed.
+            val model = selected?.takeIf {
+                VoiceLanguagePolicy.isCompatible(it, lang) &&
+                    (lang != VoiceLanguage.EN || whisperModels.isInstalled(it))
+            } ?: VoiceLanguagePolicy.recommendedModel(lang, ramGb())
             VoiceLanguageUiState(
                 language = lang,
                 sttModel = model,

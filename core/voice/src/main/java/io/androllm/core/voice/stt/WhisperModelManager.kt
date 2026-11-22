@@ -1,48 +1,44 @@
 package io.androllm.core.voice.stt
 
 import android.content.Context
-import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import io.androllm.core.voice.download.VerifiedDownload
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.security.MessageDigest
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-
-private const val TAG = "WhisperModels"
+import timber.log.Timber
 
 /**
  * Downloads, verifies, stores and deletes whisper.cpp models on device.
  *
- * Models live in `filesDir/whisper/<fileName>` and are loaded once and cached
- * by [WhisperSpeechRecognizer]; switching models unloads the previous context.
+ * Models live in `filesDir/whisper/<fileName>`; [WhisperSpeechRecognizer]
+ * picks and (re)loads the right one before every recognition session.
+ * Downloads are serialized by a mutex and stream into a unique temp file that
+ * is deleted on any failure; only a SHA-256 + size verified file is published.
  */
 @Singleton
-class WhisperModelManager @Inject constructor(
-    @ApplicationContext private val context: Context
-) {
-    private val modelsDir: File by lazy { File(context.filesDir, "whisper").apply { mkdirs() } }
+class WhisperModelManager internal constructor(private val dirProvider: () -> File) {
+
+    @Inject constructor(@ApplicationContext context: Context) :
+        this({ File(context.filesDir, "whisper") })
+
+    private val modelsDir: File by lazy { dirProvider().apply { mkdirs() } }
+    private val mutex = Mutex()
 
     fun modelFile(model: WhisperModel): File = File(modelsDir, model.fileName)
 
-    /** Models that are fully downloaded (file exists and passes size sanity check). */
-    fun installedModels(): List<WhisperModel> =
-        WhisperModels.ALL.filter { m ->
-            val f = modelFile(m)
-            f.exists() && isComplete(m, f)
-        }
+    /** Models that are fully downloaded (published file with the exact size). */
+    fun installedModels(): List<WhisperModel> = WhisperModels.ALL.filter { isInstalled(it) }
 
     fun isInstalled(model: WhisperModel): Boolean {
         val f = modelFile(model)
-        return f.exists() && isComplete(model, f)
+        return f.isFile && f.length() == model.sizeBytes
     }
-
-    /** Files are published only after the SHA check, so an exact size match means complete. */
-    private fun isComplete(model: WhisperModel, f: File): Boolean = f.length() == model.sizeBytes
 
     /** Total disk used by downloaded whisper models, in bytes. */
     fun totalInstalledSizeBytes(): Long =
@@ -55,70 +51,46 @@ class WhisperModelManager @Inject constructor(
     fun freeBytes(): Long = modelsDir.freeSpace
 
     /**
-     * Downloads [model] to disk with progress, verifies its SHA-256, then
-     * atomically publishes it. Throws on network/corruption failure.
+     * Downloads [model] with progress, verifies SHA-256 + size, then
+     * publishes it. Throws on network/corruption failure; nothing partial
+     * stays on disk.
      */
     suspend fun download(
         model: WhisperModel,
         onProgress: (downloadedBytes: Long, totalBytes: Long) -> Unit = { _, _ -> }
-    ) = withContext(Dispatchers.IO) {
-        val finalFile = modelFile(model)
-        if (isInstalled(model)) return@withContext
-
-        modelsDir.mkdirs()
-        val partFile = File(modelsDir, "${model.fileName}.part")
-        partFile.delete()
-
-        val connection = URL(model.downloadUrl).openConnection()
-        connection.connectTimeout = 20_000
-        connection.readTimeout = 30_000
-        connection.setRequestProperty("User-Agent", "AndroLLM/3.0")
-        connection.connect()
-        (connection as? HttpURLConnection)?.let {
-            if (it.responseCode !in 200..299) throw IllegalStateException("HTTP ${it.responseCode} for ${model.fileName}")
-        }
-
-        val total = connection.contentLengthLong.coerceAtLeast(model.sizeBytes)
-        val digest = MessageDigest.getInstance("SHA-256")
-        var downloaded = 0L
-        val buffer = ByteArray(64 * 1024)
-
-        FileOutputStream(partFile).use { out ->
-            connection.inputStream.use { input ->
-                while (true) {
-                    val n = input.read(buffer)
-                    if (n < 0) break
-                    out.write(buffer, 0, n)
-                    digest.update(buffer, 0, n)
-                    downloaded += n
-                    if (downloaded % (1 shl 16) < n) onProgress(downloaded, total)
-                }
+    ) = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (isInstalled(model)) return@withContext
+            modelsDir.mkdirs()
+            val free = freeBytes()
+            if (free in 1 until model.sizeBytes + 64L * 1024 * 1024) {
+                throw IOException("Not enough free space for ${model.displayName}: need ${model.sizeBytes} B, free $free B")
             }
-        }
-
-        val actual = digest.digest().joinToString("") { "%02x".format(it) }
-        if (!actual.equals(model.sha256, ignoreCase = true) || downloaded != model.sizeBytes) {
-            // The catalog is pinned to an immutable HF revision with real
-            // SHA-256 values (WhisperModels.HF_REVISION), so a mismatch means
-            // a corrupt/truncated/tampered download: never install it.
-            partFile.delete()
-            throw IllegalStateException(
-                "Checksum mismatch for ${model.displayName}: expected ${model.sha256} " +
-                    "(${model.sizeBytes} B), got $actual ($downloaded B)"
+            val tmp = VerifiedDownload.fetchVerified(
+                url = model.downloadUrl,
+                dir = modelsDir,
+                prefix = model.fileName,
+                expectedSha256 = model.sha256,
+                expectedSize = model.sizeBytes,
+                onProgress = onProgress
             )
+            val finalFile = modelFile(model)
+            try {
+                if (!tmp.renameTo(finalFile)) {
+                    tmp.copyTo(finalFile, overwrite = true)
+                }
+            } finally {
+                tmp.delete()
+            }
+            Timber.i("WhisperModels: installed ${model.fileName}: ${finalFile.length()} bytes")
         }
-        if (!partFile.renameTo(finalFile)) {
-            partFile.copyTo(finalFile, overwrite = true)
-            partFile.delete()
-        }
-        Log.i(TAG, "Installed ${model.fileName}: ${finalFile.length()} bytes")
     }
 
     /** Deletes a downloaded model file. */
-    suspend fun delete(model: WhisperModel) = withContext(Dispatchers.IO) {
-        val f = modelFile(model)
-        if (f.exists() && !f.delete()) {
-            Log.w(TAG, "Failed to delete ${f.name}")
+    suspend fun delete(model: WhisperModel) = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            val f = modelFile(model)
+            if (f.exists() && !f.delete()) Timber.w("WhisperModels: failed to delete ${f.name}")
         }
     }
 }

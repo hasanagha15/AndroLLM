@@ -2,18 +2,16 @@ package io.androllm.core.voice.tts
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
-import java.io.BufferedInputStream
+import io.androllm.core.voice.download.SafeTarBz2
+import io.androllm.core.voice.download.VerifiedDownload
 import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
-import java.security.MessageDigest
+import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import timber.log.Timber
 
 /**
@@ -73,23 +71,31 @@ data class InstalledTtsVoice(val model: File, val tokens: File, val espeakDataDi
 
 /**
  * Downloads (on demand, never bundled), verifies (SHA-256, enforced) and
- * extracts Piper voices into `filesDir/tts/<voice id>/`.
+ * extracts Piper voices into `<root>/<voice id>/`. Downloads are serialized
+ * by a mutex and use unique temp names, so two buttons can never race.
  */
 @Singleton
-class TtsVoiceManager @Inject constructor(
-    @ApplicationContext private val context: Context
-) {
-    private val rootDir: File by lazy { File(context.filesDir, "tts").apply { mkdirs() } }
+class TtsVoiceManager internal constructor(private val rootProvider: () -> File) {
+
+    @Inject constructor(@ApplicationContext context: Context) :
+        this({ File(context.filesDir, "tts") })
+
+    private val rootDir: File by lazy { rootProvider().apply { mkdirs() } }
+    private val mutex = Mutex()
 
     private fun voiceDir(voice: TtsVoice) = File(rootDir, voice.id)
 
     fun installed(voice: TtsVoice): InstalledTtsVoice? {
         val dir = voiceDir(voice)
+        return if (File(dir, MARKER).isFile) contentsOf(dir, voice) else null
+    }
+
+    /** Required files present (checked before the marker is written, and on read). */
+    private fun contentsOf(dir: File, voice: TtsVoice): InstalledTtsVoice? {
         val model = File(dir, voice.modelFile)
         val tokens = File(dir, "tokens.txt")
         val espeak = File(dir, "espeak-ng-data")
-        val ok = model.length() > 1_000_000 && tokens.isFile && File(espeak, "phontab").isFile &&
-            File(dir, MARKER).isFile
+        val ok = model.length() > 1_000_000 && tokens.isFile && File(espeak, "phontab").isFile
         return if (ok) InstalledTtsVoice(model, tokens, espeak) else null
     }
 
@@ -101,94 +107,50 @@ class TtsVoiceManager @Inject constructor(
     suspend fun download(
         voice: TtsVoice,
         onProgress: (downloaded: Long, total: Long) -> Unit = { _, _ -> }
-    ) = withContext(Dispatchers.IO) {
-        if (isInstalled(voice)) return@withContext
-        val archive = File(rootDir, "${voice.id}.tar.bz2.part")
-        archive.delete()
-        try {
-            val conn = URL(voice.url).openConnection() as HttpURLConnection
-            conn.instanceFollowRedirects = true
-            conn.connectTimeout = 20_000
-            conn.readTimeout = 30_000
-            conn.setRequestProperty("User-Agent", "AndroLLM/3.0")
-            conn.connect()
-            if (conn.responseCode !in 200..299) error("HTTP ${conn.responseCode} for ${voice.id}")
-            val total = conn.contentLengthLong.takeIf { it > 0 } ?: voice.archiveBytes
-            val digest = MessageDigest.getInstance("SHA-256")
-            var done = 0L
-            val buf = ByteArray(64 * 1024)
-            FileOutputStream(archive).use { out ->
-                conn.inputStream.use { input ->
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        out.write(buf, 0, n)
-                        digest.update(buf, 0, n)
-                        done += n
-                        onProgress(done, total)
-                    }
-                }
+    ) = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (isInstalled(voice)) return@withContext
+            val archive = VerifiedDownload.fetchVerified(
+                url = voice.url,
+                dir = rootDir,
+                prefix = voice.id,
+                expectedSha256 = voice.sha256,
+                expectedSize = voice.archiveBytes,
+                onProgress = onProgress
+            )
+            try {
+                install(archive, voice)
+                Timber.i("TtsVoiceManager: installed ${voice.id} (${installedSizeBytes(voice)} bytes)")
+            } finally {
+                archive.delete()
             }
-            val actual = digest.digest().joinToString("") { "%02x".format(it) }
-            if (!actual.equals(voice.sha256, ignoreCase = true)) {
-                error("SHA-256 mismatch for ${voice.id}: expected ${voice.sha256}, got $actual")
-            }
-            extract(archive, voice)
-            Timber.i("TtsVoiceManager: installed ${voice.id} (${installedSizeBytes(voice)} bytes)")
-        } finally {
-            archive.delete()
         }
     }
 
-    private fun extract(archive: File, voice: TtsVoice) {
+    /** Extracts a verified archive and publishes it; the marker is the very last step. */
+    internal fun install(archive: File, voice: TtsVoice) {
         val staging = File(rootDir, "${voice.id}.staging")
-        staging.deleteRecursively()
-        staging.mkdirs()
-        val prefix = voice.rootDir.trimEnd('/') + "/"
-        TarArchiveInputStream(BZip2CompressorInputStream(BufferedInputStream(archive.inputStream()))).use { tar ->
-            while (true) {
-                val entry = tar.nextEntry ?: break
-                val rel = TarPaths.relativeInside(entry.name, prefix) ?: continue
-                val target = File(staging, rel)
-                if (entry.isDirectory) {
-                    target.mkdirs()
-                } else if (entry.isFile) {
-                    target.parentFile?.mkdirs()
-                    FileOutputStream(target).use { tar.copyTo(it) }
-                } // symlinks / devices are ignored (none in the Piper tarballs)
+        try {
+            SafeTarBz2.extract(archive, staging, voice.rootDir.trimEnd('/') + "/")
+            if (contentsOf(staging, voice) == null) {
+                throw IOException("Voice archive ${voice.id} is missing model/tokens/espeak-ng-data")
             }
-        }
-        File(staging, MARKER).writeText(voice.sha256)
-        val dir = voiceDir(voice)
-        dir.deleteRecursively()
-        if (!staging.renameTo(dir)) {
-            staging.copyRecursively(dir, overwrite = true)
+            val dir = voiceDir(voice)
+            dir.deleteRecursively()
+            if (!staging.renameTo(dir)) {
+                staging.copyRecursively(dir, overwrite = true)
+            }
+            File(dir, MARKER).writeText(voice.sha256)
+        } finally {
             staging.deleteRecursively()
         }
     }
 
-    suspend fun delete(voice: TtsVoice) = withContext(Dispatchers.IO) {
-        voiceDir(voice).deleteRecursively()
+    suspend fun delete(voice: TtsVoice) = mutex.withLock {
+        withContext(Dispatchers.IO) { voiceDir(voice).deleteRecursively() }
     }
 
     private companion object {
         const val MARKER = ".installed"
-    }
-}
-
-/** Tar path sanitising (unit-tested). */
-object TarPaths {
-    /**
-     * Returns the entry path relative to [prefix] (the voice's top-level dir),
-     * or null for entries outside it, the root itself, absolute paths or any
-     * parent-directory traversal.
-     */
-    fun relativeInside(entryName: String, prefix: String): String? {
-        val name = entryName.replace('\\', '/').removePrefix("./")
-        if (!name.startsWith(prefix)) return null
-        val rel = name.removePrefix(prefix).trimEnd('/')
-        if (rel.isEmpty() || rel.startsWith("/")) return null
-        if (rel.split('/').any { it == ".." }) return null
-        return rel
     }
 }

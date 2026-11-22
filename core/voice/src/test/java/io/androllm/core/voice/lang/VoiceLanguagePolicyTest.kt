@@ -4,7 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import io.androllm.core.voice.model.VoiceSettings
 import io.androllm.core.voice.stt.WhisperModels
 import io.androllm.core.voice.tts.RussianTtsText
-import io.androllm.core.voice.tts.TarPaths
+import io.androllm.core.voice.download.TarPaths
 import io.androllm.core.voice.tts.TtsVoices
 import org.junit.Test
 
@@ -91,6 +91,37 @@ class VoiceLanguagePolicyTest {
 
     @Test fun `resolve with nothing installed is null`() {
         assertThat(VoiceLanguagePolicy.resolveModel("small-q8_0", VoiceLanguage.RU, emptyList())).isNull()
+    }
+
+    // ── reload planning (running assistant, gate Б1) ─────────────────────────
+
+    @Test fun `english model loaded and language switched to russian forces a reload`() {
+        val installed = listOf(m("base.en"), m("small-q8_0"))
+        val plan = VoiceLanguagePolicy.planLoad("base.en", "base.en", VoiceLanguage.RU, installed)
+        assertThat(plan).isEqualTo(WhisperLoadPlan.Load(m("small-q8_0")))
+    }
+
+    @Test fun `same model and compatible language keeps the loaded context`() {
+        val installed = listOf(m("base.en"), m("small-q8_0"))
+        assertThat(VoiceLanguagePolicy.planLoad("small-q8_0", "small-q8_0", VoiceLanguage.AZ, installed))
+            .isEqualTo(WhisperLoadPlan.Keep(m("small-q8_0")))
+    }
+
+    @Test fun `selecting another installed model reloads`() {
+        val installed = listOf(m("small-q5_1"), m("small-q8_0"))
+        assertThat(VoiceLanguagePolicy.planLoad("small-q8_0", "small-q5_1", VoiceLanguage.RU, installed))
+            .isEqualTo(WhisperLoadPlan.Load(m("small-q5_1")))
+    }
+
+    @Test fun `english model loaded and russian requested without multilingual model is NoModel`() {
+        val installed = listOf(m("base.en"))
+        assertThat(VoiceLanguagePolicy.planLoad("base.en", "base.en", VoiceLanguage.RU, installed))
+            .isEqualTo(WhisperLoadPlan.NoModel)
+    }
+
+    @Test fun `nothing loaded yet loads the resolved model`() {
+        assertThat(VoiceLanguagePolicy.planLoad(null, "small-q8_0", VoiceLanguage.RU, listOf(m("small-q8_0"))))
+            .isEqualTo(WhisperLoadPlan.Load(m("small-q8_0")))
     }
 
     // ── catalog integrity ────────────────────────────────────────────────────
