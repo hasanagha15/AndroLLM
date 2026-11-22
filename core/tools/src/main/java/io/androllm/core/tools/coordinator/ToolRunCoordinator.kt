@@ -761,7 +761,9 @@ class ToolRunCoordinator @Inject constructor(
     ): Triple<ToolResult, Boolean, Int> {
         val spec = registry.get(call.name)?.spec
         val cacheable = spec?.cacheable == true
-        val cacheKey = if (cacheable) resultCache.key(call.name, call.arguments) else null
+        // Remote-origin calls never use the shared result cache (no replay of the
+        // owner's results into a remote turn, nor the other way round).
+        val cacheKey = if (cacheable && currentRemoteOrigin() == null) resultCache.key(call.name, call.arguments) else null
         if (cacheKey != null) {
             resultCache.get(cacheKey)?.let { (summary, data) ->
                 Timber.i("ToolRunCoordinator: cache hit for '${call.name}' — replaying %dB output", summary.length)
