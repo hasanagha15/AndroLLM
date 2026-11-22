@@ -66,6 +66,9 @@ dependencies {
     // whisper.cpp native bridge for high-accuracy offline speech recognition.
     implementation(project(":whisper"))
 
+    // tar.bz2 extraction of on-demand Piper voices (Russian TTS), see TtsVoiceManager.
+    implementation("org.apache.commons:commons-compress:1.27.1")
+
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.truth)

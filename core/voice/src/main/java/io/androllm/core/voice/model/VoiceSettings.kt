@@ -48,10 +48,16 @@ data class VoiceSettings(
 
     /** STT engine id ("whisper" = whisper.cpp, "sherpa" = sherpa-onnx ASR). */
     val sttEngine: String = "whisper",
-    /** Installed whisper.cpp model id, e.g. "base.en" / "small" / "large-v3-turbo". */
-    val whisperModel: String = "base.en",
-    /** Whisper language ("auto" = auto-detect) or ISO-639 code like "en". */
-    val sttLanguage: String = "auto",
+    /**
+     * Installed whisper.cpp model id, e.g. "base.en" / "small-q8_0". Fork
+     * default: multilingual small Q8 (Russian voice).
+     */
+    val whisperModel: String = "small-q8_0",
+    /**
+     * Voice language: whisper language ("auto" = auto-detect) or ISO-639 code.
+     * Also routes TTS (see io.androllm.core.voice.lang.VoiceLanguage). Fork default "ru".
+     */
+    val sttLanguage: String = "ru",
     /** Translate non-English speech to English. */
     val sttTranslate: Boolean = false,
     /** Whisper CPU threads (-1 = auto-detect). */

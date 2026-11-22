@@ -485,6 +485,7 @@ fun SettingsScreen(
                     subtitle = "whisper.cpp",
                     reduceMotion = settings.reduceMotion
                 ) {
+                    VoiceLanguageSection()
                     SpeechRecognitionSection(
                         settings = voiceSettings,
                         models = whisperModels,

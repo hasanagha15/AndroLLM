@@ -33,13 +33,16 @@ class WhisperModelManager @Inject constructor(
     fun installedModels(): List<WhisperModel> =
         WhisperModels.ALL.filter { m ->
             val f = modelFile(m)
-            f.exists() && f.length() > 1_000_000
+            f.exists() && isComplete(m, f)
         }
 
     fun isInstalled(model: WhisperModel): Boolean {
         val f = modelFile(model)
-        return f.exists() && f.length() > 1_000_000
+        return f.exists() && isComplete(model, f)
     }
+
+    /** Files are published only after the SHA check, so an exact size match means complete. */
+    private fun isComplete(model: WhisperModel, f: File): Boolean = f.length() == model.sizeBytes
 
     /** Total disk used by downloaded whisper models, in bytes. */
     fun totalInstalledSizeBytes(): Long =
@@ -71,6 +74,9 @@ class WhisperModelManager @Inject constructor(
         connection.readTimeout = 30_000
         connection.setRequestProperty("User-Agent", "AndroLLM/3.0")
         connection.connect()
+        (connection as? HttpURLConnection)?.let {
+            if (it.responseCode !in 200..299) throw IllegalStateException("HTTP ${it.responseCode} for ${model.fileName}")
+        }
 
         val total = connection.contentLengthLong.coerceAtLeast(model.sizeBytes)
         val digest = MessageDigest.getInstance("SHA-256")
@@ -91,15 +97,14 @@ class WhisperModelManager @Inject constructor(
         }
 
         val actual = digest.digest().joinToString("") { "%02x".format(it) }
-        if (!actual.equals(model.sha256, ignoreCase = true)) {
-            // Model files are occasionally re-uploaded upstream (new ggml
-            // conversion, updated metadata), which changes their SHA-256 even
-            // though whisper.cpp can still load them. Warn but keep going;
-            // whisper_init validates the file on load and corrupt files fail there.
-            Log.w(
-                TAG,
-                "Checksum differs for ${model.displayName}: catalog=${model.sha256} actual=$actual " +
-                    "(file will be validated by whisper_init on load)"
+        if (!actual.equals(model.sha256, ignoreCase = true) || downloaded != model.sizeBytes) {
+            // The catalog is pinned to an immutable HF revision with real
+            // SHA-256 values (WhisperModels.HF_REVISION), so a mismatch means
+            // a corrupt/truncated/tampered download: never install it.
+            partFile.delete()
+            throw IllegalStateException(
+                "Checksum mismatch for ${model.displayName}: expected ${model.sha256} " +
+                    "(${model.sizeBytes} B), got $actual ($downloaded B)"
             )
         }
         if (!partFile.renameTo(finalFile)) {

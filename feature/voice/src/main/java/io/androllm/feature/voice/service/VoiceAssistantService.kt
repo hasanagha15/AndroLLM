@@ -372,7 +372,7 @@ class VoiceAssistantService : Service() {
         }
         if (!recognizer.ensureInitialized()) {
             controller.setActive(false)
-            controller.setError("No speech recognition model installed — download one in Settings")
+            controller.setError("No speech model for the voice language — download one in Settings → Voice language")
             return
         }
         Timber.i("Wake + Whisper models loaded")
