@@ -6,13 +6,19 @@ import org.junit.Test
 
 class CatalogLoaderTest {
 
-    private fun catalogJson(model: String) = """{"schemaVersion":2,"models":[$model]}"""
+    private fun catalogJson(model: String, generatedAt: Long = 0) =
+        """{"schemaVersion":2,"source":"AndroLLM fork catalog (hasanagha15) test","generatedAt":$generatedAt,"models":[$model]}"""
 
-    private fun model(id: String = "test-1", arch: String = "qwen3", quant: String = "Q4_K_M") =
+    private fun model(
+        id: String = "test-1",
+        arch: String = "qwen3",
+        quant: String = "Q4_K_M",
+        revision: String = PIN,
+    ) =
         """{"id":"$id","name":"Test Model","family":"Qwen","architecture":"$arch",""" +
             """"categories":["CHAT"],"tags":["fast"],"license":"Apache-2.0","author":"T",""" +
-            """"repoId":"t/test-litertlm","fileName":"test-$quant.litertlm",""" +
-            """"downloadUrl":"https://huggingface.co/t/test-litertlm/resolve/main/test-$quant.litertlm",""" +
+            """"repoId":"t/test-litertlm","revision":"$revision","fileName":"test-$quant.litertlm",""" +
+            """"downloadUrl":"https://huggingface.co/t/test-litertlm/resolve/$revision/test-$quant.litertlm",""" +
             """"sizeBytes":1000000000,"parameters":"1.5B","quantization":"$quant",""" +
             """"contextLength":8192,"minRamGb":2.0,"recommendedRamGb":4.0,"downloads":100,"likes":5,""" +
             """"version":"1.0.0","runtimeFormat":"LITERTLM","fileFormat":"LITERTLM",""" +
@@ -84,5 +90,131 @@ class CatalogLoaderTest {
     fun applyRejectsGarbageJson() {
         val state = CatalogLoader.apply("{broken", CatalogSource.REMOTE)
         assertTrue(state is CatalogState.Failed)
+    }
+
+    // ---- fork: immutable-revision policy + stale saved catalog ----
+
+    @Test
+    fun applyRejectsRemoteCatalogWithUnpinnedUrls() {
+        // Upstream's catalog uses mutable resolve/main links: never applied.
+        val state = CatalogLoader.apply(catalogJson(model("remote-1", revision = "main")), CatalogSource.REMOTE)
+        assertTrue(state is CatalogState.Failed)
+        assertTrue((state as CatalogState.Failed).message.contains("not pinned"))
+    }
+
+    @Test
+    fun unpinnedSavedCatalogFallsBackToBundled() {
+        val saved = catalogJson(model("upstream-1", revision = "main"), generatedAt = 9_999_999_999_999)
+        val state = CatalogLoader.load(saved, catalogJson(model("bundled-1"), generatedAt = 1))
+        assertTrue(state is CatalogState.Ready)
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.BUNDLED, state.source)
+        assertEquals("bundled-1", state.catalog.models.first().id)
+    }
+
+    @Test
+    fun olderSavedCatalogDoesNotShadowNewerBundled() {
+        val state = CatalogLoader.load(
+            catalogJson(model("saved-old"), generatedAt = 100),
+            catalogJson(model("bundled-new"), generatedAt = 200)
+        )
+        assertTrue(state is CatalogState.Ready)
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.BUNDLED, state.source)
+        assertEquals("bundled-new", state.catalog.models.first().id)
+    }
+
+    @Test
+    fun newerPinnedSavedCatalogWins() {
+        val state = CatalogLoader.load(
+            catalogJson(model("saved-new"), generatedAt = 300),
+            catalogJson(model("bundled-old"), generatedAt = 200)
+        )
+        assertTrue(state is CatalogState.Ready)
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.SAVED, state.source)
+        assertEquals("saved-new", state.catalog.models.first().id)
+    }
+
+    @Test
+    fun bundledCatalogMayStillCarryUnpinnedEntriesAsWarnings() {
+        val state = CatalogLoader.load(null, catalogJson(model(revision = "main")))
+        assertTrue(state is CatalogState.Ready)
+        state as CatalogState.Ready
+        assertTrue(state.warnings.any { it.contains("not pinned") })
+    }
+
+    // ---- fork: Gate D N6/N8 ----
+
+    @Test
+    fun emptySavedCatalogDoesNotHideTheBundledModels() {
+        val emptySaved = """{"schemaVersion":2,"source":"AndroLLM fork catalog (hasanagha15) test","generatedAt":300,"models":[]}"""
+        val state = CatalogLoader.load(emptySaved, catalogJson(model("bundled-1"), generatedAt = 200), nowMs = 1_000)
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.BUNDLED, state.source)
+    }
+
+    @Test
+    fun emptyRemoteCatalogIsRejected() {
+        val state = CatalogLoader.apply("""{"schemaVersion":2,"source":"AndroLLM fork catalog (hasanagha15) test","generatedAt":1,"models":[]}""", CatalogSource.REMOTE, 1_000)
+        assertTrue((state as CatalogState.Failed).message.contains("no models"))
+    }
+
+    @Test
+    fun futureDatedCatalogIsRejectedAsSavedAndRemote() {
+        val now = 1_800_000_000_000L
+        val future = catalogJson(model("future"), generatedAt = now + CatalogLoader.MAX_FUTURE_SKEW_MS + 1)
+        assertTrue(CatalogLoader.apply(future, CatalogSource.REMOTE, now) is CatalogState.Failed)
+        val state = CatalogLoader.load(future, catalogJson(model("bundled-1"), generatedAt = 1), now)
+        state as CatalogState.Ready
+        assertEquals("bundled-1", state.catalog.models.first().id)
+        // Within the one-day skew allowance it is still accepted.
+        val nearFuture = catalogJson(model("near"), generatedAt = now + 60_000)
+        assertTrue(CatalogLoader.apply(nearFuture, CatalogSource.REMOTE, now) is CatalogState.Ready)
+    }
+
+    @Test
+    fun equalDatesPreferTheSavedCatalog() {
+        val state = CatalogLoader.load(
+            catalogJson(model("saved"), generatedAt = 500),
+            catalogJson(model("bundled"), generatedAt = 500),
+            nowMs = 1_000
+        )
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.SAVED, state.source)
+    }
+
+    @Test
+    fun remoteUpdateNeverMovesBackwards() {
+        val older = CatalogFile(schemaVersion = 2, generatedAt = 100)
+        val newer = CatalogFile(schemaVersion = 2, generatedAt = 200)
+        assertTrue(CatalogLoader.isAcceptableUpdate(null, older))
+        assertTrue(CatalogLoader.isAcceptableUpdate(older, newer))
+        assertTrue(CatalogLoader.isAcceptableUpdate(newer, newer))
+        assertTrue(!CatalogLoader.isAcceptableUpdate(newer, older))
+    }
+
+    // ---- Gate D re-gate, B2: fork provenance marker ----
+
+    @Test
+    fun pinnedCatalogWithoutForkMarkerIsRejectedAsRemoteAndSaved() {
+        // Upstream-like: pinned URLs, newer date, but not the fork's catalog.
+        val upstreamLike = """{"schemaVersion":2,"source":"official LiteRT-LM catalog","generatedAt":900,"models":[${model("up")}]}"""
+        val remote = CatalogLoader.apply(upstreamLike, CatalogSource.REMOTE, nowMs = 1_000)
+        assertTrue((remote as CatalogState.Failed).message.contains("source marker"))
+        val state = CatalogLoader.load(upstreamLike, catalogJson(model("bundled-1"), generatedAt = 100), nowMs = 1_000)
+        state as CatalogState.Ready
+        assertEquals(CatalogSource.BUNDLED, state.source)
+        assertEquals("bundled-1", state.catalog.models.first().id)
+    }
+
+    @Test
+    fun bundledCatalogNeedsNoMarker() {
+        val noMarker = """{"schemaVersion":2,"generatedAt":1,"models":[${model("b")}]}"""
+        assertTrue(CatalogLoader.load(null, noMarker, nowMs = 1_000) is CatalogState.Ready)
+    }
+
+    private companion object {
+        const val PIN = "0123456789abcdef0123456789abcdef01234567"
     }
 }

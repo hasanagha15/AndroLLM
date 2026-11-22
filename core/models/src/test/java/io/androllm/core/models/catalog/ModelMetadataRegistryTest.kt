@@ -138,4 +138,20 @@ class ModelMetadataRegistryTest {
             }
         }
     }
+
+    // ---- fork: container-template families (Gate D, B2) ----
+
+    @Test
+    fun containerTemplateFamiliesUseTheGenericEngineKey() {
+        for (name in listOf("Ministral", "Falcon", "Qwen3.5")) {
+            assertEquals(name, "GENERIC", ModelMetadataRegistry.familyFor(name)?.engineFamilyKey)
+        }
+        assertEquals("MINISTRAL", ModelMetadataRegistry.familyForArchitecture("mistral3")?.familyKey)
+        assertEquals("FALCON", ModelMetadataRegistry.familyForArchitecture("falcon-h1")?.familyKey)
+        assertEquals("QWEN35", ModelMetadataRegistry.familyForArchitecture("qwen35")?.familyKey)
+        // The legacy Mistral family keeps the built-in Mistral template, but no
+        // longer owns Ministral 3.
+        assertEquals("MISTRAL", ModelMetadataRegistry.familyFor("Mistral")?.engineFamilyKey)
+        assertEquals(setOf("mistral"), ModelMetadataRegistry.familyFor("Mistral")?.architectures)
+    }
 }

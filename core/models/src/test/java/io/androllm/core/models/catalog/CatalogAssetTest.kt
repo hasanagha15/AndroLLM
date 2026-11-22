@@ -19,10 +19,10 @@ class CatalogAssetTest {
             report.errors.isEmpty()
         )
         assertEquals(2, result.catalog.schemaVersion)
-        // LiteRT catalog: 32 curated, downloadable models — chat containers,
+        // LiteRT catalog: 37 curated, downloadable models (fork: 32 pinned + 5 added) — chat containers,
         // and speech/ASR flatbuffers (audio pipeline). Gated models are not
         // shipped (they cannot be downloaded or validated without credentials).
-        assertEquals(32, result.catalog.models.size)
+        assertEquals(37, result.catalog.models.size)
         // No gated model may ship: the app cannot download or verify them.
         val gated = result.catalog.models.filter { it.isGated }
         assertTrue("gated models must be removed from the catalog: ${gated.map { it.id }}", gated.isEmpty())
@@ -136,6 +136,90 @@ class CatalogAssetTest {
             assertTrue("badge must end in an ASCII label: '$badge'", words.last().all { it.isAsciiPrintable() })
             assertTrue("badge label must be non-blank: '$badge'", words.last().isNotBlank())
         }
+    }
+
+    // ---- fork: pinned, LiteRT-LM 0.16.0-checked catalog ----
+
+    private fun bundled(): CatalogFile =
+        CatalogParser.parse(File("src/main/assets/catalog_v1.json").readText()).catalog
+
+    @Test
+    fun everyBundledEntryIsPinnedToAnImmutableRevision() {
+        val catalog = bundled()
+        val problems = CatalogPinPolicy.problems(catalog.models)
+        assertTrue("unpinned entries: ${problems.joinToString("; ")}", problems.isEmpty())
+        catalog.models.forEach { m ->
+            assertTrue("${m.id}: revision must be a 40-hex commit", m.revision.matches(Regex("^[0-9a-f]{40}$")))
+            assertTrue("${m.id}: sha256 required", !m.sha256.isNullOrBlank())
+            assertTrue("${m.id}: sizeBytes required", m.sizeBytes > 0)
+        }
+    }
+
+    @Test
+    fun bundledCatalogCarriesTheRussianCapableAdditions() {
+        val byId = bundled().models.associateBy { it.id }
+        val added = listOf(
+            "litertlm-qwen3-4b-instruct-2507",
+            "litertlm-qwen3.5-2b",
+            "litertlm-qwen3.5-4b-int4",
+            "litertlm-ministral-3-3b-instruct",
+            "litertlm-falcon-h1-3b-instruct",
+        )
+        added.forEach { id ->
+            val m = byId[id]
+            assertTrue("missing $id", m != null)
+            m!!
+            if (id != "litertlm-ministral-3-3b-instruct") {
+                assertTrue("$id must be in the Multilingual section", CatalogSections.MULTILINGUAL in m.sections)
+            }
+            assertTrue("$id must not be gated", !m.isGated)
+            assertTrue("$id must be a .litertlm chat container", m.fileName.endsWith(".litertlm") && "CHAT" in m.categories)
+            // 2-4B class, must fit a 12 GB phone with headroom.
+            assertTrue("$id size out of 2-4B class: ${m.sizeBytes}", m.sizeBytes in 2_000_000_000L..3_500_000_000L)
+            assertTrue("$id runtime RAM must fit 12 GB", m.estimatedRuntimeRamMb in 1..8_000)
+        }
+        // Gate D, B1: hybrid recurrent models need a fresh Engine per
+        // conversation (LiteRT-LM #3165) -> EXPERIMENTAL, warned in the description.
+        for (id in listOf("litertlm-qwen3.5-2b", "litertlm-qwen3.5-4b-int4", "litertlm-falcon-h1-3b-instruct")) {
+            val m = byId.getValue(id)
+            assertEquals(id, "EXPERIMENTAL", m.status)
+            // Re-gate N1: the warning must be at the START (cards show 3 lines).
+            assertTrue(id, m.description.startsWith("Experimental:"))
+            assertTrue(id, m.description.take(110).contains("fresh load"))
+        }
+        assertEquals("STABLE", byId.getValue("litertlm-qwen3-4b-instruct-2507").status)
+        // Gate D, B2 / N9: Ministral runs in its own GENERIC family and is not
+        // advertised as Russian-capable until tested on the phone.
+        val ministral = byId.getValue("litertlm-ministral-3-3b-instruct")
+        assertEquals("Ministral", ministral.family)
+        assertTrue(CatalogSections.MULTILINGUAL !in ministral.sections)
+        assertEquals(listOf(CatalogSections.MISTRAL), ministral.sections)
+        assertEquals("613e437fea973ca9e04a4063953ee514f1d4075e", ministral.revision)
+        assertEquals("Falcon", byId.getValue("litertlm-falcon-h1-3b-instruct").family)
+        assertEquals("Qwen3.5", byId.getValue("litertlm-qwen3.5-2b").family)
+        // The previously dead Qwen3-0.6B link is pinned to the revision that still has the file.
+        val qwen06 = byId.getValue("litertlm-qwen3-0.6b-int4")
+        assertEquals("7c650468cc1598861b1a0deb0ab25be6b20cab13", qwen06.revision)
+        assertEquals("7900eb4e7362d88c58782c6f9999bb7a129e03544aa98b8f338ea0cc5d8c22c1", qwen06.sha256)
+    }
+
+    // ---- Gate D re-gate, B1: the fork's own catalog must pass as a network catalog ----
+
+    @Test
+    fun bundledCatalogIsAcceptedAsNetworkCatalogWithRealClock() {
+        val text = File("src/main/assets/catalog_v1.json").readText()
+        val state = CatalogLoader.apply(text, CatalogSource.REMOTE, System.currentTimeMillis())
+        assertTrue("bundled catalog rejected as REMOTE: ${(state as? CatalogState.Failed)?.message}", state is CatalogState.Ready)
+        assertTrue(bundled().source!!.contains(CatalogLoader.FORK_CATALOG_MARKER))
+    }
+
+    @Test
+    fun bundledGeneratedAtIsARealEditTimeNotTheFuture() {
+        // CI-style guard: set generatedAt to the actual edit time (UTC epoch ms).
+        val generatedAt = bundled().generatedAt
+        val oneHour = 60L * 60 * 1000
+        assertTrue("generatedAt $generatedAt is in the future", generatedAt <= System.currentTimeMillis() + oneHour)
+        assertTrue("generatedAt $generatedAt is implausibly old", generatedAt > 1_790_000_000_000L)
     }
 }
 

@@ -158,6 +158,16 @@ class ModelDownloadWorker(
             return failPermanent(modelId, modelName, failure.formatReport(modelName))
         }
 
+        // Fork (Gate D, N5): Hugging Face announces the LFS sha256 of the file in
+        // X-Linked-ETag. When the catalog declares a different sha256, the file was
+        // replaced on the server: fail BEFORE downloading gigabytes that can only
+        // end in a checksum mismatch.
+        HashMismatchRetryPolicy.serverMismatchMessage(
+            modelName = modelName,
+            catalogSha256 = expectedSha256,
+            serverSha256 = preflight?.lfsSha256,
+        )?.let { message -> return failPermanent(modelId, modelName, message) }
+
         // ---- Stage 2: assess the partial file before resuming ----------------------
         // The server truth may still be unknown (preflight failed, chunked); use
         // whatever size signal exists, or skip the oversize check until GET.
@@ -488,9 +498,27 @@ class ModelDownloadWorker(
                         failTransient(modelId, modelName, failure.formatReport(modelName))
                     // Hash mismatch on complete bytes → truncate in place and
                     // retry the full download via WorkManager retry.
+                    // Fork: capped by HashMismatchRetryPolicy — a file replaced
+                    // upstream (stale catalog sha256) no longer loops forever.
                     RepairAction.DELETE_AND_FULL_REDOWNLOAD -> {
                         truncateInPlace(targetFile)
-                        failTransient(modelId, modelName, failure.formatReport(modelName))
+                        val store = HashMismatchRetryPolicy.PrefsStore(applicationContext)
+                        val key = HashMismatchRetryPolicy.key(modelId, effectiveSha)
+                        when (val decision = HashMismatchRetryPolicy.onMismatch(store, key)) {
+                            is HashMismatchRetryPolicy.Decision.Retry -> failTransient(
+                                modelId, modelName,
+                                "Checksum mismatch on download ${decision.mismatches} of " +
+                                    "${HashMismatchRetryPolicy.MAX_DOWNLOADS_WITH_MISMATCH} — retrying. " +
+                                    failure.formatReport(modelName)
+                            )
+                            is HashMismatchRetryPolicy.Decision.GiveUp -> failPermanent(
+                                modelId, modelName,
+                                HashMismatchRetryPolicy.giveUpMessage(
+                                    modelName, decision.mismatches,
+                                    failure.expectedSha256 ?: effectiveSha, failure.actualSha256
+                                )
+                            )
+                        }
                     }
                     // Corrupted resume that slipped through → truncate, retry.
                     RepairAction.DELETE_PARTIAL_AND_RESTART -> {
@@ -506,6 +534,10 @@ class ModelDownloadWorker(
 
         val actualSize = targetFile.length()
         Timber.i("Download verified for %s: size=%d bytes", modelName, actualSize)
+        HashMismatchRetryPolicy.onVerified(
+            HashMismatchRetryPolicy.PrefsStore(applicationContext),
+            HashMismatchRetryPolicy.key(modelId, effectiveSha)
+        )
 
         // Auto-import into Database, persisting the verified real file size so
         // a stale catalog size heals itself on the next read.

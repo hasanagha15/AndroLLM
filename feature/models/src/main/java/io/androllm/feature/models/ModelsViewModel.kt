@@ -41,6 +41,8 @@ import io.androllm.feature.models.benchmark.ModelBenchmarker
 import io.androllm.core.models.catalog.CatalogFilters
 import io.androllm.core.models.catalog.CatalogModel
 import io.androllm.core.models.catalog.CatalogRepository
+import io.androllm.feature.models.catalog.withCurrentCatalogArtifact
+import io.androllm.feature.models.catalog.withCatalogFamilyMigrations
 import io.androllm.core.models.catalog.CatalogSortOption
 import io.androllm.core.models.catalog.CatalogState
 import io.androllm.core.models.catalog.ModelSearchEngine
@@ -307,6 +309,18 @@ class ModelsViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             engineRepository.initialize()
+        }
+        // Fork (Gate D re-gate, N3): carry catalog family/architecture changes
+        // over to already-downloaded models (the engine reads them from the row).
+        viewModelScope.launch {
+            catalogRepository.state.collect { state ->
+                val ready = state as? io.androllm.core.models.catalog.CatalogState.Ready ?: return@collect
+                runCatching {
+                    modelRepository.observeAllModels().first()
+                        .withCatalogFamilyMigrations(ready.catalog.models)
+                        .forEach { modelRepository.upsert(it) }
+                }
+            }
         }
         searchHuggingFace("")
         refreshStorageStats()
@@ -592,7 +606,13 @@ class ModelsViewModel @Inject constructor(
     }
 
     fun resumeDownload(model: Model) {
-        downloadManager.resumeDownload(model)
+        // Fork: resume against the current catalog artifact; a changed file restarts from zero.
+        val refreshed = model.withCurrentCatalogArtifact(catalogRepository.currentModels())
+        if (refreshed.artifactChanged) {
+            downloadManager.retryDownload(refreshed.model, resetPartial = true)
+        } else {
+            downloadManager.resumeDownload(model)
+        }
     }
 
     fun cancelDownload(modelId: String) {
@@ -600,7 +620,10 @@ class ModelsViewModel @Inject constructor(
     }
 
     fun retryDownload(model: Model) {
-        downloadManager.retryDownload(model)
+        // Fork (Gate D, N5): Retry uses the CURRENT catalog URL/sha256, not the
+        // values frozen in the database row when the download first started.
+        val refreshed = model.withCurrentCatalogArtifact(catalogRepository.currentModels())
+        downloadManager.retryDownload(refreshed.model, resetPartial = refreshed.artifactChanged)
     }
 
     fun pauseAllDownloads(models: List<Model>) {
