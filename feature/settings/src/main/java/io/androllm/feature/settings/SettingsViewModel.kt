@@ -388,8 +388,9 @@ class SettingsViewModel @Inject constructor(
     val guestMode: StateFlow<Boolean> = _guestMode.asStateFlow()
 
     init {
+        // Same source handling as ProfileViewModel.guestMode (catch → false).
         preferencesDataStore.guestMode
-            .catch { e -> Timber.w(e, "[Auth] guestMode read failed") }
+            .catch { e -> Timber.w(e, "[Auth] guestMode read failed"); emit(false) }
             .onEach { _guestMode.value = it }
             .launchIn(viewModelScope)
     }

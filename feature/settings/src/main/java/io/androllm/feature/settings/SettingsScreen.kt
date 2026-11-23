@@ -1005,6 +1005,15 @@ private fun FirebaseAuthCard(
                     icon = Icons.Filled.AccountCircle,
                     modifier = Modifier.fillMaxWidth()
                 )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Local data stays on this device (chats, memory, personal context, " +
+                        "models, tool tokens). Signing in later keeps it; guest-period usage " +
+                        "is not uploaded to the web dashboard.",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = MaterialTheme.ledger.deskInk
+                    )
+                )
             }
         }
     }

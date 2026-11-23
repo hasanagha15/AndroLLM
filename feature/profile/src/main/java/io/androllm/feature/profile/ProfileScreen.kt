@@ -205,7 +205,7 @@ fun ProfileScreen(
                                     ActionRow(
                                         icon = Icons.Filled.Logout,
                                         title = "Leave guest mode",
-                                        subtitle = "Back to the sign-in screen",
+                                        subtitle = "Back to sign-in. Chats, memory, models and tool tokens stay on this device; a later sign-in keeps them",
                                         accent = MaterialTheme.ledger.lampDeep,
                                         onClick = {
                                             viewModel.leaveGuestMode {

@@ -40,7 +40,10 @@ class PermissionSetupViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            _setupCompleted.value = preferencesDataStore.setupCompleted.first()
+            // A failed read must not leave the screen blank (null): fall
+            // back to "not completed" so the setup screen is shown.
+            _setupCompleted.value = runCatching { preferencesDataStore.setupCompleted.first() }
+                .getOrDefault(false)
         }
     }
 

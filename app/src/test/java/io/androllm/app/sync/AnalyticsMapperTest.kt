@@ -180,4 +180,13 @@ class AnalyticsMapperTest {
         )
         assertFalse(hasSessionRejection(emptyList()))
     }
+
+    @Test
+    fun `guest-period usage is dropped after the cutoff, nothing without a cutoff`() {
+        data class Item(val ts: Long)
+        val items = listOf(Item(100), Item(200), Item(300))
+        assertEquals(items, dropGuestPeriod(items, 0L) { it.ts })
+        assertEquals(listOf(Item(200), Item(300)), dropGuestPeriod(items, 200L) { it.ts })
+        assertEquals(emptyList<Item>(), dropGuestPeriod(items, 1_000L) { it.ts })
+    }
 }

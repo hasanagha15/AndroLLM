@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -47,6 +48,7 @@ class PreferencesDataStore @Inject constructor(
         val ONBOARDING_COMPLETED = booleanPreferencesKey(AppConstants.Preferences.ONBOARDING_COMPLETED_KEY)
         val SETUP_COMPLETED = booleanPreferencesKey(AppConstants.Preferences.SETUP_COMPLETED_KEY)
         val GUEST_MODE = booleanPreferencesKey("guest_mode")
+        val GUEST_USAGE_CUTOFF_MS = longPreferencesKey("guest_usage_cutoff_ms")
         val DISPLAY_NAME = stringPreferencesKey("display_name")
         val USERNAME = stringPreferencesKey("username")
         val AVATAR_INDEX = intPreferencesKey("avatar_index")
@@ -353,6 +355,12 @@ class PreferencesDataStore @Inject constructor(
      * Firebase identity, cloud sync or any account feature (those keep
      * checking FirebaseAuth.currentUser). Cleared by "Leave guest mode",
      * by a real sign-in and by sign-out.
+     *
+     * Leaving guest mode does NOT erase local data: chats, memory, personal
+     * context, downloaded models, settings and tool tokens in the Keystore
+     * stay on the device, and a later sign-in on this device keeps them.
+     * Guest-period usage events are NOT uploaded by analytics sync after a
+     * later sign-in (see [guestUsageCutoffMs]).
      */
     val guestMode: Flow<Boolean> = dataStore.data.map { preferences ->
         preferences[Keys.GUEST_MODE] ?: false
@@ -360,6 +368,19 @@ class PreferencesDataStore @Inject constructor(
 
     suspend fun setGuestMode(enabled: Boolean) {
         dataStore.edit { preferences -> preferences[Keys.GUEST_MODE] = enabled }
+    }
+
+    /**
+     * Epoch ms of the sign-in that ended a guest session (0 = never). The
+     * analytics sync skips usage events recorded before it, so guest-period
+     * usage is never uploaded to the web dashboard.
+     */
+    val guestUsageCutoffMs: Flow<Long> = dataStore.data.map { preferences ->
+        preferences[Keys.GUEST_USAGE_CUTOFF_MS] ?: 0L
+    }
+
+    suspend fun setGuestUsageCutoffMs(epochMs: Long) {
+        dataStore.edit { preferences -> preferences[Keys.GUEST_USAGE_CUTOFF_MS] = epochMs }
     }
 
     /**
