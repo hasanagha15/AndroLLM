@@ -888,6 +888,7 @@ class LiteRtLmEngine @Inject constructor(
         }
         consumedTurns = emptyList()
         conversationSystemPrompt = null
+        conversationSessionKey = null
         promptCount = 0
     }
 
@@ -1233,11 +1234,11 @@ class LiteRtLmEngine @Inject constructor(
             withContext(Dispatchers.Default) {
                 outputDecoder?.reset()
                 if (messages.isEmpty()) throw EngineException("Empty message history")
-                val plan = ChatTurnPlanner.plan(messages)
+                val plan = ChatTurnPlanner.plan(messages, normalDataBudget())
                 val conv = ensureConversationForHistory(eng, plan, config)
                 val startedAt = System.currentTimeMillis()
                 val rawResult = sendMessageWithContextTrim(
-                    eng, plan, config, conv, plan.prompt
+                    eng, messages, plan, config, conv
                 )
                 // Native tool-call markers are parsed here and stripped from
                 // the persisted transcript — the assistant message stored for
@@ -1285,7 +1286,7 @@ class LiteRtLmEngine @Inject constructor(
         }
         // Seed / system instruction / prompt for this turn (tool results stay
         // in the user-role transcript, never in the system instruction).
-        val plan = ChatTurnPlanner.plan(messages)
+        val plan = ChatTurnPlanner.plan(messages, normalDataBudget())
 
         var conv: Conversation
         try {
@@ -1515,10 +1516,11 @@ class LiteRtLmEngine @Inject constructor(
             scope.launch(Dispatchers.Default) {
                 try {
                     runCatching { conv.cancelProcess() }
-                    conv = reseedAfterOverflow(eng, plan, config)
+                    val (freshConv, retryPrompt) = reseedAfterOverflow(eng, messages, config)
+                    conv = freshConv
                     logger.i("PREFILL START: fresh reseeded session after recovery ($reason)")
                     conv.sendMessageAsync(
-                        Message.user(plan.prompt),
+                        Message.user(retryPrompt),
                         cb,
                         maxOutputToken = streamingMaxOutputTokens(config),
                         thinkingConfig = thinkingConfig()
@@ -1828,6 +1830,7 @@ class LiteRtLmEngine @Inject constructor(
             }
             consumedTurns = emptyList()
             conversationSystemPrompt = null
+            conversationSessionKey = null
             val fresh = conversation ?: throw e
             fresh.sendMessage(
                 Message.user(prompt),
@@ -1846,13 +1849,13 @@ class LiteRtLmEngine @Inject constructor(
      */
     private suspend fun sendMessageWithContextTrim(
         eng: Engine,
+        messages: List<ChatPromptMessage>,
         plan: ChatTurnPlan,
         config: GenerationConfig,
-        conv: Conversation,
-        userPrompt: String
+        conv: Conversation
     ): String = try {
         conv.sendMessage(
-            Message.user(userPrompt),
+            Message.user(plan.prompt),
             maxOutputToken = streamingMaxOutputTokens(config),
             thinkingConfig = thinkingConfig()
         ).toString()
@@ -1864,9 +1867,9 @@ class LiteRtLmEngine @Inject constructor(
             } else {
                 android.util.Log.w("LiteRtLmEngine", "Chat context window full — trimming history and reseeding (${e.message})")
             }
-            val fresh = reseedAfterOverflow(eng, plan, config)
+            val (fresh, retryPrompt) = reseedAfterOverflow(eng, messages, config)
             fresh.sendMessage(
-                Message.user(userPrompt),
+                Message.user(retryPrompt),
                 maxOutputToken = streamingMaxOutputTokens(config),
                 thinkingConfig = thinkingConfig()
             ).toString()
@@ -1884,13 +1887,23 @@ class LiteRtLmEngine @Inject constructor(
      */
     private suspend fun reseedAfterOverflow(
         eng: Engine,
-        plan: ChatTurnPlan,
+        messages: List<ChatPromptMessage>,
         config: GenerationConfig
-    ): Conversation {
-        // Newest turns only (prompt included), sanitized to strict
-        // user/assistant alternation starting with user and ending with
-        // assistant; the caller sends plan.prompt next.
+    ): Pair<Conversation, String> {
+        // Re-plan with a tighter untrusted-data budget, keep only the newest
+        // turns (sanitized to strict user/assistant alternation) and cap the
+        // prompt itself: an oversized prompt (huge tool output) would
+        // overflow again no matter how much history is dropped.
+        val ctx = contextTokens()
+        val plan = ChatTurnPlanner.plan(
+            messages,
+            ChatTurnPlanner.budgetChars(ctx, ChatTurnPlanner.OVERFLOW_DATA_FRACTION)
+        )
         val reseed = ChatTurnPlanner.overflowSeed(plan, CONTEXT_TRIM_KEEP_TURNS)
+        val prompt = ChatTurnPlanner.capPrompt(
+            plan.prompt,
+            ChatTurnPlanner.budgetChars(ctx, ChatTurnPlanner.OVERFLOW_PROMPT_FRACTION)
+        )
         val sampler = conversationConfigForSampler(config)
         val initial = reseed.map { m ->
             if (m.role == "assistant" || m.role == "model") Message.model(m.content)
@@ -1909,8 +1922,9 @@ class LiteRtLmEngine @Inject constructor(
             conversation?.let { runCatching { it.close() } }
             conversation = createConversationWithFamilyFlags(eng, conversationConfig)
             conversationSystemPrompt = system
+            conversationSessionKey = config.sessionKey
             consumedTurns = reseed
-            checkNotNull(conversation)
+            checkNotNull(conversation) to prompt
         }
     }
 
@@ -2250,7 +2264,11 @@ class LiteRtLmEngine @Inject constructor(
         val seed = plan.seed
         val live = conversation
         val canReuse = !reuseBroken.get() && live != null &&
-            conversationSystemPrompt == system && seed == consumedTurns
+            ChatTurnPlanner.canReuse(
+                live = ResidentSession(conversationSystemPrompt, conversationSessionKey, consumedTurns),
+                plan = plan,
+                sessionKey = config.sessionKey
+            )
         if (canReuse) {
             // KV-CACHE REUSE (the performance-critical path): the live
             // conversation already holds exactly this transcript (system + all
@@ -2273,6 +2291,7 @@ class LiteRtLmEngine @Inject constructor(
             reuseBroken.get() -> "template-drift latch"
             live == null -> "no resident session"
             conversationSystemPrompt != system -> "system prompt changed"
+            conversationSessionKey != config.sessionKey -> "different session (chat/origin)"
             else -> "history changed"
         }
         logger.i("SESSION LOOKUP: RESEED required ($reseedReason) — full history will be prefilled")
@@ -2296,6 +2315,7 @@ class LiteRtLmEngine @Inject constructor(
         val fresh = createConversationWithFamilyFlags(eng, conversationConfig).also {
             conversation = it
             conversationSystemPrompt = system
+            conversationSessionKey = config.sessionKey
             consumedTurns = seed
         }
         lastSessionReused = false
@@ -2308,6 +2328,22 @@ class LiteRtLmEngine @Inject constructor(
 
     @Volatile
     private var conversationSystemPrompt: String? = null
+
+    /**
+     * [GenerationConfig.sessionKey] the resident conversation was seeded for.
+     * Part of the reuse key: a remote task never continues an owner session
+     * (and vice versa), and two chats never share one.
+     */
+    @Volatile
+    private var conversationSessionKey: String? = null
+
+    /** Context window of the loaded model in tokens (4096 when unknown). */
+    private fun contextTokens(): Int =
+        loadedModel?.contextLength?.takeIf { it > 0 } ?: 4096
+
+    /** Untrusted tool-data budget for a normal turn. */
+    private fun normalDataBudget(): Int =
+        ChatTurnPlanner.budgetChars(contextTokens(), ChatTurnPlanner.NORMAL_DATA_FRACTION)
 
     /**
      * Set once a KV-cache continuation fails with a template round-trip

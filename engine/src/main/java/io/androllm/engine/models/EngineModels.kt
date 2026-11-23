@@ -148,7 +148,16 @@ data class GenerationConfig(
      * text, top-5 logits, temperature, backend) to logcat. A decode-debugging
      * aid; keep false in production to avoid log spam.
      */
-    val debugTokenLogging: Boolean = false
+    val debugTokenLogging: Boolean = false,
+    /**
+     * Who/what the turn belongs to, e.g. "owner:chat:<conversationId>",
+     * "owner:voice:<id>", "remote:<uuid>". The local engine only reuses a
+     * resident KV session for the SAME key, so a remote task never continues
+     * an owner session (and vice versa) and chats never share one. Not sent
+     * to the native bridge.
+     */
+    @kotlinx.serialization.Transient
+    val sessionKey: String = ""
 )
 
 /**
@@ -159,7 +168,17 @@ data class GenerationConfig(
 data class ChatPromptMessage(
     val role: String,
     val content: String
-)
+) {
+    companion object {
+        /**
+         * Trusted app-authored note inside the turn (loop-guard stop note,
+         * plain-text retry instruction). The local engine labels it as an
+         * app note; non-leading role=system messages are treated as
+         * untrusted tool data instead.
+         */
+        const val ROLE_APP_NOTE = "app_note"
+    }
+}
 
 /**
  * A single token chunk produced during streaming generation.
