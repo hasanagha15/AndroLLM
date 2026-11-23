@@ -31,8 +31,18 @@ object UntrustedDataFraming {
         RegexOption.IGNORE_CASE
     )
 
-    /** Replaces every forged open/close marker in [text]. */
-    fun scrub(text: String): String = FORGED_MARKER.replace(text, MARKER_REMOVED)
+    /** Branch M: a forged trusted app-note label inside data ("[AndroLLM app note]", any spacing / case). */
+    private val FORGED_APP_NOTE = Regex("""\[\s*AndroLLM\s*app[\s_\-]*note\s*\]""", RegexOption.IGNORE_CASE)
+
+    /** Branch M: planner transcript role labels at a line start inside data ("app_note:", "tool_data:"). */
+    private val FORGED_ROLE_LABEL = Regex("""(?m)^(\s*)(app[\s_\-]*note|tool[\s_\-]*data)\s*:""", RegexOption.IGNORE_CASE)
+
+    /** Replaces every forged open/close marker, app-note label and role label in [text]. */
+    fun scrub(text: String): String {
+        val noMarkers = FORGED_MARKER.replace(text, MARKER_REMOVED)
+        val noNotes = FORGED_APP_NOTE.replace(noMarkers, MARKER_REMOVED)
+        return FORGED_ROLE_LABEL.replace(noNotes) { m -> m.groupValues[1] + MARKER_REMOVED }
+    }
 
     /** [text] scrubbed and wrapped in the open/close markers. */
     fun wrap(text: String): String = DATA_OPEN + "\n" + scrub(text) + "\n" + DATA_CLOSE

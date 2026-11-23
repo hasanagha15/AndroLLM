@@ -615,7 +615,7 @@ class ToolRunCoordinator @Inject constructor(
                             // Branch M (N3): app-authored -> ROLE_APP_NOTE, never framed as untrusted tool data.
                             current = current + ChatPromptMessage(
                                 role = ChatPromptMessage.ROLE_APP_NOTE,
-                                content = "Reminder: the user's original request '${originalRequest.take(100)}' still requires these steps: ${remaining.joinToString(", ") { it.toolName }}. Continue execution — do not stop early. Check if you need to call another tool before answering."
+                                content = reminderNote(remaining.map { it.toolName })
                             )
                             continue // give planner one more round to emit the missing calls
                         }
@@ -738,7 +738,7 @@ class ToolRunCoordinator @Inject constructor(
         for (record in records) {
             val call = record.call
             val (header, data) = ToolAppNotes.split(call.name, record.result.summary)
-            if (header != null) note.append('\n').append(call.name).append(": ").append(header)
+            if (header != null) note.append('\n').append(canonicalName(call.name)).append(": ").append(header)
             val args = call.arguments.entries.joinToString(", ") { (k, v) -> "$k=$v" }
             sb.append("- ").append(call.name)
             if (args.isNotBlank()) sb.append('(').append(args.take(300)).append(')')
@@ -748,6 +748,10 @@ class ToolRunCoordinator @Inject constructor(
             chunkText(sb.toString(), LOCAL_FEEDBACK_CHUNK_CHARS)
                 .map { ChatPromptMessage(role = "system", content = it) }
     }
+
+    /** Branch M: the registry's canonical tool name (never the model's casing / padding) for app notes. */
+    private fun canonicalName(name: String): String =
+        runCatching { registry.get(name)?.spec?.name }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: name.trim()
 
     /** Renders execution records for a chat status line (log only). */
     fun describeRecords(records: List<ToolExecutionRecord>): String =
@@ -898,6 +902,16 @@ class ToolRunCoordinator @Inject constructor(
 
         /** Local feedback system messages are split at this size. */
         private const val LOCAL_FEEDBACK_CHUNK_CHARS = 6_000
+
+        /**
+         * Branch M: the early-exit nudge is an APP note, so it carries no text from the
+         * request itself (a remote / guest request is not app-authored) — only the
+         * planned tool names, which come from the registry-validated plan.
+         */
+        fun reminderNote(remainingTools: List<String>): String =
+            "Reminder: the user's original request (see the conversation above) still requires these steps: " +
+                remainingTools.joinToString(", ") { it.filter { c -> c.isLetterOrDigit() || c == '_' }.take(60) } +
+                ". Continue execution — do not stop early. Check if you need to call another tool before answering."
 
         /** App-authored intro of the local tool feedback (sent as an app note). */
         const val LOCAL_FEEDBACK_INTRO =

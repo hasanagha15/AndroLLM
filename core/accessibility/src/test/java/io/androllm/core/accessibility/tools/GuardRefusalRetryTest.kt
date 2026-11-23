@@ -21,7 +21,7 @@ class GuardRefusalRetryTest {
     private fun controller(result: UiActionResult): AccessibilityController {
         val c = mockk<AccessibilityController>()
         every { c.isConnected } returns true
-        coEvery { c.click(any(), any()) } returns result
+        coEvery { c.click(any(), any(), any()) } returns result
         coEvery { c.type(any(), any()) } returns result
         coEvery { c.scroll(any()) } returns result
         return c

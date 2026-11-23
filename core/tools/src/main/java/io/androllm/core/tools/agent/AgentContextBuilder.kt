@@ -99,7 +99,7 @@ class AgentContextBuilder @Inject constructor(
          * Device facts whose VALUE is third-party text (the clipboard can be set
          * by any app or web page): carried with the untrusted variables.
          */
-        private val UNTRUSTED_FACT_KEYS = setOf("clipboard")
+        private val UNTRUSTED_FACT_KEYS = setOf("clipboard", "current_app")
 
         private fun factKey(fact: String): String = fact.substringBefore(':').trim().lowercase()
 

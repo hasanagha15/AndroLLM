@@ -1,6 +1,7 @@
 package io.androllm.core.accessibility.tools
 
 import io.androllm.core.accessibility.controller.AccessibilityController
+import io.androllm.core.accessibility.controller.RiskApproval
 import io.androllm.core.accessibility.executor.AutomationExecutor
 import io.androllm.core.accessibility.finder.UiSelector
 import io.androllm.core.accessibility.planner.SafetyClassifier
@@ -95,10 +96,12 @@ class UiClickTool @Inject constructor(
         category = ToolCategory.DEVICE
     )
 
-    override fun riskyAction(arguments: JsonObject): String? {
-        val label = ToolArgs.str(arguments, "label", "target", "text") ?: return null
-        return UiRisk.clickRisk(label, ToolArgs.str(arguments, "id", "resource_id"))
-    }
+    override fun riskyAction(arguments: JsonObject): String? =
+        UiRisk.clickRisk(
+            ToolArgs.str(arguments, "label", "target", "text"),
+            ToolArgs.str(arguments, "id", "resource_id"),
+            ToolArgs.int(arguments, "index", 0)
+        )
 
     override suspend fun execute(arguments: JsonObject): ToolResult {
         if (!controller.isConnected) return ToolResult.Failure(notConnected())
@@ -113,12 +116,19 @@ class UiClickTool @Inject constructor(
         if (UiRisk.clickRisk(label, id) != null && !isRiskyActionApproved()) {
             return ToolResult.Failure(UiRisk.UNCONFIRMED, retryable = false)
         }
+        // Branch M (gate B1): the controller re-checks the RESOLVED element; an approval
+        // covers only the element named on the card (full label or exact view id).
+        val approval = if (isRiskyActionApproved()) RiskApproval(label, id) else null
         // Exact id match plus label consistency (no "send" → "resend_code" substring hits).
         val byId = id?.let {
-            controller.click(UiSelector(resourceId = it, resourceIdExact = true, labelIfPresent = label, index = index), maxScrolls = 0)
+            controller.click(
+                UiSelector(resourceId = it, resourceIdExact = true, labelIfPresent = label, index = index),
+                maxScrolls = 0,
+                approval = approval
+            )
         }
         val result = if (byId?.success == true || byId?.retryable == false) byId
-        else controller.click(UiSelector(textContains = label, index = index))
+        else controller.click(UiSelector(textContains = label, index = index), approval = approval)
         return if (result.success) {
             ToolResult.Success(result.message)
         } else {
@@ -329,14 +339,16 @@ object UiRisk {
             "otherwise let the user tap it themselves."
 
     /** Description for the card when tapping [label] / view [id] is risky, else null. */
-    fun clickRisk(label: String?, id: String?): String? {
+    fun clickRisk(label: String?, id: String?, index: Int = 0): String? {
         val l = label?.trim().orEmpty()
         val i = id?.trim()?.takeIf { it.isNotEmpty() }
         val risky = (l.isNotEmpty() && SafetyClassifier.isRiskyTarget(l)) ||
             (i != null && SafetyClassifier.isRiskyTarget(i.replace('_', ' ')))
         if (!risky) return null
-        val what = l.ifEmpty { i.orEmpty() }.take(48)
-        return "tap \"$what\" in the foreground app (a send / pay / confirm / delete step)"
+        val what = l.ifEmpty { i.orEmpty() }.take(160)
+        val idPart = if (i != null && l.isNotEmpty()) " (view id $i)" else ""
+        val which = if (index > 0) " — match #${index + 1} on screen" else ""
+        return "tap \"$what\"$idPart$which in the foreground app (a send / pay / call / confirm / delete step)"
     }
 
     /** Description for the card when typing [text] would submit, else null. */

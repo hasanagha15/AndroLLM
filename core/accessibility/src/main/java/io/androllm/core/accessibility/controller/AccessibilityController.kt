@@ -17,6 +17,7 @@ import io.androllm.core.accessibility.finder.LiveTree
 import io.androllm.core.accessibility.finder.UiSelector
 import io.androllm.core.accessibility.gestures.GestureExecutor
 import io.androllm.core.accessibility.input.TextInputController
+import io.androllm.core.accessibility.planner.SafetyClassifier
 import io.androllm.core.accessibility.settings.AccessibilitySettingsStore
 import io.androllm.core.accessibility.tree.UiElementType
 import io.androllm.core.accessibility.util.MainThread
@@ -39,12 +40,19 @@ data class UiActionResult(
      * the ui_* tools then return a non-retryable failure, so the coordinator
      * neither repeats the call nor tries an "alternative tool".
      */
-    val retryable: Boolean = true
+    val retryable: Boolean = true,
+    /**
+     * Branch M: non-null when the RESOLVED element is a risky send / pay /
+     * call / confirm step that was not approved for exactly this element.
+     */
+    val risky: RiskyElementGate.Decision.Refuse? = null
 ) {
     companion object {
         fun ok(msg: String) = UiActionResult(true, msg)
         fun fail(msg: String) = UiActionResult(false, msg)
         fun blocked(msg: String) = UiActionResult(false, msg, retryable = false)
+        fun risky(refusal: RiskyElementGate.Decision.Refuse, verb: String = "ui_click") =
+            UiActionResult(false, RiskyElementGate.refusalMessage(refusal, verb), retryable = false, risky = refusal)
     }
 }
 
@@ -101,7 +109,7 @@ class AccessibilityController @Inject constructor(
     // ── Element actions ─────────────────────────────────────────────────────
 
     /** Taps the element matching [selector], scrolling to it first if needed. */
-    suspend fun click(selector: UiSelector, maxScrolls: Int = 6): UiActionResult {
+    suspend fun click(selector: UiSelector, maxScrolls: Int = 6, approval: RiskApproval? = null): UiActionResult {
         val settings = settingsStore.current()
         val root = onMain { service?.rootInActiveWindow }
         if (root == null) return UiActionResult.fail(notConnected())
@@ -121,19 +129,25 @@ class AccessibilityController @Inject constructor(
         }
         val visible = onMain { node.isVisibleToUser } ?: false
         if (!visible) return UiActionResult.fail("Element '${selector.summary}' is not visible.")
+        // Branch M (gate B1): decide on the element actually found, not on the query.
+        val facts = factsOf(node)
+        (RiskyElementGate.decide(facts, approval) as? RiskyElementGate.Decision.Refuse)?.let {
+            return UiActionResult.risky(it)
+        }
         val ok = gestures.clickNode(node)
-        // Branch L (App Atlas): report the step (view id + targeted label, never screen text).
-        reportStep(root, node, UiStep.Op.TAP, selector.text ?: selector.textContains ?: selector.resourceId, ok)
+        // Branch L (App Atlas): report the step - the ELEMENT's own label (branch M), not the query.
+        reportStep(root, node, UiStep.Op.TAP, RiskyElementGate.displayLabel(facts).ifEmpty { null }, ok)
         val msg = if (ok) "Tapped ${selector.summary}." else "Tapping ${selector.summary} failed."
         return if (ok) UiActionResult.ok(msg) else UiActionResult.fail(msg)
     }
 
     /** Double-taps the element matching [selector] (e.g. Maps zoom). */
-    suspend fun doubleTap(selector: UiSelector): UiActionResult {
+    suspend fun doubleTap(selector: UiSelector, approval: RiskApproval? = null): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
         guardReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
+        riskGate(node, approval)?.let { return it }
         val bounds = android.graphics.Rect()
         onMain { node.getBoundsInScreen(bounds) }
         val ok = gestures.doubleTap(bounds)
@@ -144,11 +158,12 @@ class AccessibilityController @Inject constructor(
      * Drags the element matching [selector] by ([dx], [dy]) screen points
      * (sliders, reorder handles, maps panning).
      */
-    suspend fun drag(selector: UiSelector, dx: Float, dy: Float): UiActionResult {
+    suspend fun drag(selector: UiSelector, dx: Float, dy: Float, approval: RiskApproval? = null): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
         guardReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
+        riskGate(node, approval)?.let { return it }
         val bounds = android.graphics.Rect()
         onMain { node.getBoundsInScreen(bounds) }
         val ok = gestures.drag(
@@ -171,11 +186,12 @@ class AccessibilityController @Inject constructor(
     }
 
     /** Long-presses the element matching [selector]. */
-    suspend fun longClick(selector: UiSelector): UiActionResult {
+    suspend fun longClick(selector: UiSelector, approval: RiskApproval? = null): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
         guardReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
+        riskGate(node, approval)?.let { return it }
         val bounds = android.graphics.Rect()
         onMain { node.getBoundsInScreen(bounds) }
         val ok = gestures.longPress(bounds)
@@ -226,6 +242,12 @@ class AccessibilityController @Inject constructor(
         // A swipe is a raw gesture on the foreground app (a slider in the Tesla
         // app, a swipe-to-reply in WhatsApp): same guard as taps.
         foregroundBlockedReason()?.let { return UiActionResult.blocked(it) }
+        // Branch M: a raw swipe must not complete a "slide to pay / confirm" control.
+        slideToConfirmOnScreen()?.let { label ->
+            return UiActionResult.blocked(
+                "A slide-to-confirm control ('${label.take(80)}') is on screen - a swipe could pay / confirm. Let the user swipe it."
+            )
+        }
         val ok = swipeGesture(direction)
         return if (ok) UiActionResult.ok("Swiped $direction.") else UiActionResult.fail("Swipe $direction failed.")
     }
@@ -255,6 +277,43 @@ class AccessibilityController @Inject constructor(
 
     /** The user's extra protected packages (for the screen analyzer). */
     internal suspend fun sensitiveExtras(): Set<String> = sensitiveApps.current()
+
+    /** Branch M: identity of [node] (+ its nearest clickable ancestor when the node itself is not clickable). */
+    private suspend fun factsOf(node: AccessibilityNodeInfo): RiskyElementGate.Facts = onMain {
+        val ancestors = mutableListOf<RiskyElementGate.Facts>()
+        if (!node.isClickable) {
+            var p = node.parent
+            var depth = 0
+            while (p != null && depth < 6) {
+                if (p.isClickable) {
+                    ancestors += RiskyElementGate.Facts(p.text?.toString(), p.contentDescription?.toString(), p.viewIdResourceName)
+                    break
+                }
+                p = p.parent
+                depth++
+            }
+        }
+        RiskyElementGate.Facts(node.text?.toString(), node.contentDescription?.toString(), node.viewIdResourceName, ancestors)
+    } ?: RiskyElementGate.Facts()
+
+    /** Branch M: refusal when the resolved element is risky and not approved for exactly this element. */
+    private suspend fun riskGate(node: AccessibilityNodeInfo, approval: RiskApproval?): UiActionResult? =
+        (RiskyElementGate.decide(factsOf(node), approval) as? RiskyElementGate.Decision.Refuse)
+            ?.let { UiActionResult.risky(it, verb = "ui_gesture") }
+
+    /** Branch M: label of a visible slide / swipe-to-confirm control, or null. */
+    private suspend fun slideToConfirmOnScreen(): String? = onMain {
+        val root = service?.rootInActiveWindow ?: return@onMain null
+        LiveTree.collect(root).firstNotNullOfOrNull { n ->
+            if (!n.isVisibleToUser) return@firstNotNullOfOrNull null
+            val label = LiveTree.labelOf(n)
+            val seek = n.className?.toString()?.contains("SeekBar", ignoreCase = true) == true
+            label.takeIf {
+                it.isNotEmpty() &&
+                    (SafetyClassifier.isSlideToConfirm(it) || (seek && SafetyClassifier.isRiskyTarget(it)))
+            }
+        }
+    }
 
     /** Branch L: tells the App Atlas recorder what was done (best effort, never throws). */
     private suspend fun reportStep(root: AccessibilityNodeInfo, node: AccessibilityNodeInfo, op: UiStep.Op, label: String?, ok: Boolean) {

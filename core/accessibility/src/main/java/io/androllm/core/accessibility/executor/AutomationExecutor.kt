@@ -1,6 +1,7 @@
 package io.androllm.core.accessibility.executor
 
 import io.androllm.core.accessibility.controller.AccessibilityController
+import io.androllm.core.accessibility.controller.RiskApproval
 import io.androllm.core.accessibility.controller.UiActionResult
 import io.androllm.core.accessibility.debug.AccessibilityDebugStore
 import io.androllm.core.accessibility.finder.UiSelector
@@ -139,13 +140,23 @@ class AutomationExecutor @Inject constructor(
                     // stays under the owner's "confirm high-risk" setting.
                     val riskyTarget = SafetyClassifier.isRiskyTarget(action.target)
                     if (riskyTarget || (settings.confirmHighRisk && SafetyClassifier.requiresConfirmation(goal, action))) {
-                        val approved = confirm("tap \"${action.target}\"", tapOnly = riskyTarget)
+                        val approved = confirm(describeTap(action.target, action.index), tapOnly = riskyTarget)
                         if (!approved) return AutomationResult(false, "The user declined the action.", steps.size)
                     }
-                    var result = controller.click(UiSelector(textContains = action.target, index = action.index))
+                    val selector = UiSelector(textContains = action.target, index = action.index)
+                    var approval = if (riskyTarget) RiskApproval(action.target) else null
+                    var result = controller.click(selector, approval = approval)
                     if (!result.success && result.retryable) {
                         delay(500) // let the UI settle, then one retry
-                        result = controller.click(UiSelector(textContains = action.target, index = action.index))
+                        result = controller.click(selector, approval = approval)
+                    }
+                    // Branch M (gate B1): the element actually found is risky ("Отпра" →
+                    // «Отправить»): ask with ITS full label, then tap only that element.
+                    result.risky?.let { refusal ->
+                        val approved = confirm(describeTap(refusal.element, action.index), tapOnly = true)
+                        if (!approved) return AutomationResult(false, "The user declined the action.", steps.size)
+                        approval = RiskApproval(refusal.element, refusal.id)
+                        result = controller.click(selector, approval = approval)
                     }
                     steps += ExecutedStep(action, result)
                     if (!result.success) return AutomationResult(false, result.message, steps.size, result.retryable)
@@ -192,6 +203,9 @@ class AutomationExecutor @Inject constructor(
         val result = controller.navigate(name)
         steps += ExecutedStep(action, result)
     }
+
+    private fun describeTap(label: String, index: Int): String =
+        "tap \"${label.take(160)}\"" + if (index > 0) " (match #${index + 1} on screen)" else ""
 
     /** Asks the user (chat card or spoken voice confirmation). */
     private suspend fun confirm(summary: String, tapOnly: Boolean = false): Boolean {

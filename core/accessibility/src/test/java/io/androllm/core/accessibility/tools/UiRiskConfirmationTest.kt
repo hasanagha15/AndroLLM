@@ -35,10 +35,10 @@ class UiRiskConfirmationTest {
     private fun controller(): AccessibilityController {
         val c = mockk<AccessibilityController>()
         every { c.isConnected } returns true
-        coEvery { c.click(any(), any()) } returns UiActionResult.ok("Tapped.")
+        coEvery { c.click(any(), any(), any()) } returns UiActionResult.ok("Tapped.")
         coEvery { c.type(any(), any()) } returns UiActionResult.ok("Typed.")
-        coEvery { c.longClick(any()) } returns UiActionResult.ok("Long-pressed.")
-        coEvery { c.doubleTap(any()) } returns UiActionResult.ok("Double-tapped.")
+        coEvery { c.longClick(any(), any()) } returns UiActionResult.ok("Long-pressed.")
+        coEvery { c.doubleTap(any(), any()) } returns UiActionResult.ok("Double-tapped.")
         return c
     }
 
@@ -87,7 +87,7 @@ class UiRiskConfirmationTest {
             assertThat((r as ToolResult.Failure).retryable).isFalse()
             assertThat(r.summary).isEqualTo(UiRisk.UNCONFIRMED)
         }
-        coVerify(exactly = 0) { c.click(any(), any()) }
+        coVerify(exactly = 0) { c.click(any(), any(), any()) }
     }
 
     @Test
@@ -98,7 +98,7 @@ class UiRiskConfirmationTest {
         assertThat(r1.isSuccess).isTrue()
         val r2 = withContext(RiskyActionApproval("call-2")) { tool.execute(args("label" to "Send", "id" to "send_button")) }
         assertThat(r2.isSuccess).isTrue()
-        coVerify(exactly = 2) { c.click(any(), any()) }
+        coVerify(exactly = 2) { c.click(any(), any(), any()) }
     }
 
     @Test
@@ -124,7 +124,7 @@ class UiRiskConfirmationTest {
         assertThat(gesture.riskyAction(args("action" to "long_press", "label" to "Sil"))).isNotNull()
         assertThat(gesture.execute(args("action" to "long_press", "label" to "Sil"))).isInstanceOf(ToolResult.Failure::class.java)
         assertThat(gesture.execute(args("action" to "long_press", "label" to "Photo")).isSuccess).isTrue()
-        coVerify(exactly = 1) { c.longClick(any()) }
+        coVerify(exactly = 1) { c.longClick(any(), any()) }
     }
 
     // ── ui_run steps ────────────────────────────────────────────────────
@@ -150,6 +150,6 @@ class UiRiskConfirmationTest {
         assertThat(result.success).isFalse()
         assertThat(card.captured.tapOnly).isTrue()
         assertThat(ToolConfirmationManager.isTapOnly(card.captured)).isTrue()
-        coVerify(exactly = 0) { c.click(any(), any()) }
+        coVerify(exactly = 0) { c.click(any(), any(), any()) }
     }
 }

@@ -74,18 +74,18 @@ class UiGestureTool @Inject constructor(
         return when (action.lowercase()) {
             "double_tap", "doubletap" -> {
                 if (label == null) return ToolResult.Failure("double_tap needs a label")
-                result(controller.doubleTap(UiSelector(textContains = label)))
+                result(controller.doubleTap(UiSelector(textContains = label), approval(label)))
             }
             "long_press", "longpress" -> {
                 if (label == null) return ToolResult.Failure("long_press needs a label")
-                result(controller.longClick(UiSelector(textContains = label)))
+                result(controller.longClick(UiSelector(textContains = label), approval(label)))
             }
             "drag" -> {
                 if (label == null) return ToolResult.Failure("drag needs a label")
                 val dx = ToolArgs.double(arguments, "dx")?.toFloat() ?: 0f
                 val dy = ToolArgs.double(arguments, "dy")?.toFloat() ?: 0f
                 if (dx == 0f && dy == 0f) return ToolResult.Failure("drag needs dx or dy")
-                result(controller.drag(UiSelector(textContains = label), dx, dy))
+                result(controller.drag(UiSelector(textContains = label), dx, dy, approval(label)))
             }
             "swipe" -> {
                 val direction = ToolArgs.str(arguments, "direction") ?: "down"
@@ -96,6 +96,10 @@ class UiGestureTool @Inject constructor(
             else -> ToolResult.Failure("Unknown gesture action '$action'. Use double_tap, long_press, drag, pinch_in, pinch_out or swipe.")
         }
     }
+
+    /** Branch M: approval for exactly [label] when the executor's tap-only card was approved. */
+    private suspend fun approval(label: String): io.androllm.core.accessibility.controller.RiskApproval? =
+        if (isRiskyActionApproved()) io.androllm.core.accessibility.controller.RiskApproval(label) else null
 
     private fun result(r: io.androllm.core.accessibility.controller.UiActionResult): ToolResult =
         if (r.success) ToolResult.Success(r.message) else ToolResult.Failure(r.message, retryable = r.retryable)

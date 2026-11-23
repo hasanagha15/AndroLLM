@@ -137,8 +137,17 @@ class AgentContextFramingTest {
 
     @Test
     fun `no variables means no data block`() = runTest {
-        val b = builder(store())
+        val device = mockk<DeviceContextProvider>()
+        every { device.collect(any()) } returns listOf("time: 12:00", "battery: 80%")
+        val b = AgentContextBuilder(device, store())
         assertThat(b.variablesDataBlockForCurrentOrigin()).isEmpty()
         assertThat(b.buildBlock()).doesNotContain(UntrustedDataFraming.DATA_OPEN)
+    }
+
+    @Test
+    fun `foreground app label is third-party text and is framed, not a trusted fact`() = runTest {
+        val b = builder(store())
+        assertThat(b.factsBlockForCurrentOrigin()).doesNotContain("current_app")
+        assertThat(dataSection(b.variablesDataBlockForCurrentOrigin())).contains("- device.current_app: Notes")
     }
 }
