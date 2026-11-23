@@ -15,6 +15,21 @@ object RecommendationEngine {
     private const val RAM_HEADROOM_GB = 1.0
     private const val MAX_POPULARITY_FACTOR = 4.0
 
+    /**
+     * Default pick for large-RAM phones (AndroLLM fork): Qwen3-4B-Instruct-2507
+     * is a STABLE, multilingual (incl. Russian) non-thinking model that runs on
+     * the GPU of 12 GB devices. It is pinned to the top of the list on such
+     * devices; smaller devices keep the score-based ranking.
+     */
+    const val LARGE_DEVICE_DEFAULT_MODEL_ID = "litertlm-qwen3-4b-instruct-2507"
+
+    /**
+     * Total-RAM threshold for [LARGE_DEVICE_DEFAULT_MODEL_ID]. A "12 GB" phone
+     * reports ~10.9-11.5 GB of total memory to apps (the rest is reserved by
+     * the kernel / modem), an 8 GB phone ~7.3 GB.
+     */
+    const val LARGE_DEVICE_RAM_GB = 10.5f
+
     enum class Tier { RECOMMENDED, POSSIBLE, NOT_RECOMMENDED }
 
     data class ModelRecommendation(
@@ -50,7 +65,28 @@ object RecommendationEngine {
                 )
             }
             .sortedByDescending { it.score }
+            .let { ranked -> pinLargeDeviceDefault(ranked, deviceRamGb) }
             .take(topN)
+    }
+
+    /**
+     * Moves [LARGE_DEVICE_DEFAULT_MODEL_ID] to the first place on devices with
+     * at least [LARGE_DEVICE_RAM_GB] total RAM — only when it is STABLE (an
+     * EXPERIMENTAL/BETA status is never promoted).
+     */
+    private fun pinLargeDeviceDefault(
+        ranked: List<ModelRecommendation>,
+        deviceRamGb: Float,
+    ): List<ModelRecommendation> {
+        if (deviceRamGb < LARGE_DEVICE_RAM_GB) return ranked
+        val preferred = ranked.firstOrNull {
+            it.model.id == LARGE_DEVICE_DEFAULT_MODEL_ID && it.model.statusValue == CatalogStatus.STABLE
+        } ?: return ranked
+        val pinned = preferred.copy(
+            reasons = listOf("Default for 12 GB+ RAM devices") + preferred.reasons,
+            tier = Tier.RECOMMENDED,
+        )
+        return listOf(pinned) + ranked.filter { it !== preferred }
     }
 
     private fun score(model: CatalogModel, availableGb: Float): Double {

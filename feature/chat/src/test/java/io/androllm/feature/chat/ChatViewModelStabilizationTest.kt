@@ -74,6 +74,9 @@ class ChatViewModelStabilizationTest {
     private val variableStore = mockk<AgentVariableStore>(relaxed = true)
     private val toolPromptBuilder = mockk<ToolPromptBuilder>(relaxed = true)
     private val settingsRepository = mockk<SettingsRepository>(relaxed = true)
+    private val personalContextStore = mockk<io.androllm.core.memory.personal.PersonalContextStore>(relaxed = true) {
+        io.mockk.coEvery { current() } returns io.androllm.core.memory.personal.PersonalContextSettings()
+    }
 
     private val engineState = MutableStateFlow<EngineState>(EngineState.Unloaded)
     private val generationState = MutableStateFlow<GenerationState>(GenerationState.Idle)
@@ -144,7 +147,8 @@ class ChatViewModelStabilizationTest {
             traceStore,
             variableStore,
             toolPromptBuilder,
-            settingsRepository
+            settingsRepository,
+            personalContextStore
         )
     }
 

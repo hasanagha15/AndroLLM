@@ -454,6 +454,7 @@ fun SettingsScreen(
                             navController.navigate(io.androllm.core.navigation.Routes.DEVELOPER)
                         }
                     )
+                    PersonalContextCard() // F1: user-typed personal context + reply language
                 }
 
                 settingsAccordionItem(

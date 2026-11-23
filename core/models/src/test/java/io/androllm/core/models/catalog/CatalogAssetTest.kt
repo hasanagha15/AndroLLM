@@ -201,6 +201,10 @@ class CatalogAssetTest {
         val qwen06 = byId.getValue("litertlm-qwen3-0.6b-int4")
         assertEquals("7c650468cc1598861b1a0deb0ab25be6b20cab13", qwen06.revision)
         assertEquals("7900eb4e7362d88c58782c6f9999bb7a129e03544aa98b8f338ea0cc5d8c22c1", qwen06.sha256)
+        // F1: that pinned TorchAO export has a fixed 2048-token KV cache (model card) —
+        // the catalog must not promise 8K (the UI showed "Context x / 2048").
+        assertEquals(2048, qwen06.contextLength)
+        assertEquals(2048, qwen06.recommendedContext)
     }
 
     // ---- Gate D re-gate, B1: the fork's own catalog must pass as a network catalog ----

@@ -100,7 +100,8 @@ class ChatViewModel @Inject constructor(
     private val traceStore: ToolExecutionTraceStore,
     private val variableStore: AgentVariableStore,
     private val toolPromptBuilder: ToolPromptBuilder,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    private val personalContextStore: io.androllm.core.memory.personal.PersonalContextStore
 ) : BaseViewModel() {
 
     private val _currentConversationId = MutableStateFlow<String>("")
@@ -746,10 +747,21 @@ class ChatViewModel @Inject constructor(
             // tools (content is already injected), math advertises only the
             // calculator, device queries only device tools, etc. — so the
             // model cannot pick the wrong tool "just in case".
+            // F1: base assistant instructions (reply language + translit
+            // hint, "cannot pay — offer to open the app", user-entered
+            // personal context) go FIRST, budgeted to a third of the system
+            // budget locally; the tool list gets what is left.
+            val personalSettings = runCatching { personalContextStore.current() }
+                .getOrNull() ?: io.androllm.core.memory.personal.PersonalContextSettings()
+            val assistantInstructions = io.androllm.core.memory.personal.AssistantInstructions.build(
+                personalSettings,
+                maxChars = if (isCloudTurn) 0 else (systemCharsBudget / 3).coerceAtLeast(1)
+            )
+            val toolCharsBudget = (systemCharsBudget - assistantInstructions.length).coerceAtLeast(1)
             val routeQuery = history.lastOrNull { it.role == MessageRole.USER }?.content.orEmpty()
             val routeHasAttachments = turnAttachments.isNotEmpty()
             val toolAdvertisement = toolPromptBuilder.advertisement(
-                maxChars = minOf(systemCharsBudget, familyAdCapChars),
+                maxChars = minOf(toolCharsBudget, familyAdCapChars),
                 query = routeQuery,
                 hasAttachments = routeHasAttachments
             )
@@ -759,6 +771,7 @@ class ChatViewModel @Inject constructor(
             // fixed guess, so a large injected attachment can never silently
             // push the rendered prompt over nCtx after trimming.
             val systemTokenOverhead = SYSTEM_TEMPLATE_FRAMING_TOKENS +
+                ChatHistoryTrimmer.estimateTokens(assistantInstructions) +
                 ChatHistoryTrimmer.estimateTokens(memoryContext.systemText) +
                 (if (attachmentContext.isNotBlank()) ChatHistoryTrimmer.estimateTokens(attachmentContext) else 0) +
                 (toolAdvertisement?.let { ChatHistoryTrimmer.estimateTokens(it) } ?: 0)
@@ -776,6 +789,7 @@ class ChatViewModel @Inject constructor(
             }
 
             val messages = buildList {
+                add(ChatPromptMessage(role = "system", content = assistantInstructions))
                 if (memoryContext.systemText.isNotBlank()) {
                     add(ChatPromptMessage(role = "system", content = memoryContext.systemText))
                 }

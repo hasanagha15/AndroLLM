@@ -366,7 +366,18 @@ class LiteRtLmEngine @Inject constructor(
                 // Only when the smallest safe configuration (512-1024 ctx, aggressive scratch, CPU) still
                 // cannot fit is the load refused — with detailed diagnostics naming every reduction attempted.
                 val resourceGuard = io.androllm.engine.utils.ModelResourceGuard(context)
-                val requestedCtxForGuard = config.contextLength.takeIf { it > 0 } ?: 4096
+                // Requested context = explicit config, else the model's catalog
+                // context capped by device RAM (was a fixed 4096 here and 8192
+                // below, so an 8K catalog model on a 12 GB phone got 4096).
+                val totalRamGb = runCatching {
+                    val am = context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? ActivityManager
+                    val mi = ActivityManager.MemoryInfo()
+                    am?.getMemoryInfo(mi)
+                    mi.totalMem / (1024f * 1024f * 1024f)
+                }.getOrDefault(0f)
+                val requestedCtxForGuard = config.contextLength.takeIf { it > 0 }
+                    ?: io.androllm.engine.memory.LocalContextPolicy.resolve(model.contextLength, totalRamGb)
+                logger.i("CONTEXT REQUEST: $requestedCtxForGuard (catalog=${model.contextLength}, totalRam=${"%.1f".format(totalRamGb)} GB, explicit=${config.contextLength})")
                 val requestedBackendForGuard: BackendType = config.backend
                     ?: if (config.gpuLayers == 0) BackendType.CPU else BackendType.AUTO
                 val footprintBackend = when (requestedBackendForGuard) {
@@ -654,7 +665,7 @@ class LiteRtLmEngine @Inject constructor(
             // to the aggressive-fit budget so a 32768-train 8B model does not
             // allocate a 32k KV cache when only 2k fits. This is the "smallest
             // safe context" requirement.
-            val requestedRaw = config.contextLength.takeIf { it > 0 } ?: DEFAULT_MAX_CONTEXT
+            val requestedRaw = requestedCtxForGuard
             val clampedRequest = effectiveContextFromFit?.let { minOf(requestedRaw, it) } ?: requestedRaw
             if (effectiveContextFromFit != null && clampedRequest != requestedRaw) {
                 logger.i("CONTEXT ADJUSTED by aggressive-fit: requested $requestedRaw → $clampedRequest")
@@ -1273,7 +1284,7 @@ class LiteRtLmEngine @Inject constructor(
         // a conversation — cache hits mean no unnecessary template re-rendering.
         runCatching {
             val info = loadedModel
-            val systemPrompt = messages.firstOrNull { it.role == "system" }?.content ?: ""
+            val systemPrompt = SystemPromptMerger.merge(messages) ?: ""
             val templateHash = PrefixCache.hashPrompt(info?.chatTemplate ?: "")
             val systemHash = PrefixCache.hashPrompt(systemPrompt)
             val cached = PrefixCache.get(
@@ -1866,7 +1877,7 @@ class LiteRtLmEngine @Inject constructor(
             if (m.role == "assistant" || m.role == "model") Message.model(m.content)
             else Message.user(m.content)
         }
-        val system = messages.firstOrNull { it.role == "system" }?.content
+        val system = SystemPromptMerger.merge(messages)
         val conversationConfig = if (system.isNullOrBlank()) {
             sampler.copy(initialMessages = initial)
         } else {
@@ -2226,7 +2237,7 @@ class LiteRtLmEngine @Inject constructor(
         config: GenerationConfig
     ): Conversation {
         val sessionLookupStartedAt = System.currentTimeMillis()
-        val system = messages.firstOrNull { it.role == "system" }?.content
+        val system = SystemPromptMerger.merge(messages)
         val turns = messages.filter { it.role != "system" }
         // The incoming history EXCLUDING the new user message (the caller
         // sends that as the actual prompt).

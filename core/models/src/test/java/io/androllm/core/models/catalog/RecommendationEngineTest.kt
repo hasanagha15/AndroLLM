@@ -99,4 +99,39 @@ class RecommendationEngineTest {
         val result = RecommendationEngine.recommend(list, 8.0f, topN = 2)
         assertEquals("comfy3b", result.first().model.id)
     }
+
+    // ── AndroLLM fork F1: Qwen3-4B-Instruct-2507 is the default on 12 GB devices ──
+
+    private val qwen4b = model(
+        RecommendationEngine.LARGE_DEVICE_DEFAULT_MODEL_ID, gb(2.66), 6.0f, 8.0f, "MIXED",
+        downloads = 10, likes = 1, trendingScore = 1, parameters = "4B"
+    )
+
+    @Test
+    fun qwen4bInstructIsFirstOnTwelveGbDevice() {
+        val result = RecommendationEngine.recommend(candidates + qwen4b, 11.1f, topN = 6)
+        assertEquals(RecommendationEngine.LARGE_DEVICE_DEFAULT_MODEL_ID, result.first().model.id)
+        assertEquals(RecommendationEngine.Tier.RECOMMENDED, result.first().tier)
+        assertTrue(result.first().reasons.first().contains("12 GB"))
+    }
+
+    @Test
+    fun qwen4bInstructNotPinnedOnEightGbDevice() {
+        val result = RecommendationEngine.recommend(candidates + qwen4b, 7.3f, topN = 10)
+        assertTrue(result.first().model.id != RecommendationEngine.LARGE_DEVICE_DEFAULT_MODEL_ID)
+    }
+
+    @Test
+    fun nonStableQwen4bIsNeverPinned() {
+        val experimental = qwen4b.copy(status = "EXPERIMENTAL")
+        val result = RecommendationEngine.recommend(candidates + experimental, 11.1f, topN = 10)
+        assertTrue(result.first().model.id != RecommendationEngine.LARGE_DEVICE_DEFAULT_MODEL_ID)
+    }
+
+    @Test
+    fun pinningKeepsTopNAndNoDuplicates() {
+        val result = RecommendationEngine.recommend(candidates + qwen4b, 11.1f, topN = 3)
+        assertEquals(3, result.size)
+        assertEquals(result.size, result.map { it.model.id }.distinct().size)
+    }
 }

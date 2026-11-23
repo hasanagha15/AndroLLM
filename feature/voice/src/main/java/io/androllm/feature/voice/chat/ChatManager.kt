@@ -71,7 +71,8 @@ class ChatManager @Inject constructor(
     private val automationSettingsStore: AutomationSettingsStore,
     private val traceStore: ToolExecutionTraceStore,
     private val variableStore: AgentVariableStore,
-    private val toolPromptBuilder: ToolPromptBuilder
+    private val toolPromptBuilder: ToolPromptBuilder,
+    private val personalContextStore: io.androllm.core.memory.personal.PersonalContextStore
 ) {
     private val scope = CoroutineScope(Dispatchers.Default)
 
@@ -236,7 +237,19 @@ class ChatManager @Inject constructor(
         } else {
             listOf(userMessage)
         }
+        // F1: base instructions (reply language + translit hint, "cannot pay —
+        // offer to open the app", user-entered personal context) first, like
+        // the typed chat. Budget: the same per-model char budget as the tool
+        // list (0 = cloud, unlimited).
+        val advertisementBudget = localAdvertisementBudget()
+        val personalSettings = runCatching { personalContextStore.current() }
+            .getOrNull() ?: io.androllm.core.memory.personal.PersonalContextSettings()
+        val assistantInstructions = io.androllm.core.memory.personal.AssistantInstructions.build(
+            personalSettings,
+            maxChars = advertisementBudget
+        )
         val promptMessages = buildList {
+            add(ChatPromptMessage(role = "system", content = assistantInstructions))
             if (memoryContext.systemText.isNotBlank()) {
                 add(ChatPromptMessage(role = "system", content = memoryContext.systemText))
             }
@@ -247,7 +260,7 @@ class ChatManager @Inject constructor(
             // cannot absorb the full ~11.7K-char list) and routed by the
             // request, like the typed chat. Cloud turns stay unbounded.
             toolPromptBuilder.advertisement(
-                maxChars = localAdvertisementBudget(),
+                maxChars = advertisementBudget,
                 query = trimmed
             )?.let {
                 add(ChatPromptMessage(role = "system", content = it))

@@ -269,7 +269,7 @@
       "sizeBytes": 497516544,
       "parameters": "0.6B",
       "quantization": "MIXED",
-      "contextLength": 8192,
+      "contextLength": 2048,
       "minRamGb": 2.0,
       "recommendedRamGb": 4.0,
       "expectedTokSec": "18-25 tok/s",
@@ -300,7 +300,7 @@
       "weaknesses": [
         "0.6B - limited deep reasoning"
       ],
-      "notes": "Ungated on Hugging Face. Replaces the Gemma 3 270M Q8 entry, which runs but produces degenerate special-token output on the LiteRT-LM 0.16 runtime and is not smoke-testable.",
+      "notes": "Context 2048: this pinned TorchAO export (revision 7c650468) has a fixed 2,048-token KV cache per the model card; the newer 4096/32K exports need LiteRT-LM 0.18+. Ungated on Hugging Face. Replaces the Gemma 3 270M Q8 entry, which runs but produces degenerate special-token output on the LiteRT-LM 0.16 runtime and is not smoke-testable.",
       "recommended": true,
       "runtimeFormat": "LITERTLM",
       "supportedBackends": [
@@ -316,7 +316,7 @@
       "supportsReasoning": true,
       "defaultCacheMb": 768,
       "estimatedRuntimeRamMb": 1300,
-      "recommendedContext": 4096,
+      "recommendedContext": 2048,
       "tensorLayout": "MIXED",
       "storageSpeed": "STANDARD",
       "modelSource": "litert-community/Qwen3-0.6B",

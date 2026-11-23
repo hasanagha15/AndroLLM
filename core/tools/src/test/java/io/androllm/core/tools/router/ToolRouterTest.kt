@@ -165,4 +165,37 @@ class ToolRouterTest {
         val calc = allTools.first { it.name == "calculate" }
         assertThat(router.confidence(calc, "Send a text to mom")).isEqualTo(0f)
     }
+
+    // ── F1: payment requests offer to open the app (never pay) ──
+
+    private val withLauncher = allTools + tool("launch_app", ToolPermission.APPS, ToolCategory.MEDIA).spec
+
+    @Test
+    fun `payment request puts launch_app first`() {
+        listOf(
+            "can you pay 50azn for the electricity bill",
+            "through the bank app",
+            "оплати свет",
+            "oplati gaz",
+            "işığın pulunu ödə",
+            "send money to my friend"
+        ).forEach { query ->
+            val routed = router.route(query, hasAttachments = false, enabledTools = withLauncher)
+            assertThat(routed.specs.first().name).isEqualTo("launch_app")
+        }
+    }
+
+    @Test
+    fun `non payment request is not reordered`() {
+        val routed = router.route("what is the weather today", hasAttachments = false, enabledTools = withLauncher)
+        assertThat(routed.specs.map { it.name }).doesNotContain("launch_app")
+        assertThat(router.isPaymentRequest("display brightness")).isFalse()
+        assertThat(router.isPaymentRequest("who are you")).isFalse()
+    }
+
+    @Test
+    fun `payment request without launch_app enabled is unchanged`() {
+        val routed = router.route("pay my bill", hasAttachments = false, enabledTools = allTools)
+        assertThat(routed.specs.map { it.name }).doesNotContain("launch_app")
+    }
 }

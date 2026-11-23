@@ -179,12 +179,33 @@ class ToolRouter @Inject constructor() {
             }
         }
 
+        // F1: a payment / bill / transfer request has NO tool (the agent can
+        // never pay), but the helpful answer is "I can't pay — shall I open
+        // your bank app?". Put launch_app FIRST so it survives the tool-list
+        // budget of small local models (open only, no further automation).
+        val paymentPromoted = isPaymentRequest(q) && enabledTools.any { it.name == PAYMENT_HELPER_TOOL }
+        val finalSpecs = if (paymentPromoted) {
+            enabledTools.filter { it.name == PAYMENT_HELPER_TOOL } + specs.filter { it.name != PAYMENT_HELPER_TOOL }
+        } else {
+            specs
+        }
+        val finalReason = if (paymentPromoted) "$reason; payment request — launch_app first (open the app, never pay)" else reason
+
         return RoutedTools(
             intent = intent,
-            specs = specs,
-            confidence = specs.associate { it.name to confidence(it, q) },
-            reason = reason
+            specs = finalSpecs,
+            confidence = finalSpecs.associate { it.name to confidence(it, q) },
+            reason = finalReason
         )
+    }
+
+    /**
+     * Payment / bill / money-transfer request in English, Russian, Azerbaijani
+     * or their Latin transliteration ("oplati", "odenis").
+     */
+    internal fun isPaymentRequest(query: String): Boolean {
+        val q = normalize(query)
+        return PAYMENT_WORDS_REGEX.containsMatchIn(q) || PAYMENT_STEMS.any { it in q }
     }
 
     /**
@@ -293,6 +314,20 @@ class ToolRouter @Inject constructor() {
         query.lowercase().replace(Regex("\\s+"), " ").trim()
 
     companion object {
+        /** The only tool offered for payment requests: open the app, the user pays. */
+        internal const val PAYMENT_HELPER_TOOL = "launch_app"
+
+        private val PAYMENT_WORDS_REGEX = Regex(
+            """\b(pay|paying|payment|payments|bill|bills|top up|top-up|send money|transfer money|money transfer|banking|bank app)\b"""
+        )
+
+        /** Russian / Azerbaijani stems + their Latin transliteration. */
+        private val PAYMENT_STEMS = listOf(
+            "bank", "банк", "оплат", "заплат", "платёж", "платеж", "перевести деньги", "перевод денег",
+            "ödə", "ödəniş", "köçür",
+            "oplat", "zaplat", "platezh", "perevesti dengi", "odenis", "odeyin", "odemek", "kocur"
+        )
+
         /** Math tools (spec: calculator LAST in priority, but the ONLY tool for math). */
         private val MATH_TOOLS = setOf("calculate", "convert_units", "convert_currency")
 

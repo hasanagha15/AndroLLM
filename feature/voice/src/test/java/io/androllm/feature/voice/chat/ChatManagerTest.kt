@@ -72,6 +72,9 @@ class ChatManagerTest {
     }
     private val memoryManager = mockk<MemoryManager>(relaxed = true)
     private val toolPromptBuilder = mockk<ToolPromptBuilder>(relaxed = true)
+    private val personalContextStore = mockk<io.androllm.core.memory.personal.PersonalContextStore>(relaxed = true).also {
+        coEvery { it.current() } returns io.androllm.core.memory.personal.PersonalContextSettings()
+    }
 
     private fun manager(
         toolCoordinator: ToolRunCoordinator = mockk(relaxed = true),
@@ -88,7 +91,8 @@ class ChatManagerTest {
         automationSettingsStore = automationSettingsStore,
         traceStore = mockk<ToolExecutionTraceStore>(relaxed = true),
         variableStore = mockk<AgentVariableStore>(relaxed = true),
-        toolPromptBuilder = toolPromptBuilder
+        toolPromptBuilder = toolPromptBuilder,
+        personalContextStore = personalContextStore
     )
 
     private fun model(ctx: Int, cap: Int = Int.MAX_VALUE) = EngineModelInfo(
