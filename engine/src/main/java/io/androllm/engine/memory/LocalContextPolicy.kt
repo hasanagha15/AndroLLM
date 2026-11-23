@@ -38,11 +38,40 @@ object LocalContextPolicy {
     }
 
     /**
+     * Until the KV-cache cost is measured on device (F1 gate N2), a load that
+     * may run on the GPU (the memory-fit guard looks at RAM, not GPU memory)
+     * or a model above [LARGE_MODEL_BILLIONS] parameters is capped here.
+     */
+    const val UNMEASURED_CAP = 8192
+    const val LARGE_MODEL_BILLIONS = 3.0f
+
+    /**
      * [catalogContext]: the model's catalog/metadata context (0 = unknown).
      * [totalRamGb]: ActivityManager total memory in GB (0 = unknown).
+     * [mayUseGpu]: the backend request is not CPU-only (AUTO/GPU/NPU).
+     * [parametersLabel]: catalog parameter label ("0.6B", "4B"); blank = unknown.
      */
-    fun resolve(catalogContext: Int, totalRamGb: Float): Int {
+    fun resolve(
+        catalogContext: Int,
+        totalRamGb: Float,
+        mayUseGpu: Boolean = false,
+        parametersLabel: String = ""
+    ): Int {
         val catalog = catalogContext.takeIf { it > 0 } ?: FALLBACK_CONTEXT
-        return minOf(catalog, ramCap(totalRamGb)).coerceAtLeast(MIN_CONTEXT)
+        var cap = ramCap(totalRamGb)
+        val billions = parseBillions(parametersLabel)
+        if (mayUseGpu || (billions != null && billions > LARGE_MODEL_BILLIONS)) {
+            cap = minOf(cap, UNMEASURED_CAP)
+        }
+        return minOf(catalog, cap).coerceAtLeast(MIN_CONTEXT)
     }
+
+    /** "4B" → 4.0, "0.6B" → 0.6, "E2B" → 2.0, "270M" → 0.27; null when unknown. */
+    fun parseBillions(label: String): Float? {
+        val m = PARAMS_REGEX.find(label.uppercase()) ?: return null
+        val value = m.groupValues[1].toFloatOrNull() ?: return null
+        return if (m.groupValues[2] == "M") value / 1000f else value
+    }
+
+    private val PARAMS_REGEX = Regex("([0-9]+(?:[.][0-9]+)?) *([BM])")
 }

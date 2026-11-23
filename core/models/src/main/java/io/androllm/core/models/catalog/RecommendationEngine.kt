@@ -72,7 +72,8 @@ object RecommendationEngine {
     /**
      * Moves [LARGE_DEVICE_DEFAULT_MODEL_ID] to the first place on devices with
      * at least [LARGE_DEVICE_RAM_GB] total RAM — only when it is STABLE (an
-     * EXPERIMENTAL/BETA status is never promoted).
+     * EXPERIMENTAL/BETA status is never promoted) and its RAM tier is not
+     * NOT_RECOMMENDED. The tier itself is never upgraded.
      */
     private fun pinLargeDeviceDefault(
         ranked: List<ModelRecommendation>,
@@ -80,11 +81,13 @@ object RecommendationEngine {
     ): List<ModelRecommendation> {
         if (deviceRamGb < LARGE_DEVICE_RAM_GB) return ranked
         val preferred = ranked.firstOrNull {
-            it.model.id == LARGE_DEVICE_DEFAULT_MODEL_ID && it.model.statusValue == CatalogStatus.STABLE
+            it.model.id == LARGE_DEVICE_DEFAULT_MODEL_ID &&
+                it.model.statusValue == CatalogStatus.STABLE &&
+                it.tier != Tier.NOT_RECOMMENDED // RAM says it does not fit: never pin (F1 gate N5)
         } ?: return ranked
+        // The RAM-derived tier is kept as is; only the order and the reason change.
         val pinned = preferred.copy(
             reasons = listOf("Default for 12 GB+ RAM devices") + preferred.reasons,
-            tier = Tier.RECOMMENDED,
         )
         return listOf(pinned) + ranked.filter { it !== preferred }
     }

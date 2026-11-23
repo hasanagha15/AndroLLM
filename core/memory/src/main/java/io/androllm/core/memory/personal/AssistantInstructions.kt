@@ -67,7 +67,8 @@ object AssistantInstructions {
         "Payments: you cannot make payments, money transfers or purchases, and no tool can. If the " +
             "user asks to pay a bill or send money, say briefly that you cannot pay, and offer to " +
             "open the relevant bank, wallet or utility app (launch_app) so the user can pay there " +
-            "themselves. Do not claim you cannot help at all."
+            "themselves. After opening such an app never tap, type or navigate inside it; the user acts " +
+            "there. Do not claim you cannot help at all."
 
     internal const val PERSONAL_HEADER =
         "About the user (written by the user, stored on this device; use it when relevant):"

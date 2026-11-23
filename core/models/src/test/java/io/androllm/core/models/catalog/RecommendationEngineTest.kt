@@ -111,7 +111,7 @@ class RecommendationEngineTest {
     fun qwen4bInstructIsFirstOnTwelveGbDevice() {
         val result = RecommendationEngine.recommend(candidates + qwen4b, 11.1f, topN = 6)
         assertEquals(RecommendationEngine.LARGE_DEVICE_DEFAULT_MODEL_ID, result.first().model.id)
-        assertEquals(RecommendationEngine.Tier.RECOMMENDED, result.first().tier)
+        assertTrue(result.first().tier != RecommendationEngine.Tier.NOT_RECOMMENDED)
         assertTrue(result.first().reasons.first().contains("12 GB"))
     }
 
@@ -133,5 +133,14 @@ class RecommendationEngineTest {
         val result = RecommendationEngine.recommend(candidates + qwen4b, 11.1f, topN = 3)
         assertEquals(3, result.size)
         assertEquals(result.size, result.map { it.model.id }.distinct().size)
+    }
+
+    @Test
+    fun qwen4bNotPinnedWhenRamTierSaysNotRecommended() {
+        val heavy = qwen4b.copy(estimatedRuntimeRamMb = 20_000)
+        val result = RecommendationEngine.recommend(candidates + heavy, 11.1f, topN = 10)
+        assertTrue(result.first().model.id != RecommendationEngine.LARGE_DEVICE_DEFAULT_MODEL_ID)
+        val entry = result.firstOrNull { it.model.id == RecommendationEngine.LARGE_DEVICE_DEFAULT_MODEL_ID }
+        if (entry != null) assertEquals(RecommendationEngine.Tier.NOT_RECOMMENDED, entry.tier)
     }
 }

@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ruleset xmlns:android="http://schemas.android.com/apk/res/android">
     <include domain="file" path="." />
+    <!-- F1: user-typed personal context stays on this device -->
+    <exclude domain="file" path="datastore/personal_context_prefs.preferences_pb" />
 </ruleset>

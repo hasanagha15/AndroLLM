@@ -19,3 +19,25 @@ class SensitiveAppGuardTest {
         }
     }
 }
+
+class SensitiveAppGuardPaymentTest {
+
+    @Test fun builtInPaymentAppsBlocked() {
+        for (p in SensitiveAppGuard.PAYMENT_PACKAGES) {
+            assertThat(SensitiveAppGuard.blockedReason(p)).contains("banking/payment")
+        }
+        assertThat(SensitiveAppGuard.blockedReason("az.kapitalbank.mbanking")).isNotNull()
+    }
+
+    @Test fun userAddedPackagesBlockedAndInvalidDropped() {
+        val parsed = SensitiveAppGuard.parsePackages("com.example.bank, not a package; org.x.wallet\n..bad")
+        assertThat(parsed).containsExactly("com.example.bank", "org.x.wallet")
+        SensitiveAppGuard.setExtraPackages(parsed)
+        try {
+            assertThat(SensitiveAppGuard.blockedReason("com.example.bank")).isNotNull()
+            assertThat(SensitiveAppGuard.blockedReason("com.example.other")).isNull()
+        } finally {
+            SensitiveAppGuard.setExtraPackages(emptySet())
+        }
+    }
+}

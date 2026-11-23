@@ -25,6 +25,7 @@ class AssistantInstructionsTest {
         assertTrue(text.contains("cannot make payments"))
         assertTrue(text.contains("launch_app"))
         assertTrue(text.contains("offer to"))
+        assertTrue(text.contains("never tap, type or navigate inside"))
     }
 
     @Test

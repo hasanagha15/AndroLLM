@@ -153,14 +153,15 @@ class ChatManagerTest {
     @Test
     fun `voice advertisement is budgeted to a 4096-token local model and routed by the request`() = runTest {
         val (budget, query) = advertisedBudgetFor(EngineState.Ready(model(4096)))
-        assertThat(budget).isEqualTo(ToolAdvertisementBudget.charsFor(4096))
-        assertThat(budget).isAtMost(4096)
+        // F1 N4: the assistant instructions are subtracted from the same budget.
+        assertThat(budget).isLessThan(ToolAdvertisementBudget.charsFor(4096))
+        assertThat(budget).isAtLeast(ChatManager.MIN_TOOL_BUDGET_CHARS)
         assertThat(query).isEqualTo("закрой машину")
     }
 
     @Test
     fun `family cap and 2048 context shrink the budget further`() = runTest {
-        assertThat(advertisedBudgetFor(EngineState.Ready(model(8192, cap = 4500))).first).isEqualTo(4500)
+        assertThat(advertisedBudgetFor(EngineState.Ready(model(8192, cap = 4500))).first).isLessThan(4500)
         assertThat(advertisedBudgetFor(EngineState.Ready(model(2048))).first).isAtMost(2048)
     }
 
@@ -277,5 +278,38 @@ class ChatManagerTest {
             .containsExactly("get_weather@turn-42", "get_news@turn-42", "tesla_command@turn-42")
         assertThat(cardTurn).isEqualTo("turn-42")
         assertThat(cardSurface).isEqualTo(ConfirmationSurface.VOICE)
+    }
+
+    // ── F1 gate B2: personal context never reaches remote (Jarvis) turns ──
+
+    private suspend fun systemTextOfLocalTurn(remote: Boolean): String {
+        coEvery { inferenceEngine.isLoaded() } returns true
+        coEvery { personalContextStore.current() } returns
+            io.androllm.core.memory.personal.PersonalContextSettings(text = "PERSONAL-FACT-42")
+        coEvery { conversationRepository.existsById(any()) } returns Result.Success(true)
+        coEvery { conversationRepository.observeActive() } returns flowOf(listOf(Conversation("c1", "t", 0, 0)))
+        val sent = slot<List<io.androllm.engine.models.ChatPromptMessage>>()
+        every { inferenceEngine.generateChatStream(capture(sent), any(), any()) } returns emptyFlow()
+        val chat = manager()
+        if (remote) {
+            withContext(RemoteToolOrigin()) {
+                chat.sendMessageStream("remote task", conversationId = "remote-conv", useMemory = false).toList()
+            }
+        } else {
+            chat.sendMessageStream("hello", lowLatencyMode = true).toList()
+        }
+        return sent.captured.filter { it.role == "system" }.joinToString(" | ") { it.content }
+    }
+
+    @Test
+    fun `remote turn prompt has no personal context but keeps the rules`() = runTest {
+        val system = systemTextOfLocalTurn(remote = true)
+        assertThat(system).doesNotContain("PERSONAL-FACT-42")
+        assertThat(system).contains("cannot make payments")
+    }
+
+    @Test
+    fun `owner voice turn prompt includes personal context`() = runTest {
+        assertThat(systemTextOfLocalTurn(remote = false)).contains("PERSONAL-FACT-42")
     }
 }

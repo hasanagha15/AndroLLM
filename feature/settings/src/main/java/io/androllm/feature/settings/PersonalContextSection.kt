@@ -42,8 +42,20 @@ import kotlinx.coroutines.launch
 /** F1: "Personal context" — user-typed facts injected into the system prompt, stored on device. */
 @HiltViewModel
 class PersonalContextViewModel @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
     private val store: PersonalContextStore
 ) : ViewModel() {
+    /** Extra banking/payment packages the assistant must never tap/type in (on device). */
+    val paymentApps: String
+        get() {
+            io.androllm.core.accessibility.controller.SensitiveAppGuard.loadExtras(appContext)
+            return io.androllm.core.accessibility.controller.SensitiveAppGuard.extraPackages.joinToString(", ")
+        }
+
+    fun savePaymentApps(raw: String) {
+        io.androllm.core.accessibility.controller.SensitiveAppGuard.saveExtras(appContext, raw)
+    }
+
     val settings: StateFlow<PersonalContextSettings?> = store.settings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
@@ -73,6 +85,7 @@ fun PersonalContextCard(viewModel: PersonalContextViewModel = hiltViewModel()) {
     val saved by viewModel.saved.collectAsStateWithLifecycle()
     var text by remember { mutableStateOf("") }
     var loaded by remember { mutableStateOf(false) }
+    var paymentApps by remember { mutableStateOf(viewModel.paymentApps) }
     LaunchedEffect(settings) {
         val s = settings
         if (s != null && !loaded) {
@@ -134,6 +147,27 @@ fun PersonalContextCard(viewModel: PersonalContextViewModel = hiltViewModel()) {
                     )
                 }
             }
+            Text(
+                text = "Protected banking / payment apps",
+                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.ledger.deskPaper)
+            )
+            Text(
+                text = "The assistant may open these apps but never tap or type inside them. Some wallets " +
+                    "are built in; add your bank's package names (comma-separated).",
+                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.ledger.deskInk)
+            )
+            OutlinedTextField(
+                value = paymentApps,
+                onValueChange = { paymentApps = it.take(1000) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = false,
+                maxLines = 4,
+                placeholder = { Text("com.example.bank, com.example.wallet") }
+            )
+            Button(onClick = {
+                viewModel.savePaymentApps(paymentApps)
+                paymentApps = viewModel.paymentApps
+            }) { Text("Save apps") }
         }
     }
 }

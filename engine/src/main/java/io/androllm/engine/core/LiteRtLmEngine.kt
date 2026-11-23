@@ -376,7 +376,12 @@ class LiteRtLmEngine @Inject constructor(
                     mi.totalMem / (1024f * 1024f * 1024f)
                 }.getOrDefault(0f)
                 val requestedCtxForGuard = config.contextLength.takeIf { it > 0 }
-                    ?: io.androllm.engine.memory.LocalContextPolicy.resolve(model.contextLength, totalRamGb)
+                    ?: io.androllm.engine.memory.LocalContextPolicy.resolve(
+                        catalogContext = model.contextLength,
+                        totalRamGb = totalRamGb,
+                        mayUseGpu = (config.backend ?: if (config.gpuLayers == 0) BackendType.CPU else BackendType.AUTO) != BackendType.CPU,
+                        parametersLabel = model.parameters
+                    )
                 logger.i("CONTEXT REQUEST: $requestedCtxForGuard (catalog=${model.contextLength}, totalRam=${"%.1f".format(totalRamGb)} GB, explicit=${config.contextLength})")
                 val requestedBackendForGuard: BackendType = config.backend
                     ?: if (config.gpuLayers == 0) BackendType.CPU else BackendType.AUTO

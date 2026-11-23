@@ -191,11 +191,19 @@ class ToolRouterTest {
         assertThat(routed.specs.map { it.name }).doesNotContain("launch_app")
         assertThat(router.isPaymentRequest("display brightness")).isFalse()
         assertThat(router.isPaymentRequest("who are you")).isFalse()
+        assertThat(router.isPaymentRequest("pay attention to the details")).isFalse()
+        assertThat(router.isPaymentRequest("split the bill 3 ways")).isFalse()
     }
 
     @Test
     fun `payment request without launch_app enabled is unchanged`() {
         val routed = router.route("pay my bill", hasAttachments = false, enabledTools = allTools)
         assertThat(routed.specs.map { it.name }).doesNotContain("launch_app")
+    }
+
+    @Test
+    fun `math request is not reordered for payment words`() {
+        val routed = router.route("calculate the bill total 45 + 30", hasAttachments = false, enabledTools = withLauncher)
+        assertThat(routed.specs.firstOrNull()?.name).isNotEqualTo("launch_app")
     }
 }

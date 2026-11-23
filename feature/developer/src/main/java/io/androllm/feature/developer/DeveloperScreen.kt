@@ -637,6 +637,17 @@ private fun BackendDiagnosticsCard(
     }
 }
 
+/**
+ * Label of the Benchmark Backends run button; null while a run is in
+ * progress (a spinner is shown). F1: after any previous result — including
+ * the empty "No model loaded" one — the button stays as "Run again".
+ */
+internal fun benchmarkRunLabel(results: List<BackendBenchmarkResult>?, isBenchmarking: Boolean): String? = when {
+    isBenchmarking -> null
+    results == null -> "Run"
+    else -> "Run again"
+}
+
 @Composable
 private fun BenchmarkBackendsCard(
     capabilities: BackendCapabilities,
@@ -670,11 +681,12 @@ private fun BenchmarkBackendsCard(
                         style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.ledger.deskInk)
                     )
                 }
-                if (results == null && !isBenchmarking) {
+                val runLabel = benchmarkRunLabel(results, isBenchmarking)
+                if (runLabel != null) {
                     Button(onClick = onRun) {
-                        Text("Run")
+                        Text(runLabel)
                     }
-                } else if (isBenchmarking) {
+                } else {
                     CircularProgressIndicator(
                         modifier = Modifier.size(22.dp),
                         strokeWidth = 2.dp,

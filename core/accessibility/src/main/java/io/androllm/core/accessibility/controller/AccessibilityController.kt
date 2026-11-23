@@ -64,6 +64,11 @@ class AccessibilityController @Inject constructor(
 
     @Volatile private var service: AccessibilityAutomationService? = null
 
+    init {
+        // F1: user-added banking/payment packages (Settings) join the guard.
+        SensitiveAppGuard.loadExtras(context)
+    }
+
     private val gestures = GestureExecutor({ service }, debug)
     private val textInput = TextInputController(context, { service }, gestures, debug)
 

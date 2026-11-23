@@ -34,4 +34,26 @@ class LocalContextPolicyTest {
     fun neverBelowMinimum() {
         assertEquals(LocalContextPolicy.MIN_CONTEXT, LocalContextPolicy.resolve(256, 11.1f))
     }
+
+    // ── F1 gate N2: GPU / >3B loads stay at 8192 until measured ──
+
+    @Test
+    fun gpuLoadIsCappedAt8192() {
+        assertEquals(8192, LocalContextPolicy.resolve(32768, 11.1f, mayUseGpu = true))
+        assertEquals(16384, LocalContextPolicy.resolve(32768, 11.1f, mayUseGpu = false, parametersLabel = "1.7B"))
+    }
+
+    @Test
+    fun largeModelIsCappedAt8192EvenOnCpu() {
+        assertEquals(8192, LocalContextPolicy.resolve(32768, 11.1f, mayUseGpu = false, parametersLabel = "4B"))
+    }
+
+    @Test
+    fun parsesParameterLabels() {
+        assertEquals(4.0f, LocalContextPolicy.parseBillions("4B")!!, 0.001f)
+        assertEquals(0.6f, LocalContextPolicy.parseBillions("0.6B")!!, 0.001f)
+        assertEquals(2.0f, LocalContextPolicy.parseBillions("E2B")!!, 0.001f)
+        assertEquals(0.27f, LocalContextPolicy.parseBillions("270M")!!, 0.001f)
+        assertEquals(null, LocalContextPolicy.parseBillions(""))
+    }
 }

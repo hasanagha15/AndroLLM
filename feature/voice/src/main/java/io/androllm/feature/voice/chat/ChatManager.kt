@@ -242,12 +242,23 @@ class ChatManager @Inject constructor(
         // the typed chat. Budget: the same per-model char budget as the tool
         // list (0 = cloud, unlimited).
         val advertisementBudget = localAdvertisementBudget()
-        val personalSettings = runCatching { personalContextStore.current() }
+        val storedPersonal = runCatching { personalContextStore.current() }
             .getOrNull() ?: io.androllm.core.memory.personal.PersonalContextSettings()
+        // Remote (Jarvis/MQTT) turns never see the owner's personal context
+        // (same invariant as memory/history/private device context, F1 gate
+        // B2): the language + payment rules stay, the personal block does not.
+        val personalSettings = if (remoteTurn) storedPersonal.copy(text = "") else storedPersonal
         val assistantInstructions = io.androllm.core.memory.personal.AssistantInstructions.build(
             personalSettings,
             maxChars = advertisementBudget
         )
+        // F1 gate N4: the instructions come out of the same local budget as
+        // the tool list (0 = cloud, unlimited for both).
+        val toolBudget = if (advertisementBudget > 0) {
+            (advertisementBudget - assistantInstructions.length).coerceAtLeast(MIN_TOOL_BUDGET_CHARS)
+        } else {
+            0
+        }
         val promptMessages = buildList {
             add(ChatPromptMessage(role = "system", content = assistantInstructions))
             if (memoryContext.systemText.isNotBlank()) {
@@ -260,7 +271,7 @@ class ChatManager @Inject constructor(
             // cannot absorb the full ~11.7K-char list) and routed by the
             // request, like the typed chat. Cloud turns stay unbounded.
             toolPromptBuilder.advertisement(
-                maxChars = advertisementBudget,
+                maxChars = toolBudget,
                 query = trimmed
             )?.let {
                 add(ChatPromptMessage(role = "system", content = it))
@@ -607,6 +618,9 @@ class ChatManager @Inject constructor(
          * stay snappy; on timeout the turn still speaks, just without memory.
          */
         private const val MEMORY_RETRIEVAL_TIMEOUT_MS = 1000L
+
+        /** Floor for the local tool-list budget after the instructions (0 would mean unlimited). */
+        internal const val MIN_TOOL_BUDGET_CHARS = 600
     }
 }
 

@@ -183,7 +183,7 @@ class ToolRouter @Inject constructor() {
         // never pay), but the helpful answer is "I can't pay — shall I open
         // your bank app?". Put launch_app FIRST so it survives the tool-list
         // budget of small local models (open only, no further automation).
-        val paymentPromoted = isPaymentRequest(q) && enabledTools.any { it.name == PAYMENT_HELPER_TOOL }
+        val paymentPromoted = !mathMatch && isPaymentRequest(q) && enabledTools.any { it.name == PAYMENT_HELPER_TOOL }
         val finalSpecs = if (paymentPromoted) {
             enabledTools.filter { it.name == PAYMENT_HELPER_TOOL } + specs.filter { it.name != PAYMENT_HELPER_TOOL }
         } else {
@@ -204,7 +204,7 @@ class ToolRouter @Inject constructor() {
      * or their Latin transliteration ("oplati", "odenis").
      */
     internal fun isPaymentRequest(query: String): Boolean {
-        val q = normalize(query)
+        val q = PAYMENT_FALSE_FRIENDS.fold(normalize(query)) { acc, phrase -> acc.replace(phrase, " ") }
         return PAYMENT_WORDS_REGEX.containsMatchIn(q) || PAYMENT_STEMS.any { it in q }
     }
 
@@ -319,6 +319,11 @@ class ToolRouter @Inject constructor() {
 
         private val PAYMENT_WORDS_REGEX = Regex(
             """\b(pay|paying|payment|payments|bill|bills|top up|top-up|send money|transfer money|money transfer|banking|bank app)\b"""
+        )
+
+        /** Phrases that contain "pay"/"bill" but are not payment requests. */
+        private val PAYMENT_FALSE_FRIENDS = listOf(
+            "pay attention", "paying attention", "split the bill", "split a bill", "split bill", "bill gates"
         )
 
         /** Russian / Azerbaijani stems + their Latin transliteration. */

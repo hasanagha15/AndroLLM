@@ -3,4 +3,7 @@
     <include domain="sharedpref" path="." />
     <include domain="database" path="." />
     <include domain="file" path="." />
+    <!-- F1: user-typed personal context and protected payment apps stay on this device -->
+    <exclude domain="file" path="datastore/personal_context_prefs.preferences_pb" />
+    <exclude domain="sharedpref" path="sensitive_app_guard.xml" />
 </full-backup-content>
