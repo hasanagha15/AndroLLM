@@ -27,7 +27,7 @@ class BaseUrlPolicyTest {
     }
 
     @Test fun whatsappCleartextOnlyForTailnetHost() {
-        assertThat(ok(BaseUrlPolicy.parseWhatsApp("http://pi-vision.example.ts.net:8090"))).isTrue()
+        assertThat(ok(BaseUrlPolicy.parseWhatsApp("http://${BaseUrlPolicy.WHATSAPP_TAILNET_HOST}:8090"))).isTrue()
         assertThat(ok(BaseUrlPolicy.parseWhatsApp("https://wa.example"))).isTrue()
         assertThat(ok(BaseUrlPolicy.parseWhatsApp("http://192.168.0.10:8090"))).isFalse()
         assertThat(ok(BaseUrlPolicy.parseWhatsApp("http://pi-vision:8090"))).isFalse()
@@ -35,8 +35,8 @@ class BaseUrlPolicyTest {
     }
 
     @Test fun originIncludesSchemeHostPort() {
-        val p = BaseUrlPolicy.parseWhatsApp("http://pi-vision.example.ts.net:8090") as BaseUrlPolicy.Parsed.Ok
-        assertThat(p.origin).isEqualTo("http://pi-vision.example.ts.net:8090")
+        val p = BaseUrlPolicy.parseWhatsApp("http://${BaseUrlPolicy.WHATSAPP_TAILNET_HOST}:8090") as BaseUrlPolicy.Parsed.Ok
+        assertThat(p.origin).isEqualTo("http://${BaseUrlPolicy.WHATSAPP_TAILNET_HOST}:8090")
         val t = BaseUrlPolicy.parseTesla("https://tesla.lilab.ai") as BaseUrlPolicy.Parsed.Ok
         assertThat(t.origin).isEqualTo("https://tesla.lilab.ai:443")
     }

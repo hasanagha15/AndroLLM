@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
@@ -7,12 +9,24 @@ plugins {
 
 // Branch C (jarvis/c-tools): the app's own agent tools for the owner's Jarvis
 // infrastructure — tesla-bridge, the WhatsApp bot and Even G2 glasses.
+
+// The owner's tailnet MagicDNS host for the WhatsApp bot is NOT committed
+// (public fork): set `jarvis.whatsappHost=pi-vision.<tailnet>.ts.net` in the
+// git-ignored local.properties. The placeholder keeps builds and tests working.
+val jarvisWhatsAppHost: String = run {
+    val f = rootProject.file("local.properties")
+    val p = Properties()
+    if (f.exists()) f.inputStream().use { p.load(it) }
+    p.getProperty("jarvis.whatsappHost")?.trim()?.takeIf { it.isNotEmpty() } ?: "pi-vision.example.ts.net"
+}
+
 android {
     namespace = "io.androllm.core.jarvistools"
     compileSdk = 36
     defaultConfig {
         minSdk = 28
         consumerProguardFiles("consumer-rules.pro")
+        buildConfigField("String", "WHATSAPP_TAILNET_HOST", "\"$jarvisWhatsAppHost\"")
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -25,6 +39,7 @@ android {
     }
     buildFeatures {
         compose = false
+        buildConfig = true
     }
     testOptions {
         unitTests.isReturnDefaultValues = true

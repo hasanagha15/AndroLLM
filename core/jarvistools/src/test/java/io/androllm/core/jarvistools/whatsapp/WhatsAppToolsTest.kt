@@ -2,6 +2,7 @@ package io.androllm.core.jarvistools.whatsapp
 
 import com.google.common.truth.Truth.assertThat
 import io.androllm.core.jarvistools.FakeGate
+import io.androllm.core.jarvistools.net.BaseUrlPolicy
 import io.androllm.core.jarvistools.FakeSecrets
 import io.androllm.core.jarvistools.FakeTransport
 import io.androllm.core.jarvistools.TEST_TOKEN
@@ -20,8 +21,8 @@ import org.junit.Test
 class WhatsAppToolsTest {
 
     private val transport = FakeTransport()
-    private val base = JarvisToolsConfig.DEFAULT_WHATSAPP_URL // http://pi-vision.example.ts.net:8090
-    private val origin = "http://pi-vision.example.ts.net:8090"
+    private val base = JarvisToolsConfig.DEFAULT_WHATSAPP_URL // http://<WHATSAPP_TAILNET_HOST>:8090
+    private val origin = "http://${BaseUrlPolicy.WHATSAPP_TAILNET_HOST}:8090"
     private val secrets = FakeSecrets().apply { put(JarvisSecret.WHATSAPP_API_TOKEN, TEST_TOKEN, origin) }
     private var endpoints = StaticEndpoints(whatsappBaseUrl = base)
     private val client get() = WhatsAppBotClient(transport, secrets, endpoints)
@@ -138,7 +139,7 @@ class WhatsAppToolsTest {
     }
 
     @Test fun lanIpAndForeignCleartextRefused() = runTest {
-        for (b in listOf("http://192.168.0.10:8090", "http://evil.example:8090", "http://pi-vision.example.ts.net:8090/api")) {
+        for (b in listOf("http://192.168.0.10:8090", "http://evil.example:8090", "http://${BaseUrlPolicy.WHATSAPP_TAILNET_HOST}:8090/api")) {
             endpoints = StaticEndpoints(whatsappBaseUrl = b)
             assertThat(WhatsAppStatusTool(client).execute(buildJsonObject { })).isInstanceOf(ToolResult.Failure::class.java)
         }

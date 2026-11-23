@@ -13,11 +13,11 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  * - WhatsApp bot: HTTPS, or plain HTTP only for the pi-vision Tailscale
  *   MagicDNS name (traffic inside the tailnet is WireGuard-encrypted; outside
  *   the tailnet the name does not resolve, so the token goes nowhere). The
- *   same host is the only cleartext exception in jarvis_network_security_config.xml.
+ *   host comes from local.properties (`jarvis.whatsappHost`, not committed).
  */
 object BaseUrlPolicy {
 
-    const val WHATSAPP_TAILNET_HOST = "pi-vision.example.ts.net"
+    const val WHATSAPP_TAILNET_HOST = io.androllm.core.jarvistools.BuildConfig.WHATSAPP_TAILNET_HOST
     val CLEARTEXT_HOSTS: Set<String> = setOf(WHATSAPP_TAILNET_HOST)
 
     sealed interface Parsed {

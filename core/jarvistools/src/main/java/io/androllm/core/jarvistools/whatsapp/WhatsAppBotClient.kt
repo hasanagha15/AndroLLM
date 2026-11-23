@@ -32,7 +32,7 @@ data class PendingMessage(
 
 /**
  * Jarvis WhatsApp bot (wa-bot container on pi-vision, FastAPI :8090), reached
- * over Tailscale (http://pi-vision.example.ts.net:8090), Bearer JARVIS_API_TOKEN:
+ * over Tailscale (http://<pi-vision MagicDNS name>:8090), Bearer JARVIS_API_TOKEN:
  *   GET  /api/status                 mode, paused, pending count, sent_this_month, free_limit
  *   GET  /api/pending                {"items":[{id, phone, name, summary, options[], urgency, created}]}
  *   GET  /api/inbox?limit=N          {"items":[{phone, name, text, kind, ts}]}  (N <= 50)
