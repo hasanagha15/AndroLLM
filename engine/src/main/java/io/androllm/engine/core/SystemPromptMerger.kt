@@ -14,8 +14,8 @@ import io.androllm.engine.models.ChatPromptMessage
  * NOT promoted: they carry tool results (WhatsApp inbox, web pages, screen
  * text, notifications — untrusted third-party data) and loop-guard notes.
  * Giving them system-instruction priority would amplify prompt injection
- * (F1 gate B1). They keep their previous handling: a trailing one is sent as
- * the turn's prompt text, mid-history ones are not part of the seed.
+ * (F1 gate B1). [ChatTurnPlanner] keeps them in the user-role transcript
+ * (seed / prompt) as untrusted data, never in the system instruction.
  *
  * Returns null when there is no leading system message.
  */
