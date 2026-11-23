@@ -116,10 +116,18 @@ independent constraints must both hold:
 
 Three app-side requirements make the above actually load:
 
-1. **`useLegacyPackaging = true`** in `app/build.gradle.kts` `jniLibs {}` —
-   the dispatch delegate finds its vendor libs via a filesystem `readdir` of
-   `applicationInfo.nativeLibraryDir`; without legacy packaging that dir is
-   empty (libs stay compressed in the APK) and NPU can never initialize.
+1. **Vendor libs in a real directory.** The dispatch delegate finds its
+   vendor libs via a filesystem `readdir` of the directory passed to
+   `Backend.NPU(nativeLibraryDir)`. Since branch g-16kb the APK uses
+   `useLegacyPackaging = false` (uncompressed, 16 KB-aligned jniLibs — required
+   by the Android 15+/17 16 KB page-size check), so
+   `applicationInfo.nativeLibraryDir` is empty. `engine/.../NpuLibraryDir`
+   stages `libLiteRtDispatch_Qualcomm.so`, `libQnnHtp.so`,
+   `libQnnHtpV81Stub.so`, `libQnnSystem.so` (from the APK's `lib/arm64-v8a/`)
+   and `libQnnHtpV81Skel.so` (from `assets/npu/` — a Hexagon ELF with 4 KB
+   p_align, which must not live under `lib/`) into
+   `noBackupFilesDir/npu-libs` once per app update; that dir is what the
+   engine passes to `Backend.NPU` and what heads `ADSP_LIBRARY_PATH`.
 2. **`<uses-native-library android:name="libcdsprpc.so"
    android:required="false" />`** in the manifest — FastRPC transport the
    HTP stub needs from the vendor partition.

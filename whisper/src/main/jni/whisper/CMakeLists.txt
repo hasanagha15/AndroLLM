@@ -71,6 +71,18 @@ set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GGML_CCACHE OFF CACHE BOOL "" FORCE)
 set(GGML_CPU_ALL_VARIANTS OFF CACHE BOOL "" FORCE)
 
+# 16 KB page-size compatibility (Android 15+ / Android 17 ELF alignment check):
+#  - ggml is built STATIC and linked into the single libwhisper.so, so the APK
+#    no longer ships libggml*.so (which NDK r26 linked with 4 KB p_align);
+#  - ANDROID_STL=c++_static (whisper/build.gradle.kts) removes NDK r26's
+#    4 KB-aligned libc++_shared.so from the APK entirely;
+#  - every shared object linked here gets 16 KB LOAD-segment alignment.
+# NDK r28+ does this by default; we stay on the pinned r26.1 toolchain.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+string(APPEND CMAKE_SHARED_LINKER_FLAGS
+    " -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384")
+
 add_library(whisper SHARED ${SOURCE_FILES})
 target_compile_definitions(whisper PUBLIC GGML_USE_CPU)
 target_compile_definitions(whisper PRIVATE WHISPER_VERSION="${WHISPER_VERSION}")
@@ -89,6 +101,9 @@ if(NOT TARGET ggml)
     message(FATAL_ERROR "ggml CMake target not defined after FetchContent_MakeAvailable(ggml)")
 endif()
 target_link_libraries(whisper PRIVATE ${LOG_LIB} android ggml)
+# Static ggml + static libc++ live inside libwhisper.so: keep their symbols
+# private so only the JNI entry points (jni.c) are exported.
+target_link_options(whisper PRIVATE -Wl,--exclude-libs,ALL)
 
 # Scoped to this target (not global include_directories) so ggml's own
 # configure is unaffected.

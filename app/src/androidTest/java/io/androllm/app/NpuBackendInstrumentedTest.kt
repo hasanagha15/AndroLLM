@@ -37,7 +37,8 @@ class NpuBackendInstrumentedTest {
     @Test
     fun npuProbeIsUsableOnThisDevice() {
         val caps = HardwareBackendProbe.probe(context)
-        val nativeDir = context.applicationInfo.nativeLibraryDir
+        // 16 KB packaging: libs stay in the APK; NPU libs are staged (g-16kb).
+        val nativeDir = io.androllm.engine.backend.NpuLibraryDir.ensureStaged(context)
         val libs = runCatching { File(nativeDir).list()?.toList() ?: emptyList() }.getOrDefault(emptyList())
         Log.i(TAG, "nativeLibraryDir=$nativeDir")
         Log.i(TAG, "NPU libs on namespace: ${libs.filter { it.contains("Qnn") || it.contains("Dispatch") }.sorted()}")

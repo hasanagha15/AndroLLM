@@ -109,13 +109,17 @@ android {
             excludes += "/META-INF/io.netty.versions.properties"
         }
         jniLibs {
-            // NPU (Qualcomm QNN) deployment requirement: LiteRT's dispatch
-            // delegate locates its vendor libraries via a filesystem readdir
-            // of applicationInfo.nativeLibraryDir. Without legacy packaging
-            // that dir is empty (libs stay compressed inside the APK) and the
-            // NPU backend can never initialize. See documentation/ai/
-            // acceleration.md.
-            useLegacyPackaging = true
+            // 16 KB page-size compatibility (Android 15+/17 ELF alignment
+            // check, branch g-16kb): native libs are stored UNCOMPRESSED and
+            // 16 KB zip-aligned inside the APK (extractNativeLibs=false) and
+            // every arm64 .so has 16 KB LOAD alignment. With legacy
+            // (compressed/extracted) packaging the platform check reported
+            // "Unknown error" for every lib. LiteRT's NPU dispatch delegate
+            // still needs a real directory to readdir, so the QNN libs are
+            // staged at runtime into an app-private dir (engine
+            // NpuLibraryDir); the Hexagon skel ships as an asset
+            // (assets/npu/), not under lib/. See documentation/ai/acceleration.md.
+            useLegacyPackaging = false
 
             // Oryon-SoC workaround (Snapdragon 8 Elite / 8s Gen 4, SME): ONNX
             // Runtime 1.27.0 (bundled in the sherpa-onnx AAR) miscomputes

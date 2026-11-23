@@ -45,9 +45,12 @@ object HardwareBackendProbe {
             context.packageManager.hasSystemFeature(FEATURE_NEURAL_NETWORKS)
         }.getOrDefault(false)
         val libDir = runCatching { context.applicationInfo.nativeLibraryDir }.getOrNull()
-        val dispatchLibs = runCatching { File(libDir ?: "").list() ?: emptyArray() }
+        val extracted = runCatching { File(libDir ?: "").list() ?: emptyArray() }
             .getOrDefault(emptyArray())
             .filter { it.startsWith("libLiteRtDispatch_") && it.endsWith(".so") }
+        // Uncompressed jniLibs (16 KB packaging): nativeLibraryDir is empty, so
+        // also look at the APK's lib/<abi>/ entries (central directory only).
+        val dispatchLibs = extracted.ifEmpty { NpuLibraryDir.bundledDispatchLibs(context) }
         return fromProperties(props, nnApiAvailable = nnApi, dispatchLibraries = dispatchLibs)
     }
 

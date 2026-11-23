@@ -31,7 +31,10 @@ android {
             cmake {
                 cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
                 arguments += listOf(
-                    "-DANDROID_STL=c++_shared",
+                    // c++_static: NDK r26's libc++_shared.so is 4 KB-aligned and fails
+                    // the 16 KB page-size check; ggml is linked statically into
+                    // libwhisper.so, so a single static libc++ copy is safe.
+                    "-DANDROID_STL=c++_static",
                     "-DCMAKE_BUILD_TYPE=Release",
                     // ggml's OpenMP backend needs the NDK's libomp.so which AGP
                     // does not package for AARs; keep it off (ggml has its own

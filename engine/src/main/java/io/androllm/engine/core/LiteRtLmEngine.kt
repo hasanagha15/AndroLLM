@@ -524,7 +524,11 @@ class LiteRtLmEngine @Inject constructor(
             val cacheDir = runCatching { context.cacheDir.absolutePath }.getOrNull()
             // The directory that must hold the vendor NPU dispatch libraries
             // (`libLiteRtDispatch_*.so`); passed to Backend.NPU(nativeLibraryDir).
-            val npuLibDir = runCatching { context.applicationInfo.nativeLibraryDir }.getOrNull()
+            // With uncompressed (16 KB-aligned) jniLibs nativeLibraryDir is empty,
+            // so the vendor libs are staged to an app-private dir (g-16kb).
+            val npuLibDir = withContext(Dispatchers.IO) {
+                runCatching { io.androllm.engine.backend.NpuLibraryDir.ensureStaged(context) }.getOrNull()
+            }
 
             // Tune thread count for memory pressure: aggressive/low-memory modes reserve cores for OS
             val effectiveThreads = when (effectiveModeFromFit) {

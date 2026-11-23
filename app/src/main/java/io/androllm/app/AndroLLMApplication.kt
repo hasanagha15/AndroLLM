@@ -120,7 +120,18 @@ class AndroLLMApplication : Application(), WorkConfiguration.Provider {
     private fun seedNpuLibraryPaths() {
         runCatching {
             val nativeLibDir = applicationInfo.nativeLibraryDir
+            // 16 KB packaging (uncompressed jniLibs): nativeLibraryDir is empty
+            // and the QNN libs + Hexagon skel are staged here instead (see
+            // NpuLibraryDir). The env var only needs the path; the copy itself
+            // runs in the background and the engine waits for it before NPU init.
+            val stagedNpuDir = io.androllm.engine.backend.NpuLibraryDir.stagingPath(this)
+            if (io.androllm.engine.backend.NpuLibraryDir.isQualcommSoc()) {
+                Thread({
+                    io.androllm.engine.backend.NpuLibraryDir.ensureStaged(this)
+                }, "npu-lib-stage").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }.start()
+            }
             val paths = listOf(
+                stagedNpuDir,
                 nativeLibDir,
                 // This device (SM8845 / OnePlus) keeps its V81 skel here.
                 "/odm/lib64/aiframe/cdsp/unsigned",

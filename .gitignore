@@ -231,3 +231,9 @@ tools/proot-fetch/
 !.env.example
 !**/.env.example
 
+
+# Qualcomm Hexagon DSP skel (not an ARM ELF): shipped as an asset so it is not
+# under lib/ (its 4 KB p_align fails the 16 KB ELF check). Staged at runtime by
+# engine NpuLibraryDir. Branch g-16kb.
+!app/src/main/assets/npu/
+!app/src/main/assets/npu/**
