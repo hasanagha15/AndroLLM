@@ -89,6 +89,16 @@ class PermissionSetupViewModelTest {
         advanceUntilIdle()
         assertEquals(listOf(handler), vm.handlers)
     }
+
+    @Test
+    fun `a failed setup-flag read falls back to not completed instead of blank`() = runTest {
+        every { dataStore.setupCompleted } returns kotlinx.coroutines.flow.flow<Boolean> {
+            throw java.io.IOException("datastore corrupted")
+        }
+        val vm = PermissionSetupViewModel(context, permissionManager, dataStore)
+        advanceUntilIdle()
+        assertEquals(false, vm.setupCompleted.value)
+    }
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)

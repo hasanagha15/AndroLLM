@@ -4,8 +4,10 @@ import android.content.Context
 import io.androllm.core.common.UiState
 import io.androllm.core.database.repository.ConversationRepository
 import io.androllm.core.database.repository.ModelRepository
+import io.androllm.core.datastore.PreferencesDataStore
 import io.androllm.core.telemetry.TelemetryRepository
 import io.androllm.core.telemetry.TelemetrySample
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
@@ -34,10 +36,12 @@ class ProfileViewModelTest {
     private val conversationRepository: ConversationRepository = mockk(relaxed = true)
     private val modelRepository: ModelRepository = mockk(relaxed = true)
     private val telemetryRepository: TelemetryRepository = mockk(relaxed = true)
+    private val preferencesDataStore: PreferencesDataStore = mockk(relaxed = true)
 
     @Before
     fun setUp() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
+        every { preferencesDataStore.guestMode } returns flowOf(false)
         every { conversationRepository.observeActive() } returns flowOf(emptyList())
         every { modelRepository.observeAllModels() } returns flowOf(emptyList())
         every { telemetryRepository.deviceMetrics } returns MutableStateFlow(null)
@@ -59,13 +63,13 @@ class ProfileViewModelTest {
 
     @Test
     fun `guest mode has null user`() = runTest {
-        val viewModel = ProfileViewModel(appContext, conversationRepository, modelRepository, telemetryRepository)
+        val viewModel = ProfileViewModel(appContext, conversationRepository, modelRepository, telemetryRepository, preferencesDataStore)
         assertEquals(null, viewModel.user.value)
     }
 
     @Test
     fun `state aggregates real counts`() = runTest {
-        val viewModel = ProfileViewModel(appContext, conversationRepository, modelRepository, telemetryRepository)
+        val viewModel = ProfileViewModel(appContext, conversationRepository, modelRepository, telemetryRepository, preferencesDataStore)
         val state = viewModel.uiState.value
         assertTrue(state is UiState.Success)
         val data = (state as UiState.Success).data
@@ -76,8 +80,32 @@ class ProfileViewModelTest {
 
     @Test
     fun `refresh reads device metrics`() = runTest {
-        val viewModel = ProfileViewModel(appContext, conversationRepository, modelRepository, telemetryRepository)
+        val viewModel = ProfileViewModel(appContext, conversationRepository, modelRepository, telemetryRepository, preferencesDataStore)
         viewModel.refresh()
         assertNotNull(viewModel.uiState.value)
+    }
+
+    @Test
+    fun `guestMode mirrors the persisted flag`() = runTest {
+        every { preferencesDataStore.guestMode } returns flowOf(true)
+        val viewModel = ProfileViewModel(appContext, conversationRepository, modelRepository, telemetryRepository, preferencesDataStore)
+        assertTrue(viewModel.guestMode.value)
+    }
+
+    @Test
+    fun `leaveGuestMode ends the guest session (cutoff + flag) then calls back`() = runTest {
+        every { preferencesDataStore.guestMode } returns flowOf(true)
+        val viewModel = ProfileViewModel(appContext, conversationRepository, modelRepository, telemetryRepository, preferencesDataStore)
+        var done = false
+        viewModel.leaveGuestMode { done = true }
+        coVerify { preferencesDataStore.endGuestSession(any()) }
+        assertTrue(done)
+    }
+
+    @Test
+    fun `signOut also clears a stale guest flag`() = runTest {
+        val viewModel = ProfileViewModel(appContext, conversationRepository, modelRepository, telemetryRepository, preferencesDataStore)
+        viewModel.signOut()
+        coVerify { preferencesDataStore.setGuestMode(false) }
     }
 }

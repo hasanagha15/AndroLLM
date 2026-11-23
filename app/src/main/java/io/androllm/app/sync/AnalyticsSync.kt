@@ -107,8 +107,18 @@ class AnalyticsSyncWorker @AssistedInject constructor(
         val newGenerations = if (lastGenKey == null) generations
         else generations.takeLastWhile { generationKey(it) != lastGenKey }
 
-        val baseEvents = (newCloud.map { it.toSyncEvent() } + newGenerations.map { it.toSyncEvent() })
+        // Guest-period usage (before the sign-in that ended a guest session)
+        // is never uploaded; the watermarks still move past it.
+        val guestCutoff = preferencesDataStore.guestUsageCutoffMs.first()
+        val uploadCloud = dropGuestPeriod(newCloud, guestCutoff) { it.timestampMs }
+        val uploadGenerations = dropGuestPeriod(newGenerations, guestCutoff) { it.timestampMs }
+
+        val baseEvents = (uploadCloud.map { it.toSyncEvent() } + uploadGenerations.map { it.toSyncEvent() })
             .take(SyncApi.MAX_BATCH_SIZE)
+        if (baseEvents.isEmpty() && (newCloud.isNotEmpty() || newGenerations.isNotEmpty())) {
+            newCloud.firstOrNull()?.let { preferencesDataStore.setLastCloudRecordId(it.id) }
+            newGenerations.lastOrNull()?.let { preferencesDataStore.setLastGenerationKey(generationKey(it)) }
+        }
         if (baseEvents.isNotEmpty()) {
             var outcome = postBatchEvents(device, baseEvents, sessionId)
             if (outcome == BatchOutcome.SessionStale && sessionId != null) {

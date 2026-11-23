@@ -85,6 +85,7 @@ class AnalyticsSyncRetryTest {
         every { prefs.lastCloudRecordId } answers { kotlinx.coroutines.flow.flow { emit(null as String?) } }
         every { prefs.lastGenerationKey } answers { kotlinx.coroutines.flow.flow { emit(null as String?) } }
         every { prefs.lastSnapshotBucket } answers { kotlinx.coroutines.flow.flow { emit("done|done") } }
+        every { prefs.guestUsageCutoffMs } answers { kotlinx.coroutines.flow.flow { emit(0L) } }
         coEvery { prefs.setSyncSession(any(), any()) } answers {
             storedSessionId = firstArg()
             storedSessionDay = secondArg()

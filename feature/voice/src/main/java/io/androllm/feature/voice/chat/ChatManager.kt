@@ -202,6 +202,11 @@ class ChatManager @Inject constructor(
         // conversation scope so multi-step voice tasks can chain tools).
         if (!remoteTurn) variableStore.beginTurn(convId)
 
+        // KV-session key for the local engine: a remote task gets a unique key
+        // (never continues an owner session, never shares one), owner voice
+        // turns are keyed by their conversation.
+        val localSessionKey = if (remoteTurn) "remote:${UUID.randomUUID()}" else "owner:voice:$convId"
+
         // Save user message in shared DB
         val userMsgId = UUID.randomUUID().toString()
         val userMessage = Message(
@@ -418,7 +423,7 @@ class ChatManager @Inject constructor(
                 inferenceEngine.generateChatStream(
                     messages = finalMessages,
                     addAssistant = true,
-                    config = GenerationConfig()
+                    config = GenerationConfig(sessionKey = localSessionKey)
                 ).collect { result ->
                     when (result) {
                         is Result.Success -> {
@@ -471,10 +476,15 @@ class ChatManager @Inject constructor(
                     if (event is CloudStreamEvent.Delta) retryBuffer.append(event.text)
                 }
             } else if (isLocalLoaded) {
+                // Local engine: the retry instruction is a trusted app note,
+                // not untrusted tool data.
                 inferenceEngine.generateChatStream(
-                    messages = retryMessages,
+                    messages = lastTurnMessages + ChatPromptMessage(
+                        role = ChatPromptMessage.ROLE_APP_NOTE,
+                        content = OutputSanitizer.PLAIN_TEXT_RETRY_INSTRUCTION
+                    ),
                     addAssistant = true,
-                    config = GenerationConfig()
+                    config = GenerationConfig(sessionKey = localSessionKey)
                 ).collect { result ->
                     if (result is Result.Success) retryBuffer.append(result.data.delta)
                 }

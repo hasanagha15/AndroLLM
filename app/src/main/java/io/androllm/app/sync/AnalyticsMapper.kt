@@ -32,6 +32,13 @@ private val HOUR_BUCKET_FORMAT: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd-HH").withZone(ZoneOffset.UTC)
 
 /** Stable hourly bucket (`2026-09-21-14`) — retries within the hour reuse the snapshot id. */
+/**
+ * Drops usage items recorded before [cutoffMs] (the sign-in that ended a
+ * guest session), so guest-period usage is never uploaded. 0 = no cutoff.
+ */
+fun <T> dropGuestPeriod(items: List<T>, cutoffMs: Long, timestampMs: (T) -> Long): List<T> =
+    if (cutoffMs <= 0L) items else items.filter { timestampMs(it) >= cutoffMs }
+
 fun snapshotBucket(sourcePage: String, nowMs: Long): String =
     "$sourcePage:${HOUR_BUCKET_FORMAT.format(Instant.ofEpochMilli(nowMs))}"
 

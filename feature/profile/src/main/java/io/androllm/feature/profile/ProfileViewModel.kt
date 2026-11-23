@@ -18,6 +18,7 @@ import io.androllm.core.common.BaseViewModel
 import io.androllm.core.common.UiState
 import io.androllm.core.database.repository.ConversationRepository
 import io.androllm.core.database.repository.ModelRepository
+import io.androllm.core.datastore.PreferencesDataStore
 import io.androllm.core.models.Model
 import io.androllm.core.telemetry.TelemetryRepository
 import javax.inject.Inject
@@ -28,6 +29,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -44,7 +46,8 @@ class ProfileViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val conversationRepository: ConversationRepository,
     private val modelRepository: ModelRepository,
-    private val telemetryRepository: TelemetryRepository
+    private val telemetryRepository: TelemetryRepository,
+    private val preferencesDataStore: PreferencesDataStore
 ) : BaseViewModel() {
 
     /** Firebase is optional — the app must keep working in offline guest mode. */
@@ -65,6 +68,26 @@ class ProfileViewModel @Inject constructor(
 
     private val _isSavingProfile = MutableStateFlow(false)
     val isSavingProfile: StateFlow<Boolean> = _isSavingProfile.asStateFlow()
+
+    /**
+     * Persisted local guest session (PreferencesDataStore.guestMode). Only
+     * drives the "Leave guest mode" row; account actions keep gating on the
+     * Firebase [user].
+     */
+    val guestMode: StateFlow<Boolean> = preferencesDataStore.guestMode
+        .catch { e -> Timber.w(e, "[Auth] guestMode read failed"); emit(false) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** Ends the local guest session; the caller navigates to sign-in. */
+    fun leaveGuestMode(onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            Timber.i("[Auth] Leaving guest mode")
+            // Records the guest-usage cutoff and clears the flag (one edit).
+            runCatching { preferencesDataStore.endGuestSession() }
+                .onFailure { e -> Timber.w(e, "[Auth] clearing guest mode failed") }
+            onDone()
+        }
+    }
 
     private val authListener = com.google.firebase.auth.FirebaseAuth.AuthStateListener { firebaseAuth ->
         _user.value = firebaseAuth.currentUser?.toIdentity()
@@ -125,6 +148,8 @@ class ProfileViewModel @Inject constructor(
             Timber.i("[Auth] Logout — Firebase signOut requested")
             auth?.signOut()
             _user.value = null
+            runCatching { preferencesDataStore.setGuestMode(false) }
+                .onFailure { e -> Timber.w(e, "[Auth] clearing guest mode failed") }
             // Per the official Firebase docs, also clear the current user credential
             // state from all credential providers (Credential Manager) so the system
             // doesn't keep the account selected for the next sign-in.

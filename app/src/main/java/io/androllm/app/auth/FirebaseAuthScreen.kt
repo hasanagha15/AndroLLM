@@ -99,8 +99,12 @@ import kotlin.math.sqrt
  *               [FirebaseAuth.pendingAuthResult] check so an Activity reclaimed
  *               during the flow never forces a duplicate sign-in.
  *
- * No email/password, no phone, no anonymous, no guest mode. Sessions persist
- * through Firebase, so returning users go Splash → Home automatically.
+ * No email/password, no phone, no anonymous Firebase accounts. Sessions
+ * persist through Firebase, so returning users go Splash → Home automatically.
+ * Fork addition: a LOCAL guest entry ([onContinueAsGuest], shown when
+ * BuildConfig.GUEST_MODE_ENABLED) for devices where provider sign-in cannot
+ * work; the host persists it so cold starts skip this screen. It creates no
+ * Firebase identity, so account/sync features stay unavailable.
  *
  * [onAuthSuccess] reports whether the account was just created
  * (additionalUserInfo.isNewUser), letting the host route first-time users
@@ -108,7 +112,8 @@ import kotlin.math.sqrt
  */
 @Composable
 fun FirebaseAuthScreen(
-    onAuthSuccess: (isNewUser: Boolean) -> Unit
+    onAuthSuccess: (isNewUser: Boolean) -> Unit,
+    onContinueAsGuest: () -> Unit = { onAuthSuccess(false) }
 ) {
     val context = LocalContext.current
     val activity = remember { context.findActivity() }
@@ -521,13 +526,14 @@ fun FirebaseAuthScreen(
                     }
                 }
 
-                // Debug builds only: local guest entry so on-device validation
-                // never depends on a Firebase account. Release builds keep the
-                // strict provider gate — this branch is compiled out entirely.
-                if (BuildConfig.DEBUG) {
+                // Local guest entry so on-device use never depends on a
+                // Firebase account (the fork's Firebase project cannot sign
+                // in). Controlled by BuildConfig.GUEST_MODE_ENABLED; the host
+                // persists the choice (PreferencesDataStore.guestMode).
+                if (BuildConfig.GUEST_MODE_ENABLED) {
                     Spacer(modifier = Modifier.height(14.dp))
                     Text(
-                        text = "Continue as guest (debug)",
+                        text = "Continue as guest (on-device only)",
                         style = TextStyle(
                             color = Color(0xFF888888),
                             fontSize = 14.sp,
@@ -535,9 +541,9 @@ fun FirebaseAuthScreen(
                             textAlign = TextAlign.Center
                         ),
                         modifier = Modifier.clickable(enabled = !isLoading) {
-                            Timber.i("[Auth] Guest mode entered (debug build) — on-device features only")
+                            Timber.i("[Auth] Guest mode entered — on-device features only")
                             toast(context, "Guest mode — no cloud profile sync")
-                            onAuthSuccess(false)
+                            onContinueAsGuest()
                         }
                     )
                 }

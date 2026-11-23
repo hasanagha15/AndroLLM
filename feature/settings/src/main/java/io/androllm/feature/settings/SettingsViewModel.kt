@@ -380,6 +380,37 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
+     * Persisted local guest session (see PreferencesDataStore.guestMode).
+     * Only drives the "Leave guest mode" action — account features keep
+     * gating on the Firebase [user].
+     */
+    private val _guestMode = MutableStateFlow(false)
+    val guestMode: StateFlow<Boolean> = _guestMode.asStateFlow()
+
+    init {
+        // Same source handling as ProfileViewModel.guestMode (catch → false).
+        preferencesDataStore.guestMode
+            .catch { e -> Timber.w(e, "[Auth] guestMode read failed"); emit(false) }
+            .onEach { _guestMode.value = it }
+            .launchIn(viewModelScope)
+    }
+
+    /**
+     * Ends the local guest session; the caller then navigates to the
+     * sign-in screen. The next cold start shows sign-in again.
+     */
+    fun leaveGuestMode(onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            Timber.i("[Auth] Leaving guest mode")
+            // Records the guest-usage cutoff and clears the flag (one edit).
+            runCatching { preferencesDataStore.endGuestSession() }
+                .onFailure { e -> Timber.w(e, "[Auth] clearing guest mode failed") }
+            _guestMode.value = false
+            onDone()
+        }
+    }
+
+    /**
      * Re-reads the Firebase identity. Covers ViewModels created before Firebase
      * finished initializing (auth was null at init) and screens returning from
      * the Auth flow — the AuthStateListener normally handles this, but this
@@ -524,6 +555,9 @@ class SettingsViewModel @Inject constructor(
             runCatching { auth?.signOut() }
                 .onFailure { e -> Timber.w(e, "[Auth] signOut failed") }
             _user.value = null
+            runCatching { preferencesDataStore.setGuestMode(false) }
+                .onFailure { e -> Timber.w(e, "[Auth] clearing guest mode failed") }
+            _guestMode.value = false
         }
     }
 

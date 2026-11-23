@@ -11,6 +11,7 @@ import io.androllm.core.memory.model.MemorySettings
 import io.androllm.core.models.AppSettings
 import io.androllm.core.models.ThemeMode
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
@@ -23,6 +24,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -94,6 +96,7 @@ class SettingsViewModelTest {
         every { cloudGateway.settings } returns flowOf(io.androllm.core.cloud.model.CloudSettings())
         every { modelRepository.observeDownloaded() } returns flowOf(emptyList())
         every { preferencesDataStore.backendPreference } returns flowOf("AUTO")
+        every { preferencesDataStore.guestMode } returns flowOf(false)
         every { engineRepository.engineState } returns MutableStateFlow(EngineState.Unloaded)
         every { engineRepository.backendCapabilities } returns MutableStateFlow(BackendCapabilities())
     }
@@ -202,6 +205,40 @@ class SettingsViewModelTest {
 
         viewModel.signOut()
     }
+
+    private fun newViewModel() = SettingsViewModel(
+        context, settingsRepository, preferencesDataStore, memoryManager, cloudGateway, attachmentSettingsStore, voiceSettingsStore, voiceController,
+        wakeWordEngine, whisperModelManager, whisperSpeechRecognizer,
+        automationSettingsStore, toolRegistry, accessibilitySettingsStore, accessibilityController,
+        mcpSettingsStore, mcpConnectionManager,
+        modelRepository, engineRepository
+    )
+
+    @Test
+    fun `guestMode mirrors the persisted flag`() = runTest {
+        every { settingsRepository.observeSettings() } returns flowOf(AppSettings())
+        every { preferencesDataStore.guestMode } returns flowOf(true)
+        val viewModel = newViewModel()
+        assertTrue(viewModel.guestMode.value)
+    }
+
+    @Test
+    fun `leaveGuestMode clears the persisted flag and calls back`() = runTest {
+        every { settingsRepository.observeSettings() } returns flowOf(AppSettings())
+        every { preferencesDataStore.guestMode } returns flowOf(true)
+        val viewModel = newViewModel()
+        var done = false
+        viewModel.leaveGuestMode { done = true }
+        coVerify { preferencesDataStore.endGuestSession(any()) }
+        assertTrue(done)
+        assertFalse(viewModel.guestMode.value)
+    }
+
+    @Test
+    fun `signOut clears a stale guest flag`() = runTest {
+        every { settingsRepository.observeSettings() } returns flowOf(AppSettings())
+        val viewModel = newViewModel()
+        viewModel.signOut()
+        coVerify { preferencesDataStore.setGuestMode(false) }
+    }
 }
-
-

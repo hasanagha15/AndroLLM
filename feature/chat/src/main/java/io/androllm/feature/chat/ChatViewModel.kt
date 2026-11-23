@@ -859,7 +859,7 @@ class ChatViewModel @Inject constructor(
                     engineRepository.generateChat(
                         messages = messages,
                         addAssistant = true,
-                        config = _genConfig.value
+                        config = localTurnConfig()
                     )
                     android.util.Log.i(TAG, "CHAT GENERATION RETURNED")
                 }
@@ -868,7 +868,7 @@ class ChatViewModel @Inject constructor(
                 engineRepository.generateChat(
                     messages = messages,
                     addAssistant = true,
-                    config = _genConfig.value
+                    config = localTurnConfig()
                 )
                 android.util.Log.i(TAG, "CHAT GENERATION RETURNED")
             }
@@ -1552,7 +1552,7 @@ class ChatViewModel @Inject constructor(
                 engineRepository.generateChat(
                     messages = history,
                     addAssistant = true,
-                    config = _genConfig.value
+                    config = localTurnConfig()
                 )
                 val state = engineRepository.generationState.value
                 if (state is GenerationState.Failed) {
@@ -1594,12 +1594,12 @@ class ChatViewModel @Inject constructor(
                             ?: "The requested tools have already been used and produced no additional useful information. Continue reasoning without further tool calls."
                         history = history + listOf(
                             ChatPromptMessage(role = "assistant", content = text),
-                            ChatPromptMessage(role = "system", content = guardMessage)
+                            ChatPromptMessage(role = ChatPromptMessage.ROLE_APP_NOTE, content = guardMessage)
                         )
                         engineRepository.generateChat(
                             messages = history,
                             addAssistant = true,
-                            config = _genConfig.value
+                            config = localTurnConfig()
                         )
                         val finalState = engineRepository.generationState.value
                         if (finalState is GenerationState.Completed) {
@@ -1677,11 +1677,11 @@ class ChatViewModel @Inject constructor(
         plainTextRetryUsed = true
         android.util.Log.w(TAG, "Sanitized output was empty — regenerating once with a plain-text-only instruction")
         val retryMessages = lastLocalMessages +
-            ChatPromptMessage(role = "system", content = OutputSanitizer.PLAIN_TEXT_RETRY_INSTRUCTION)
+            ChatPromptMessage(role = ChatPromptMessage.ROLE_APP_NOTE, content = OutputSanitizer.PLAIN_TEXT_RETRY_INSTRUCTION)
         engineRepository.generateChat(
             messages = retryMessages,
             addAssistant = true,
-            config = _genConfig.value
+            config = localTurnConfig()
         )
         val retryState = engineRepository.generationState.value
         return if (retryState is GenerationState.Completed) {
@@ -1690,6 +1690,21 @@ class ChatViewModel @Inject constructor(
             ""
         }
     }
+
+    /**
+     * Local-engine generation config for the current turn: the KV session is
+     * keyed by this chat, so the engine never continues another chat's
+     * resident session.
+     */
+    private fun localTurnConfig(): GenerationConfig {
+        val id = _currentConversationId.value
+        // No conversation id yet: a temporary key per ViewModel, never a
+        // shared "owner:chat:" key.
+        val key = if (id.isNotBlank()) "owner:chat:$id" else "owner:chat:tmp-$unsavedChatKey"
+        return _genConfig.value.copy(sessionKey = key)
+    }
+
+    private val unsavedChatKey: String = java.util.UUID.randomUUID().toString()
 
     /** Converts engine-native markers into executor-ready [ToolCall]s. */
     private fun nativeToToolCalls(calls: List<NativeToolCall>): List<ToolCall> =
