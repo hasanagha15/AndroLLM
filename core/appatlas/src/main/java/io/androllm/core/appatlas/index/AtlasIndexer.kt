@@ -29,7 +29,7 @@ class AtlasIndexer(
     private val clock: () -> Long = System::currentTimeMillis
 ) {
 
-    fun index(basics: PackageBasics): AppAtlasEntry {
+    fun index(basics: PackageBasics, extras: Set<String> = emptySet()): AppAtlasEntry {
         val label = AtlasText.clean(basics.label, MAX_TITLE) ?: basics.packageName.take(MAX_TITLE)
         val launch = AtlasAction(
             id = ACTION_OPEN,
@@ -49,7 +49,7 @@ class AtlasIndexer(
             actions = listOf(launch),
             indexedAt = clock()
         )
-        SensitiveClassifier.reason(basics.packageName, basics.label)?.let { return metadataOnly(it, false) }
+        SensitiveClassifier.reason(basics.packageName, basics.label, extras)?.let { return metadataOnly(it, false) }
 
         val manifest = source.manifest(basics.packageName)
         // Gate B1: an app that handles a payment scheme (upi:, bitcoin:…) is a payment app,

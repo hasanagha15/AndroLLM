@@ -1,7 +1,6 @@
 package io.androllm.core.appatlas
 
 import com.google.common.truth.Truth.assertThat
-import io.androllm.core.accessibility.controller.SensitiveAppGuard
 import io.androllm.core.appatlas.index.AtlasIndexer
 import io.androllm.core.appatlas.index.AtlasText
 import io.androllm.core.appatlas.index.SchemePolicy
@@ -15,13 +14,10 @@ import io.androllm.core.appatlas.parse.ShortcutXmlParser
 import io.androllm.core.appatlas.search.AtlasSearch
 import io.androllm.core.appatlas.tools.ActionGuard
 import io.androllm.core.tools.uistep.UiStep
-import org.junit.After
 import org.junit.Test
 
 /** Opus gate L: B1, B2, M1, M3, m2, m4. */
 class GateFixesTest {
-
-    @After fun resetGuard() = SensitiveAppGuard.setExtraPackages(emptySet())
 
     private fun manifest(pkg: String, body: String) = ManifestIntentParser.parse(
         Fixtures.parser(
@@ -160,19 +156,38 @@ class GateFixesTest {
         )
         assertThat(ActionGuard.check(stored, link, null, null)).isInstanceOf(ActionGuard.Verdict.Allowed::class.java)
 
-        SensitiveAppGuard.setExtraPackages(setOf("com.example.lender")) // owner adds it as a payment app
-        val refused = ActionGuard.check(stored, link, null, null)
+        // The owner adds it to the protected list (SensitiveAppStore, K) — the stored row is unchanged.
+        val extras = setOf("com.example.lender")
+        val refused = ActionGuard.check(stored, link, null, null, extras)
         assertThat(refused).isInstanceOf(ActionGuard.Verdict.Refused::class.java)
-        assertThat(ActionGuard.check(stored, stored.actions[0], null, null)).isInstanceOf(ActionGuard.Verdict.Allowed::class.java)
+        assertThat(ActionGuard.check(stored, stored.actions[0], null, null, extras)).isInstanceOf(ActionGuard.Verdict.Allowed::class.java)
 
-        val eff = SensitiveClassifier.effective(stored)
+        val eff = SensitiveClassifier.effective(stored, extras)
         assertThat(eff.sensitive).isTrue()
         assertThat(eff.actions.map { it.id }).containsExactly("open")
         assertThat(eff.uiStrings).isEmpty()
 
-        val hits = AtlasSearch.search(listOf(stored), "lender transfer")
+        val hits = AtlasSearch.search(listOf(stored), "lender transfer", extras = extras)
         assertThat(hits.single().actions.map { it.id }).containsExactly("open")
         assertThat(AtlasSearch.render(hits, "lender transfer")).contains("NO AUTOMATION")
+    }
+
+    @Test
+    fun `fingerprint changes with the owner's list and the rules`() {
+        assertThat(SensitiveClassifier.fingerprint(emptySet())).isNotEqualTo(SensitiveClassifier.fingerprint(setOf("a.b")))
+        assertThat(SensitiveClassifier.fingerprint(setOf("a.b", "c.d"))).isEqualTo(SensitiveClassifier.fingerprint(setOf("c.d", "a.b")))
+    }
+
+    @Test
+    fun `indexing with the owner's list makes an app metadata-only`() {
+        val pkg = "com.example.lender"
+        val src = FakePackageSource(packages = mutableListOf(Fixtures.basics(pkg, "Lender"))).apply {
+            vocabularyByPkg[pkg] = emptyList<String>() to listOf("Transfer")
+        }
+        assertThat(AtlasIndexer(src).index(src.packages.first()).sensitive).isFalse()
+        val e = AtlasIndexer(src).index(src.packages.first(), extras = setOf(pkg))
+        assertThat(e.sensitive).isTrue()
+        assertThat(e.uiStrings).isEmpty()
     }
 
     // ── M1 ──

@@ -29,9 +29,15 @@ object ActionGuard {
         data class Refused(val reason: String) : Verdict
     }
 
-    fun check(stored: AppAtlasEntry, action: AtlasAction, uri: String?, query: String?): Verdict {
-        // Gate B2: sensitivity is re-evaluated now, not trusted from the database.
-        val entry = SensitiveClassifier.effective(stored)
+    fun check(
+        stored: AppAtlasEntry,
+        action: AtlasAction,
+        uri: String?,
+        query: String?,
+        extras: Set<String> = emptySet()
+    ): Verdict {
+        // Gate B2: sensitivity is re-evaluated now (incl. the owner's list), not trusted from the database.
+        val entry = SensitiveClassifier.effective(stored, extras)
         if (entry.sensitive && action.kind != ActionKind.LAUNCH) {
             return Verdict.Refused(
                 "${entry.label} is a protected app (${entry.sensitiveReason ?: "no automation"}): only action_id=open is allowed."

@@ -24,7 +24,7 @@ class LearnedPathRecorder @Inject constructor(
     private val settingsStore: AppAtlasSettingsStore
 ) : UiStepJournal.Listener {
 
-    private val tracker = PathSessionTracker()
+    private val tracker = PathSessionTracker(extras = { repository.sensitiveExtras })
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var attached = false
 

@@ -1,6 +1,8 @@
 package io.androllm.core.appatlas
 
+import io.androllm.core.accessibility.controller.SensitiveAppStore
 import io.androllm.core.appatlas.index.AtlasIndexer
+import io.androllm.core.appatlas.index.SensitiveClassifier
 import io.androllm.core.appatlas.learn.LearnedPathPolicy
 import io.androllm.core.appatlas.model.AppAtlasEntry
 import io.androllm.core.appatlas.model.LearnedPath
@@ -39,7 +41,8 @@ data class AtlasStatus(
 class AppAtlasRepository @Inject constructor(
     private val source: PackageSource,
     private val store: AtlasStore,
-    private val settingsStore: AppAtlasSettingsStore
+    private val settingsStore: AppAtlasSettingsStore,
+    private val sensitiveApps: SensitiveAppStore
 ) {
     private val indexer = AtlasIndexer(source)
     private val synchronizer = AtlasSynchronizer(source, store, indexer)
@@ -56,6 +59,32 @@ class AppAtlasRepository @Inject constructor(
     enum class Mode { INCREMENTAL, SWEEP, FULL }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** The owner's protected packages (K: SensitiveAppStore), kept current by [watchSensitiveApps]. */
+    @Volatile var sensitiveExtras: Set<String> = emptySet()
+        private set
+    @Volatile private var watching = false
+
+    /**
+     * Follows SensitiveAppStore: the live set is used at call time (guard,
+     * search, recorder) and a change triggers a sync, which re-indexes
+     * everything because the sensitivity fingerprint changed (gate B2).
+     */
+    fun watchSensitiveApps() {
+        if (watching) return
+        watching = true
+        scope.launch {
+            sensitiveApps.extras.collect { set ->
+                val changed = set != sensitiveExtras
+                sensitiveExtras = set
+                if (changed && cache != null) sync(Mode.INCREMENTAL)
+            }
+        }
+    }
+
+    /** Fresh read of the owner's protected packages (call-time checks). */
+    suspend fun currentSensitiveExtras(): Set<String> =
+        runCatching { sensitiveApps.current() }.getOrDefault(sensitiveExtras).also { sensitiveExtras = it }
 
     /** Fire-and-forget [sync] (broadcasts, Settings button, first tool use). */
     fun requestSync(mode: Mode, only: Set<String>? = null) {
@@ -79,11 +108,13 @@ class AppAtlasRepository @Inject constructor(
                 val changed = token?.second.orEmpty().toSet()
                 token?.let { settingsStore.changeSequence = it.first }
                 // Gate B2: protected-app rules / the owner's list changed → re-index everything.
-                val fingerprint = source.sensitivityFingerprint()
+                val extras = currentSensitiveExtras()
+                val fingerprint = SensitiveClassifier.fingerprint(extras)
                 val rulesChanged = fingerprint != settingsStore.sensitivityFingerprint
                 val report = synchronizer.sync(
                     exclusions = settings.exclusions,
                     force = mode == Mode.FULL || rulesChanged,
+                    extras = extras,
                     only = (only.orEmpty() + if (seq >= 0) changed else emptySet()).ifEmpty { null }
                 )
                 settingsStore.sensitivityFingerprint = fingerprint
@@ -115,7 +146,7 @@ class AppAtlasRepository @Inject constructor(
         if (pkg in settingsStore.current().exclusions) return@withContext null
         entries().firstOrNull { it.packageName == pkg }
             ?: source.basics(pkg)?.takeIf { pkg != source.ownPackage }?.let { b ->
-                indexer.index(b).also { store.upsert(it); reload() }
+                indexer.index(b, currentSensitiveExtras()).also { store.upsert(it); reload() }
             }
     }
 
@@ -125,7 +156,7 @@ class AppAtlasRepository @Inject constructor(
     suspend fun search(query: String): List<AtlasHit> {
         val excluded = settingsStore.current().exclusions
         val entries = entries().filter { it.packageName !in excluded }
-        return AtlasSearch.search(entries, query, paths())
+        return AtlasSearch.search(entries, query, paths(), currentSensitiveExtras())
     }
 
     suspend fun paths(): Map<String, List<LearnedPath>> {

@@ -135,8 +135,6 @@ class FakePackageSource(
     override fun vocabulary(packageName: String, candidates: List<String>) =
         vocabularyByPkg[packageName] ?: (emptyList<String>() to emptyList())
     override fun changedSince(sequence: Int): Pair<Int, List<String>>? = null
-    var fingerprint = "rules-1"
-    override fun sensitivityFingerprint() = fingerprint
 }
 
 class InMemoryAtlasStore : AtlasStore {

@@ -54,6 +54,7 @@ class AppAtlasStarter @Inject constructor(
         if (started) return
         started = true
         recorder.attach()
+        repository.watchSensitiveApps()
         registerPackageReceiver()
         scheduleWeeklySweep()
         scope.launch {

@@ -31,7 +31,12 @@ class AtlasSynchronizer(
     private val indexer: AtlasIndexer
 ) {
 
-    suspend fun sync(exclusions: Set<String>, force: Boolean = false, only: Set<String>? = null): SyncReport {
+    suspend fun sync(
+        exclusions: Set<String>,
+        force: Boolean = false,
+        only: Set<String>? = null,
+        extras: Set<String> = emptySet()
+    ): SyncReport {
         val current = source.launchablePackages()
             .filter { it.packageName != source.ownPackage && it.packageName !in exclusions }
         val stored = store.versions()
@@ -47,7 +52,7 @@ class AtlasSynchronizer(
                 unchanged++
                 continue
             }
-            store.upsert(indexer.index(b))
+            store.upsert(indexer.index(b, extras))
             indexed++
             if (prev != null && prev.versionCode != b.versionCode) {
                 val paths = store.paths(b.packageName)

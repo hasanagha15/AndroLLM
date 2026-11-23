@@ -154,7 +154,8 @@ class AppOpenActionTool @Inject constructor(
         if (pkg == context.packageName) {
             return ToolResult.Failure("This assistant cannot open itself through the atlas.", retryable = false)
         }
-        val entry = repository.entry(pkg)?.let(SensitiveClassifier::effective)
+        val extras = repository.currentSensitiveExtras()
+        val entry = repository.entry(pkg)?.let { SensitiveClassifier.effective(it, extras) }
             ?: return ToolResult.Failure(
                 "\"$pkg\" is not in the App Atlas (not installed, not launchable, or excluded in Settings). Call app_atlas_search first.",
                 retryable = false
@@ -165,7 +166,7 @@ class AppOpenActionTool @Inject constructor(
                 retryable = false
             )
 
-        val uriToUse = when (val v = ActionGuard.check(entry, action, uri, query)) {
+        val uriToUse = when (val v = ActionGuard.check(entry, action, uri, query, extras)) {
             is ActionGuard.Verdict.Refused -> return ToolResult.Failure(v.reason, retryable = false)
             is ActionGuard.Verdict.Allowed -> v.uri
         }

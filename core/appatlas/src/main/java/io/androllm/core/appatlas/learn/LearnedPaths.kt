@@ -110,7 +110,11 @@ object LearnedPathPolicy {
  * successful, replayable path. Pure (clock injected); the recorder persists
  * what [onStep] / [onTaskFinished] / [begin] return.
  */
-class PathSessionTracker(private val clock: () -> Long = System::currentTimeMillis) {
+class PathSessionTracker(
+    /** The owner's protected packages (K: SensitiveAppStore), read live. */
+    private val extras: () -> Set<String> = { emptySet() },
+    private val clock: () -> Long = System::currentTimeMillis
+) {
 
     private data class Session(
         val pkg: String,
@@ -199,7 +203,8 @@ class PathSessionTracker(private val clock: () -> Long = System::currentTimeMill
         !s.failed && !s.unreplayable && s.steps.isNotEmpty() && !isSensitive(s.pkg, entry)
 
     private fun isSensitive(pkg: String, entry: AppAtlasEntry?): Boolean =
-        entry?.sensitive == true || SensitiveAppGuard.blockedReason(pkg) != null
+        entry?.sensitive == true || SensitiveAppGuard.blockedReason(pkg, extras()) != null ||
+            io.androllm.core.appatlas.index.SensitiveClassifier.reason(pkg, entry?.label ?: "", extras()) != null
 
     private fun toPath(s: Session, key: String, verified: Boolean) = LearnedPath(
         packageName = s.pkg,

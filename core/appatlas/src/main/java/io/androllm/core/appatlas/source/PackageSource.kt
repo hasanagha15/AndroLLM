@@ -42,13 +42,6 @@ interface PackageSource {
      */
     fun changedSince(sequence: Int): Pair<Int, List<String>>?
 
-    /**
-     * Reloads the owner's protected-app list and returns a fingerprint of all
-     * sensitivity inputs (rules version + extras). A change forces a full
-     * re-index (gate B2). Called on a background thread.
-     */
-    fun sensitivityFingerprint(): String
-
     /** Package name of this app — never indexed. */
     val ownPackage: String
 }
