@@ -526,8 +526,18 @@ class LiteRtLmEngine @Inject constructor(
             // (`libLiteRtDispatch_*.so`); passed to Backend.NPU(nativeLibraryDir).
             // With uncompressed (16 KB-aligned) jniLibs nativeLibraryDir is empty,
             // so the vendor libs are staged to an app-private dir (g-16kb).
-            val npuLibDir = withContext(Dispatchers.IO) {
-                runCatching { io.androllm.engine.backend.NpuLibraryDir.ensureStaged(context) }.getOrNull()
+            // Only wait for staging when an NPU (non-Tensor) candidate is in the
+            // chain (NPU or AUTO on a Qualcomm SoC) — CPU/GPU loads never block on it.
+            val needsNpuDir = candidates.any {
+                it is io.androllm.engine.backend.InferenceBackend.NpuBackend &&
+                    !io.androllm.engine.backend.NpuVendor.isGoogleTensor(it.npuVendor)
+            }
+            val npuLibDir = if (needsNpuDir) {
+                withContext(Dispatchers.IO) {
+                    runCatching { io.androllm.engine.backend.NpuLibraryDir.ensureStaged(context) }.getOrNull()
+                }
+            } else {
+                runCatching { context.applicationInfo.nativeLibraryDir }.getOrNull()
             }
 
             // Tune thread count for memory pressure: aggressive/low-memory modes reserve cores for OS

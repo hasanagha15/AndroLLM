@@ -128,7 +128,7 @@ class AndroLLMApplication : Application(), WorkConfiguration.Provider {
             if (io.androllm.engine.backend.NpuLibraryDir.isQualcommSoc()) {
                 Thread({
                     io.androllm.engine.backend.NpuLibraryDir.ensureStaged(this)
-                }, "npu-lib-stage").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }.start()
+                }, "npu-lib-stage").apply { isDaemon = true }.start()
             }
             val paths = listOf(
                 stagedNpuDir,

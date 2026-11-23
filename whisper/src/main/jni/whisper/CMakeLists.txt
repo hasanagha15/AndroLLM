@@ -104,6 +104,11 @@ target_link_libraries(whisper PRIVATE ${LOG_LIB} android ggml)
 # Static ggml + static libc++ live inside libwhisper.so: keep their symbols
 # private so only the JNI entry points (jni.c) are exported.
 target_link_options(whisper PRIVATE -Wl,--exclude-libs,ALL)
+# Hidden by default in every build type, and a version script so weak libc++
+# typeinfo/vtables instantiated in whisper.cpp are not exported either.
+target_compile_options(whisper PRIVATE -fvisibility=hidden -fvisibility-inlines-hidden)
+target_link_options(whisper PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_LIST_DIR}/jni.map")
+set_property(TARGET whisper APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/jni.map")
 
 # Scoped to this target (not global include_directories) so ggml's own
 # configure is unaffected.
