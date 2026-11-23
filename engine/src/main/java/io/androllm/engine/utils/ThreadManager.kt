@@ -126,7 +126,8 @@ object ThreadManager {
         val tier = deviceTier()
         return when (profile) {
             io.androllm.engine.models.PerformanceProfile.BATTERY_SAVER -> {
-                maxOf(MIN_BATTERY_SAVER_THREADS, cores / 4)
+                // Clamp is a no-op on phones (cores / 4 <= 3); keeps many-core hosts in range.
+                maxOf(MIN_BATTERY_SAVER_THREADS, cores / 4).coerceAtMost(ABSOLUTE_MAX_THREADS)
             }
             io.androllm.engine.models.PerformanceProfile.BALANCED -> {
                 maxOf(3, cores - 2).coerceAtMost(8)
@@ -143,14 +144,29 @@ object ThreadManager {
      * for tokenizer, sampling, and I/O. Fewer CPU threads when GPU is active
      * reduces contention.
      */
-    fun gpuThreads(profile: io.androllm.engine.models.PerformanceProfile): Int {
-        val cores = hardwareCores()
-        return when (profile) {
+    fun gpuThreads(profile: io.androllm.engine.models.PerformanceProfile): Int =
+        gpuThreadsFor(profile, hardwareCores())
+
+    /**
+     * CPU helper threads next to the GPU never exceed [GPU_MAX_THREADS]
+     * (= [ABSOLUTE_MAX_THREADS] minus [UI_RESERVE_CORES]). Pure function of
+     * the core count so it is testable with fixed inputs. On every device
+     * with <= 12 cores (all current phones) the clamp is a no-op; it only
+     * stops many-core hosts (e.g. a 20-core emulator/test host -> 18) from
+     * exceeding the documented ceiling.
+     */
+    internal fun gpuThreadsFor(profile: io.androllm.engine.models.PerformanceProfile, cores: Int): Int {
+        val c = maxOf(2, cores)
+        val threads = when (profile) {
             io.androllm.engine.models.PerformanceProfile.BATTERY_SAVER -> 2
-            io.androllm.engine.models.PerformanceProfile.BALANCED -> maxOf(3, cores / 2)
-            io.androllm.engine.models.PerformanceProfile.MAXIMUM_PERFORMANCE -> maxOf(4, cores - 2)
+            io.androllm.engine.models.PerformanceProfile.BALANCED -> maxOf(3, c / 2)
+            io.androllm.engine.models.PerformanceProfile.MAXIMUM_PERFORMANCE -> maxOf(4, c - 2)
         }
+        return threads.coerceAtMost(GPU_MAX_THREADS)
     }
+
+    /** Ceiling for CPU threads while the GPU does the compute. */
+    internal const val GPU_MAX_THREADS = ABSOLUTE_MAX_THREADS - UI_RESERVE_CORES
 
     /**
      * Threads used while loading/quantizing: all cores are safe here since

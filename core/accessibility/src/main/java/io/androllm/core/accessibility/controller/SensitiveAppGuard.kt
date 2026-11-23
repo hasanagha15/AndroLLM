@@ -1,7 +1,5 @@
 package io.androllm.core.accessibility.controller
 
-import android.content.Context
-
 /**
  * Apps the assistant must never drive through the accessibility service.
  * Taps and typing there bypass the dedicated, confirmed tools (tesla_command,
@@ -13,7 +11,8 @@ import android.content.Context
  * (launch_app) so the user can pay, but must never tap or type inside — a
  * payment is only ever made by the user. Built-in list = package names
  * verified on Google Play; the user can add more in Settings → Memory →
- * Personal context ([extraPackages], stored on device).
+ * Personal context (stored on device by [SensitiveAppStore] and passed in
+ * as `extras`; no global mutable state here).
  */
 object SensitiveAppGuard {
 
@@ -23,22 +22,64 @@ object SensitiveAppGuard {
         "com.whatsapp.w4b"
     )
 
-    /** Banking / payment / wallet apps (package names verified on Google Play). */
+    /**
+     * Banking / payment / wallet apps. Every ID was checked on its Google Play
+     * details page (title + developer) on 2026-11-23; unverified ones are not
+     * listed (users add those in Settings).
+     */
     val PAYMENT_PACKAGES: Set<String> = setOf(
-        "az.kapitalbank.mbanking", // Birbank
+        // Azerbaijan: banks
+        "az.kapitalbank.mbanking", // Birbank (Kapital Bank)
         "az.kapitalbank.mushteribank", // Birbank Biznes
+        "az.kapitalbank.birbankinvest", // Birbank Invest
+        "iba.mobilbank", // ABB - Mobile
+        "abb.corporate.mobile", // ABB Biz
+        "com.ftfarm.leo", // Leobank (Unibank)
+        "az.pashabank.mobilebank", // PASHA Bank
+        "az.pashabank.sme", // PASHA Bank Business
+        "az.unibank.mbanking", // UBank by Unibank
+        "az.unibank.mbanking.corporate", // UBank Biznes
+        "com.brmobilshobe", // Bank Respublika: Mobil Şöbə
+        "az.bankrespublika.moffice", // Bank Respublika: Mobil Ofis Biznes
+        "az.yelobank.app", // Yelo
+        "az.yelo.business.app", // Yelo Business
+        "az.yelo.business", // Yelo Business (second listing)
+        "az.myaccess.mobile", // AccessBank: myAccess mobile
+        "az.xalqbank.mobile", // Xalq Bank: XalqOnline
+        "com.rabitabank", // Rabita Mobile
+        "com.rabitabank.corporate", // Rabita Business
+        "com.rabitabank.junior", // Rabita Junior
+        "com.bankofbaku.v2.dostbank", // Bank of Baku: Dostbank
+        "az.expressbank.e24", // Expressbank: Express24
+        "az.expressbank.businessapp", // Express Business
+        "az.ziraat.mobile", // Ziraat Bank Azerbaijan
+        "az.afbbanknewdesign", // AFB Mobile
+        "az.turanbank.mlb", // TuranBank Mobilbank
+        "az.premiumbank.app", // Premium Mobile Bank
+        "az.azerturkbank.atb360", // Azər Türk Bank: atb360
+        "az.btb.mobilebanking", // Bank BTB Mobile
+        // Azerbaijan: wallets
+        "com.m10", // m10 (PashaPay)
+        "expressbank.wallet.expresspay", // ExpressPay Wallet
+        "hesab.az", // Hesab.az (Goldenpay)
+        "com.mpayapp", // MPAY
+        // International wallets / payments
         "com.google.android.apps.walletnfcrel", // Google Wallet
         "com.samsung.android.spay", // Samsung Wallet
-        "com.paypal.android.p2pmobile" // PayPal
+        "com.paypal.android.p2pmobile", // PayPal
+        "com.venmo", // Venmo
+        "com.squareup.cash", // Cash App
+        "com.revolut.revolut", // Revolut
+        "com.transferwise.android", // Wise
+        "com.payoneer.android", // Payoneer
+        "com.moneybookers.skrillpayments", // Skrill
+        "com.moneybookers.skrillpayments.neteller", // Neteller
+        "com.myklarnamobile", // Klarna
+        "lt.lemonlabs.android.paysera", // Paysera
+        "com.westernunion.moneytransferr3app.eu", // Western Union
+        "com.westernunion.moneytransferr3app.eu2", // Western Union (EU 2)
+        "com.westernunion.android.mtapp" // Western Union (US)
     )
-
-    /** User-added payment/banking packages (on-device setting). */
-    @Volatile
-    var extraPackages: Set<String> = emptySet()
-        private set
-
-    const val PREFS_NAME = "sensitive_app_guard"
-    const val KEY_EXTRA_PACKAGES = "extra_payment_packages"
 
     /** Parses a comma / whitespace separated package list; invalid entries are dropped. */
     fun parsePackages(raw: String?): Set<String> =
@@ -48,40 +89,44 @@ object SensitiveAppGuard {
             .filter { isPackageName(it) }
             .toSet()
 
-    fun setExtraPackages(packages: Set<String>) {
-        extraPackages = packages
-    }
-
-    /** Loads the user list from on-device prefs. Safe to call repeatedly. */
-    fun loadExtras(context: Context) {
-        runCatching {
-            val raw = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .getString(KEY_EXTRA_PACKAGES, "")
-            extraPackages = parsePackages(raw)
-        }
-    }
-
-    /** Saves the user list to on-device prefs and applies it. */
-    fun saveExtras(context: Context, raw: String) {
-        val parsed = parsePackages(raw)
-        runCatching {
-            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .edit().putString(KEY_EXTRA_PACKAGES, parsed.joinToString(", ")).apply()
-        }
-        extraPackages = parsed
-    }
-
-    /** Null when [packageName] may be automated, otherwise the refusal message. */
-    fun blockedReason(packageName: CharSequence?): String? {
+    /**
+     * Null when [packageName] may be automated, otherwise the refusal message.
+     * [extras] = the user's own banking/payment packages ([SensitiveAppStore]).
+     */
+    fun blockedReason(packageName: CharSequence?, extras: Set<String> = emptySet()): String? {
         val pkg = packageName?.toString()?.trim().orEmpty()
         if (pkg.isEmpty()) return null
-        if (pkg in PAYMENT_PACKAGES || pkg in extraPackages) {
+        if (pkg in PAYMENT_PACKAGES || pkg in extras) {
             return "UI automation is blocked in $pkg: it is a banking/payment app. The assistant may only " +
                 "open it; the user taps, types and pays there themselves."
         }
         if (pkg !in BLOCKED_PACKAGES) return null
         val hint = if (pkg.startsWith("com.whatsapp")) "whatsapp_reply" else "tesla_status / tesla_command"
         return "UI automation is blocked in $pkg for safety. Use the dedicated tool ($hint), which asks the user first."
+    }
+
+    /**
+     * Null when the screen of [packageName] may be read (accessibility tree,
+     * screenshot, OCR), otherwise the refusal message (K).
+     *
+     * Same set as [blockedReason]: banking/payment apps (balances, card
+     * numbers, IBANs would land in the prompt and, in cloud mode, at the
+     * provider), and Tesla/WhatsApp. Reading those two is NOT a deliberate
+     * feature: the agent reads WhatsApp through the bot API (whatsapp_inbox /
+     * whatsapp_pending, framed as untrusted data) and the car through
+     * tesla_status. A raw screen dump would leak other people's chats or the
+     * car's location unframed, and is a prompt-injection channel.
+     */
+    fun screenReadBlockedReason(packageName: CharSequence?, extras: Set<String> = emptySet()): String? {
+        val pkg = packageName?.toString()?.trim().orEmpty()
+        if (pkg.isEmpty()) return null
+        if (pkg in PAYMENT_PACKAGES || pkg in extras) {
+            return "Screen reading is blocked in $pkg: it is a banking/payment app, its screen is hidden " +
+                "from the assistant. Ask the user to read the needed detail themselves."
+        }
+        if (pkg !in BLOCKED_PACKAGES) return null
+        val hint = if (pkg.startsWith("com.whatsapp")) "whatsapp_inbox / whatsapp_pending" else "tesla_status"
+        return "Screen reading is blocked in $pkg for privacy. Use the dedicated tool ($hint) instead."
     }
 
     /** "a.b" style: segments of letters/digits/underscore, first starts with a letter, at least one dot. */

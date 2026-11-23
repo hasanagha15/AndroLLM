@@ -6,4 +6,6 @@
     <!-- F1: user-typed personal context and protected payment apps stay on this device -->
     <exclude domain="file" path="datastore/personal_context_prefs.preferences_pb" />
     <exclude domain="sharedpref" path="sensitive_app_guard.xml" />
+    <!-- K: protected payment apps moved to DataStore (legacy sharedpref above kept excluded) -->
+    <exclude domain="file" path="datastore/sensitive_app_guard_prefs.preferences_pb" />
 </full-backup-content>

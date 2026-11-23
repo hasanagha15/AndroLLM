@@ -61,10 +61,29 @@ class ThreadManagerTest {
 
     @Test
     fun `gpuThreads stays within absolute ceiling`() {
-        for (profile in PerformanceProfile.entries) {
-            val gpuThreads = ThreadManager.gpuThreads(profile)
-            assertTrue("gpuThreads for $profile = $gpuThreads must be in [1,10]", gpuThreads in 1..10)
+        // Host-independent: fixed core counts, from tiny phones to a 64-core build host.
+        for (cores in listOf(1, 2, 4, 6, 8, 10, 12, 16, 20, 64)) {
+            for (profile in PerformanceProfile.entries) {
+                val gpuThreads = ThreadManager.gpuThreadsFor(profile, cores)
+                assertTrue("gpuThreads for $profile on $cores cores = $gpuThreads must be in [1,10]", gpuThreads in 1..10)
+            }
         }
+        // And the runtime value on whatever host runs the test.
+        for (profile in PerformanceProfile.entries) {
+            assertTrue(ThreadManager.gpuThreads(profile) in 1..10)
+        }
+    }
+
+    @Test
+    fun `gpuThreads unchanged on phone-class core counts`() {
+        // The clamp must not change phone behaviour (8-core S24 Ultra etc.).
+        assertEquals(2, ThreadManager.gpuThreadsFor(PerformanceProfile.BATTERY_SAVER, 8))
+        assertEquals(4, ThreadManager.gpuThreadsFor(PerformanceProfile.BALANCED, 8))
+        assertEquals(6, ThreadManager.gpuThreadsFor(PerformanceProfile.MAXIMUM_PERFORMANCE, 8))
+        assertEquals(3, ThreadManager.gpuThreadsFor(PerformanceProfile.BALANCED, 4))
+        assertEquals(4, ThreadManager.gpuThreadsFor(PerformanceProfile.MAXIMUM_PERFORMANCE, 4))
+        assertEquals(10, ThreadManager.gpuThreadsFor(PerformanceProfile.MAXIMUM_PERFORMANCE, 12))
+        assertEquals(10, ThreadManager.gpuThreadsFor(PerformanceProfile.MAXIMUM_PERFORMANCE, 20))
     }
 
     @Test

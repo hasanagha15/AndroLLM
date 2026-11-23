@@ -59,15 +59,11 @@ class AccessibilityController @Inject constructor(
     private val windowMonitor: WindowMonitor,
     private val uiState: UIStateTracker,
     private val screenAnalyzer: ScreenAnalyzer,
-    private val debug: AccessibilityDebugStore
+    private val debug: AccessibilityDebugStore,
+    private val sensitiveApps: SensitiveAppStore
 ) {
 
     @Volatile private var service: AccessibilityAutomationService? = null
-
-    init {
-        // F1: user-added banking/payment packages (Settings) join the guard.
-        SensitiveAppGuard.loadExtras(context)
-    }
 
     private val gestures = GestureExecutor({ service }, debug)
     private val textInput = TextInputController(context, { service }, gestures, debug)
@@ -106,7 +102,7 @@ class AccessibilityController @Inject constructor(
         val settings = settingsStore.current()
         val root = onMain { service?.rootInActiveWindow }
         if (root == null) return UiActionResult.fail(notConnected())
-        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
+        guardReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         var node = onMain { LiveTree.find(root, selector) }
         var scrolls = 0
         while (node == null && settings.autoScrollIntoView && scrolls < maxScrolls) {
@@ -130,7 +126,7 @@ class AccessibilityController @Inject constructor(
     /** Double-taps the element matching [selector] (e.g. Maps zoom). */
     suspend fun doubleTap(selector: UiSelector): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
-        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
+        guardReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
         val bounds = android.graphics.Rect()
@@ -145,7 +141,7 @@ class AccessibilityController @Inject constructor(
      */
     suspend fun drag(selector: UiSelector, dx: Float, dy: Float): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
-        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
+        guardReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
         val bounds = android.graphics.Rect()
@@ -172,7 +168,7 @@ class AccessibilityController @Inject constructor(
     /** Long-presses the element matching [selector]. */
     suspend fun longClick(selector: UiSelector): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
-        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
+        guardReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val node = onMain { LiveTree.find(root, selector) }
             ?: return UiActionResult.fail("Element '${selector.summary}' was not found.")
         val bounds = android.graphics.Rect()
@@ -184,7 +180,7 @@ class AccessibilityController @Inject constructor(
     /** Types [text] into the focused field, or the field matching [into]. */
     suspend fun type(text: String, into: String?): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
-        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
+        guardReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val field = onMain {
             if (into != null) {
                 LiveTree.find(root, UiSelector(textContains = into, type = UiElementType.TEXT_FIELD))
@@ -208,7 +204,7 @@ class AccessibilityController @Inject constructor(
 
     suspend fun scroll(direction: String): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
-        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
+        guardReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val scrollable = onMain { LiveTree.findScrollable(root) }
         val ok = when (direction) {
             "up" -> scrollable?.let { gestures.scrollBackward(it) } ?: swipeGesture("down")
@@ -226,10 +222,26 @@ class AccessibilityController @Inject constructor(
         return if (ok) UiActionResult.ok("Swiped $direction.") else UiActionResult.fail("Swipe $direction failed.")
     }
 
+    /** Action-guard refusal for [pkg]; user-added banking packages come from [SensitiveAppStore]. */
+    private suspend fun guardReason(pkg: CharSequence?): String? =
+        SensitiveAppGuard.blockedReason(pkg, sensitiveApps.current())
+
+    /**
+     * Screen-read refusal (tree / screenshot / OCR) for the current foreground
+     * app, or null. Banking/payment apps, Tesla and WhatsApp are hidden (K).
+     */
+    suspend fun screenReadBlockedReason(): String? {
+        val root = onMain { service?.rootInActiveWindow } ?: return null
+        return screenReadBlockedReason(onMain { root.packageName })
+    }
+
+    internal suspend fun screenReadBlockedReason(pkg: CharSequence?): String? =
+        SensitiveAppGuard.screenReadBlockedReason(pkg, sensitiveApps.current())
+
     /** Guard refusal for the current foreground app, or null (also when unknown). */
     private suspend fun foregroundBlockedReason(): String? {
         val root = onMain { service?.rootInActiveWindow } ?: return null
-        return SensitiveAppGuard.blockedReason(onMain { root.packageName })
+        return guardReason(onMain { root.packageName })
     }
 
     private suspend fun swipeGesture(direction: String): Boolean {
@@ -299,6 +311,8 @@ class AccessibilityController @Inject constructor(
     suspend fun captureScreenshot(): Bitmap? {
         val s = service ?: return null
         if (Build.VERSION.SDK_INT < 30) return null
+        // K: never capture a banking/payment, Tesla or WhatsApp screen.
+        if (screenReadBlockedReason() != null) return null
         // takeScreenshot must be invoked from the main thread; the result
         // arrives on the main executor, so both sides stay on main. A timeout
         // guarantees the coroutine can never hang on a rejected capture.

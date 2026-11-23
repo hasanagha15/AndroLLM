@@ -66,6 +66,7 @@ class QrScanTool @Inject constructor(
             if (!controller.isConnected) {
                 return ToolResult.Failure(notConnected())
             }
+            controller.screenReadBlockedReason()?.let { return ToolResult.Failure(it, retryable = false) }
             controller.captureScreenshot()
                 ?: return ToolResult.Failure("Could not capture the screen (needs Android 11+ and the UI Automation service).")
         }

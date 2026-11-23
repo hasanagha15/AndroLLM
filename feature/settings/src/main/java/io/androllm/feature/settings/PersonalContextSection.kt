@@ -26,6 +26,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import io.androllm.core.accessibility.controller.SensitiveAppGuard
+import io.androllm.core.accessibility.controller.SensitiveAppStore
 import io.androllm.core.memory.personal.PersonalContextSettings
 import io.androllm.core.memory.personal.PersonalContextStore
 import io.androllm.core.memory.personal.ReplyLanguage
@@ -36,24 +38,23 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /** F1: "Personal context" — user-typed facts injected into the system prompt, stored on device. */
 @HiltViewModel
 class PersonalContextViewModel @Inject constructor(
-    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
-    private val store: PersonalContextStore
+    private val store: PersonalContextStore,
+    private val sensitiveApps: SensitiveAppStore
 ) : ViewModel() {
-    /** Extra banking/payment packages the assistant must never tap/type in (on device). */
-    val paymentApps: String
-        get() {
-            io.androllm.core.accessibility.controller.SensitiveAppGuard.loadExtras(appContext)
-            return io.androllm.core.accessibility.controller.SensitiveAppGuard.extraPackages.joinToString(", ")
-        }
+    /** Extra banking/payment packages the assistant must never tap/type in or read (on device). */
+    val paymentApps: StateFlow<String?> = sensitiveApps.extras
+        .map { it.joinToString(", ") }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     fun savePaymentApps(raw: String) {
-        io.androllm.core.accessibility.controller.SensitiveAppGuard.saveExtras(appContext, raw)
+        viewModelScope.launch { sensitiveApps.save(raw) }
     }
 
     val settings: StateFlow<PersonalContextSettings?> = store.settings
@@ -85,7 +86,15 @@ fun PersonalContextCard(viewModel: PersonalContextViewModel = hiltViewModel()) {
     val saved by viewModel.saved.collectAsStateWithLifecycle()
     var text by remember { mutableStateOf("") }
     var loaded by remember { mutableStateOf(false) }
-    var paymentApps by remember { mutableStateOf(viewModel.paymentApps) }
+    val storedPaymentApps by viewModel.paymentApps.collectAsStateWithLifecycle()
+    var paymentApps by remember { mutableStateOf("") }
+    var paymentAppsLoaded by remember { mutableStateOf(false) }
+    LaunchedEffect(storedPaymentApps) {
+        val s = storedPaymentApps ?: return@LaunchedEffect
+        // First load fills the field; after "Save apps" it shows the normalized list.
+        paymentApps = s
+        paymentAppsLoaded = true
+    }
     LaunchedEffect(settings) {
         val s = settings
         if (s != null && !loaded) {
@@ -152,8 +161,9 @@ fun PersonalContextCard(viewModel: PersonalContextViewModel = hiltViewModel()) {
                 style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.ledger.deskPaper)
             )
             Text(
-                text = "The assistant may open these apps but never tap or type inside them. Some wallets " +
-                    "are built in; add your bank's package names (comma-separated).",
+                text = "The assistant may open these apps but never tap, type or read the screen inside " +
+                    "them. ${SensitiveAppGuard.PAYMENT_PACKAGES.size} banking/wallet apps are built in; add your " +
+                    "bank's package name if it is missing (comma-separated).",
                 style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.ledger.deskInk)
             )
             OutlinedTextField(
@@ -164,10 +174,10 @@ fun PersonalContextCard(viewModel: PersonalContextViewModel = hiltViewModel()) {
                 maxLines = 4,
                 placeholder = { Text("com.example.bank, com.example.wallet") }
             )
-            Button(onClick = {
-                viewModel.savePaymentApps(paymentApps)
-                paymentApps = viewModel.paymentApps
-            }) { Text("Save apps") }
+            Button(
+                onClick = { viewModel.savePaymentApps(paymentApps) },
+                enabled = paymentAppsLoaded
+            ) { Text("Save apps") }
         }
     }
 }

@@ -50,6 +50,8 @@ class UiReadScreenTool @Inject constructor(
         if (!controller.isConnected) return ToolResult.Failure(notConnected())
         val limit = ToolArgs.int(arguments, "limit", 40).coerceIn(5, 150)
         val screen = controller.readScreen()
+        // K: banking/payment, Tesla, WhatsApp screens are hidden; a retry cannot help.
+        screen.hiddenReason?.let { return ToolResult.Failure(it, retryable = false) }
         return ToolResult.Success(
             summary = screen.describe(limit),
             data = buildJsonObject {

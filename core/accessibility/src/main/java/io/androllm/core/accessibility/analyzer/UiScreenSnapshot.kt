@@ -17,6 +17,8 @@ data class UiScreenSnapshot(
     val selectedText: String = "",
     val loading: Boolean = false,
     val ocrLines: List<String> = emptyList(),
+    /** Non-null when the screen was deliberately not read (SensitiveAppGuard). */
+    val hiddenReason: String? = null,
     val capturedAt: Long = System.currentTimeMillis()
 ) {
 
@@ -36,6 +38,7 @@ data class UiScreenSnapshot(
      * never blow the model's context.
      */
     fun describe(maxLines: Int = 80): String {
+        hiddenReason?.let { return "App: $packageName\nScreen hidden: $it\n" }
         val sb = StringBuilder()
         if (packageName.isNotBlank()) sb.append("App: ").append(packageName)
         if (windowTitle.isNotBlank()) sb.append(" — ").append(windowTitle)
@@ -57,5 +60,11 @@ data class UiScreenSnapshot(
             ocrLines.take(12).forEach { sb.append("  ocr: ").append(it.take(100)).append('\n') }
         }
         return sb.toString()
+    }
+
+    companion object {
+        /** A snapshot that carries no screen content at all, only the refusal. */
+        fun hidden(packageName: String, reason: String) =
+            UiScreenSnapshot(packageName = packageName, hiddenReason = reason)
     }
 }

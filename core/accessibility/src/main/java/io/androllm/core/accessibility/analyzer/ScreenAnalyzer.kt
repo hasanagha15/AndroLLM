@@ -27,6 +27,13 @@ class ScreenAnalyzer @Inject constructor(
 
     suspend fun read(controller: AccessibilityController): UiScreenSnapshot {
         val root = controller.onMain { controller.serviceOrNull()?.rootInActiveWindow }
+        // K: banking/payment apps, Tesla and WhatsApp are never read (no tree, no OCR).
+        if (root != null) {
+            val pkg = controller.onMain { root.packageName }
+            controller.screenReadBlockedReason(pkg)?.let { reason ->
+                return UiScreenSnapshot.hidden(pkg?.toString().orEmpty(), reason)
+            }
+        }
         val uiRoot = root?.let { controller.onMain { UiTreeBuilder.build(it) } }
 
         val context = uiState.snapshot()

@@ -3,4 +3,6 @@
     <include domain="file" path="." />
     <!-- F1: user-typed personal context stays on this device -->
     <exclude domain="file" path="datastore/personal_context_prefs.preferences_pb" />
+    <!-- K: protected payment apps (DataStore) stay on this device -->
+    <exclude domain="file" path="datastore/sensitive_app_guard_prefs.preferences_pb" />
 </ruleset>
