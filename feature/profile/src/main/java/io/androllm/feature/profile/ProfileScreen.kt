@@ -88,6 +88,7 @@ fun ProfileScreen(
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val user by viewModel.user.collectAsStateWithLifecycle()
+    val guestMode by viewModel.guestMode.collectAsStateWithLifecycle()
     val authMessage by viewModel.authMessage.collectAsStateWithLifecycle()
     val isAvatarUploading by viewModel.isAvatarUploading.collectAsStateWithLifecycle()
     val isSavingProfile by viewModel.isSavingProfile.collectAsStateWithLifecycle()
@@ -200,6 +201,22 @@ fun ProfileScreen(
                                     accent = MaterialTheme.ledger.lampGlow,
                                     onClick = { navController.navigate(Routes.SETTINGS) }
                                 )
+                                if (guestMode && user == null) {
+                                    ActionRow(
+                                        icon = Icons.Filled.Logout,
+                                        title = "Leave guest mode",
+                                        subtitle = "Back to the sign-in screen",
+                                        accent = MaterialTheme.ledger.lampDeep,
+                                        onClick = {
+                                            viewModel.leaveGuestMode {
+                                                navController.navigate(Routes.AUTH) {
+                                                    popUpTo(navController.graph.id) { inclusive = true }
+                                                    launchSingleTop = true
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
                                 if (user != null && user?.isGuest == false) {
                                     ActionRow(
                                         icon = Icons.Filled.Star,

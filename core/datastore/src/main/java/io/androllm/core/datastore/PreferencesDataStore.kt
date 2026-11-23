@@ -46,6 +46,7 @@ class PreferencesDataStore @Inject constructor(
         val FAVORITE_PROMPT_IDS = stringSetPreferencesKey("favorite_prompt_ids")
         val ONBOARDING_COMPLETED = booleanPreferencesKey(AppConstants.Preferences.ONBOARDING_COMPLETED_KEY)
         val SETUP_COMPLETED = booleanPreferencesKey(AppConstants.Preferences.SETUP_COMPLETED_KEY)
+        val GUEST_MODE = booleanPreferencesKey("guest_mode")
         val DISPLAY_NAME = stringPreferencesKey("display_name")
         val USERNAME = stringPreferencesKey("username")
         val AVATAR_INDEX = intPreferencesKey("avatar_index")
@@ -343,6 +344,22 @@ class PreferencesDataStore @Inject constructor(
      */
     suspend fun setSetupCompleted(completed: Boolean) {
         dataStore.edit { preferences -> preferences[Keys.SETUP_COMPLETED] = completed }
+    }
+
+    /**
+     * Local guest session: the user chose "Continue as guest" on the sign-in
+     * screen. Persisted so a cold start goes straight to Home instead of the
+     * sign-in screen again. Guest mode is local-only — it never grants a
+     * Firebase identity, cloud sync or any account feature (those keep
+     * checking FirebaseAuth.currentUser). Cleared by "Leave guest mode",
+     * by a real sign-in and by sign-out.
+     */
+    val guestMode: Flow<Boolean> = dataStore.data.map { preferences ->
+        preferences[Keys.GUEST_MODE] ?: false
+    }
+
+    suspend fun setGuestMode(enabled: Boolean) {
+        dataStore.edit { preferences -> preferences[Keys.GUEST_MODE] = enabled }
     }
 
     /**

@@ -65,6 +65,9 @@ android {
             ?: project.findProperty("ANDROLLM_BACKEND_URL")?.toString()
             ?: ""
         buildConfigField("String", "BACKEND_BASE_URL", "\"$backendUrl\"")
+        // Fork: local guest mode on the sign-in screen (debug AND release),
+        // persisted across cold starts. Local-only — no Firebase identity.
+        buildConfigField("boolean", "GUEST_MODE_ENABLED", "true")
 
         ndk {
             abiFilters += listOf("arm64-v8a")

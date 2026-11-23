@@ -122,6 +122,7 @@ fun SettingsScreen(
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val logPreview by viewModel.logPreview.collectAsStateWithLifecycle()
     val user by viewModel.user.collectAsStateWithLifecycle()
+    val guestMode by viewModel.guestMode.collectAsStateWithLifecycle()
     val memorySettings by viewModel.memorySettings.collectAsStateWithLifecycle()
     val memoryStats by viewModel.memoryStats.collectAsStateWithLifecycle()
     val memoryMessage by viewModel.memoryMessage.collectAsStateWithLifecycle()
@@ -289,12 +290,21 @@ fun SettingsScreen(
                     )
                     FirebaseAuthCard(
                         user = user,
+                        guestMode = guestMode,
                         onSignIn = { navController.navigate(io.androllm.core.navigation.Routes.AUTH) },
                         onSignOut = {
                             viewModel.signOut()
                             navController.navigate(io.androllm.core.navigation.Routes.AUTH) {
                                 popUpTo(navController.graph.id) { inclusive = true }
                                 launchSingleTop = true
+                            }
+                        },
+                        onLeaveGuest = {
+                            viewModel.leaveGuestMode {
+                                navController.navigate(io.androllm.core.navigation.Routes.AUTH) {
+                                    popUpTo(navController.graph.id) { inclusive = true }
+                                    launchSingleTop = true
+                                }
                             }
                         }
                     )
@@ -935,7 +945,9 @@ private fun UserStatsRow(
 private fun FirebaseAuthCard(
     user: SettingsIdentity?,
     onSignIn: () -> Unit,
-    onSignOut: () -> Unit
+    onSignOut: () -> Unit,
+    guestMode: Boolean = false,
+    onLeaveGuest: () -> Unit = {}
 ) {
     // Non-null user = signed in (Firebase UID present). Never gate on email —
     // GitHub/private emails can be null while fully authenticated.
@@ -983,6 +995,17 @@ private fun FirebaseAuthCard(
                 icon = Icons.Filled.AccountCircle,
                 modifier = Modifier.fillMaxWidth()
             )
+            // Local guest session (persisted across restarts): explicit exit
+            // back to the sign-in screen.
+            if (!signedIn && guestMode) {
+                Spacer(modifier = Modifier.height(10.dp))
+                CloudCapsuleButton(
+                    text = "Leave guest mode",
+                    onClick = onLeaveGuest,
+                    icon = Icons.Filled.AccountCircle,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
     }
 }

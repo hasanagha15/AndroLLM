@@ -39,7 +39,7 @@ import kotlinx.coroutines.flow.first
 /**
  * Root navigation host wiring all destinations.
  *
- * Entry flow:
+ * Entry flow (authenticated = Firebase account OR persisted local guest session):
  *   Splash → (already authenticated, setup done) Home
  *         → (already authenticated, setup pending) Setup
  *         → (onboarding not completed) Onboarding → Auth
@@ -97,20 +97,20 @@ fun AppNavHost(
         composable(Routes.SPLASH) {
             SplashScreen(
                 onFinished = {
-                    if (isSignedInToFirebase()) {
-                        // Signed in: open the setup screen once if the
-                        // permission/access flow was never completed.
-                        scope.launch {
-                            val setupDone = preferencesDataStore.setupCompleted.first()
-                            navigateClearing(pendingRoute ?: if (setupDone) Routes.HOME else Routes.SETUP)
-                        }
-                    } else {
-                        // Wait for the onboarding flag (never route on a guess).
-                        scope.launch {
-                            val done = onboardingCompleted
-                                ?: preferencesDataStore.onboardingCompleted.first()
-                            navigateClearing(pendingRoute ?: if (done) Routes.AUTH else Routes.ONBOARDING)
-                        }
+                    // Never route on a guess: wait for the persisted flags.
+                    // A persisted local guest session counts like a signed-in
+                    // account for routing only (see EntryRouting).
+                    scope.launch {
+                        val signedIn = isSignedInToFirebase()
+                        val guest = !signedIn && preferencesDataStore.guestMode.first()
+                        val target = EntryRouting.splashTarget(
+                            signedIn = signedIn,
+                            guest = guest,
+                            onboardingCompleted = onboardingCompleted
+                                ?: preferencesDataStore.onboardingCompleted.first(),
+                            setupCompleted = preferencesDataStore.setupCompleted.first()
+                        )
+                        navigateClearing(pendingRoute ?: target)
                     }
                 }
             )
@@ -119,7 +119,11 @@ fun AppNavHost(
         composable(Routes.ONBOARDING) {
             OnboardingScreen(
                 onFinished = {
-                    navigateClearing(pendingRoute ?: if (isSignedInToFirebase()) Routes.HOME else Routes.AUTH)
+                    scope.launch {
+                        val signedIn = isSignedInToFirebase()
+                        val guest = !signedIn && preferencesDataStore.guestMode.first()
+                        navigateClearing(pendingRoute ?: EntryRouting.afterOnboarding(signedIn, guest))
+                    }
                 }
             )
         }
@@ -127,9 +131,21 @@ fun AppNavHost(
         composable(Routes.AUTH) {
             FirebaseAuthScreen(
                 onAuthSuccess = { isNewUser ->
-                    // Everyone lands on the setup screen after sign-in; it
-                    // skips itself (LaunchedEffect) when already completed.
-                    navigateClearing(pendingRoute ?: if (isNewUser) Routes.PROFILE_SETUP else Routes.SETUP)
+                    // A real account replaces any local guest session.
+                    scope.launch {
+                        preferencesDataStore.setGuestMode(false)
+                        // Everyone lands on the setup screen after sign-in; it
+                        // skips itself (LaunchedEffect) when already completed.
+                        navigateClearing(pendingRoute ?: if (isNewUser) Routes.PROFILE_SETUP else Routes.SETUP)
+                    }
+                },
+                onContinueAsGuest = {
+                    // Persist BEFORE navigating so a cold start right after
+                    // still finds the guest session.
+                    scope.launch {
+                        preferencesDataStore.setGuestMode(true)
+                        navigateClearing(pendingRoute ?: Routes.SETUP)
+                    }
                 }
             )
         }

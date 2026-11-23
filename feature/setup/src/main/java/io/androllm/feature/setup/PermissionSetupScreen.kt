@@ -124,7 +124,9 @@ fun PermissionSetupScreen(
     val grantable = states.filterValues { it != PermissionState.NOT_REQUIRED }
     val enabled = grantable.values.count { it == PermissionState.GRANTED }
 
-    if (setupCompleted == true) return
+    // Render nothing while the persisted flag loads (null) or once it is
+    // known to be completed — no one-frame flash of the setup screen.
+    if (setupCompleted != false) return
 
     CloudAtmosphericBackground {
         Column(
