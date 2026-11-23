@@ -45,7 +45,7 @@ object ModelFamilyRegistry {
             ModelFamily.DEEPSEEK, ChatTemplates.deepseek, SpecialTokensCatalog.deepseek, deepseekDefaults
         ),
         ModelFamily.MISTRAL to ModelFamilyConfig(
-            ModelFamily.MISTRAL, ChatTemplates.mistral, SpecialTokensCatalog.mistral, mistralDefaults
+            ModelFamily.MISTRAL, ChatTemplates.mistralLenient, SpecialTokensCatalog.mistral, mistralDefaults
         ),
         ModelFamily.SMOL to ModelFamilyConfig(
             ModelFamily.SMOL, ChatTemplates.smol, SpecialTokensCatalog.smol, smolDefaults

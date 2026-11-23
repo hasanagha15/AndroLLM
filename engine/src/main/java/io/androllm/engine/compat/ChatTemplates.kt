@@ -138,6 +138,32 @@ object ChatTemplates {
             "{%- endfor %}"
 
     /**
+     * The Mistral template the engine renders (branch M, review N6). The
+     * official v0.3 template above silently DROPS every system message, so
+     * the app's system instruction (tool list, memory, persona) never reached
+     * Mistral. Like [gemmaLenient], a LEADING system message is folded into
+     * the first user turn (`[INST] system, a blank line, user [/INST]`);
+     * a system message anywhere else is still dropped, never folded.
+     * Without a system message the output is byte-identical to [mistral].
+     * `model` is accepted as an alias of `assistant` (LiteRT 0.16).
+     */
+    val mistralLenient: String =
+        "{{- bos_token }}" +
+            "{%- set mistralns = namespace(prefix='') %}" +
+            "{%- for message in messages %}" +
+            "{%- if message['role'] == 'system' %}" +
+            "{%- if loop.first and message['content'] is not none %}" +
+            "{%- set mistralns.prefix = message['content'] | trim + '\\n\\n' %}" +
+            "{%- endif %}" +
+            "{%- elif message['role'] == 'user' %}" +
+            "{{- '[INST] ' + mistralns.prefix + message['content'] + ' [/INST]' }}" +
+            "{%- set mistralns.prefix = '' %}" +
+            "{%- elif message['role'] == 'assistant' or message['role'] == 'model' %}" +
+            "{{- ' ' + message['content'] + ' ' + eos_token }}" +
+            "{%- endif %}" +
+            "{%- endfor %}"
+
+    /**
      * DeepSeek V3 (deepseek-ai/DeepSeek-V3) — current official template with
      * readable special tokens. The namespace/tool machinery is unreachable in
      * plain chat, so [ChatTemplateRenderer] implements this exact rendering

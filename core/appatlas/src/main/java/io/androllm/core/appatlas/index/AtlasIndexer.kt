@@ -126,7 +126,10 @@ class AtlasIndexer(
         val targetPkg = intent.targetPackage ?: pkg
         if (targetPkg != pkg) return null // never jump into another app from this entry
         // Gate B1: no call / send / delete / install shortcuts, no tel:/sms:/mailto:/upi: data.
-        if (s.intents.any { SchemePolicy.isBlockedShortcutAction(it.action) || SchemePolicy.isBlockedUri(it.data) }) return null
+        if (s.intents.any {
+                SchemePolicy.isBlockedShortcutAction(it.action) || SchemePolicy.isBlockedUri(it.data) || SchemePolicy.isComposeWebUrl(it.data)
+            }
+        ) return null
         val data = intent.data?.let { AtlasText.cleanUri(it, MAX_URI) ?: return null }
         val cls = intent.targetClass?.let { if (it.startsWith(".")) pkg + it else it }
         val fireable = when {
@@ -168,6 +171,8 @@ class AtlasIndexer(
                 for (s in schemes.take(3)) for (h in hosts.take(4)) for (p in paths.take(3)) {
                     if (s in WEB_SCHEMES && h == null) continue
                     val uri = AtlasText.cleanUri(buildUri(s, h, p), MAX_URI) ?: continue
+                    // Branch M: share / compose endpoints (t.me/share, api.whatsapp.com/send…) are not offered.
+                    if (SchemePolicy.isComposeWebUrl(uri)) continue
                     var score = 0
                     if (browsable) score += 2
                     if (s !in WEB_SCHEMES) score += 1

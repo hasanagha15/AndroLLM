@@ -288,6 +288,11 @@ dependencies {
     androidTestImplementation(libs.compose.ui.test.junit4)
     androidTestImplementation(libs.compose.ui.test.manifest)
     androidTestImplementation(libs.coroutines.test)
+    // Branch M (lint blocker): androidx.test.ext:junit 1.2.1 -> test:core 1.6.1 / monitor 1.7.1 need
+    // androidx.tracing 1.1.0, while the app runtime resolved 1.0.0 and AGP's consistent resolution
+    // pinned the androidTest classpath to {strictly 1.0.0}. Raising the app's tracing to 1.1.0
+    // (backward compatible) lets :app:lintDebug / androidTest resolve.
+    implementation("androidx.tracing:tracing:1.1.0")
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation("androidx.compose.ui:ui-tooling-data:1.7.2")
 }

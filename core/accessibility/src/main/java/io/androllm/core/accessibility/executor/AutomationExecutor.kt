@@ -134,8 +134,12 @@ class AutomationExecutor @Inject constructor(
                 }
 
                 is PlannedAction.Click -> {
-                    if (settings.confirmHighRisk && SafetyClassifier.requiresConfirmation(goal, action)) {
-                        val approved = confirm("tap \"${action.target}\"")
+                    // Branch M: a risky element (send / pay / confirm / delete, en/ru/az)
+                    // ALWAYS asks with a tap-only card; the risky-goal heuristic
+                    // stays under the owner's "confirm high-risk" setting.
+                    val riskyTarget = SafetyClassifier.isRiskyTarget(action.target)
+                    if (riskyTarget || (settings.confirmHighRisk && SafetyClassifier.requiresConfirmation(goal, action))) {
+                        val approved = confirm("tap \"${action.target}\"", tapOnly = riskyTarget)
                         if (!approved) return AutomationResult(false, "The user declined the action.", steps.size)
                     }
                     var result = controller.click(UiSelector(textContains = action.target, index = action.index))
@@ -148,6 +152,11 @@ class AutomationExecutor @Inject constructor(
                 }
 
                 is PlannedAction.Type -> {
+                    // Branch M: text with a line break can submit — tap-only card first.
+                    if (SafetyClassifier.isSubmittingText(action.text)) {
+                        val approved = confirm("type text that ends a line (it can send it)", tapOnly = true)
+                        if (!approved) return AutomationResult(false, "The user declined the action.", steps.size)
+                    }
                     val result = controller.type(action.text, action.into)
                     steps += ExecutedStep(action, result)
                     if (!result.success) return AutomationResult(false, result.message, steps.size, result.retryable)
@@ -185,14 +194,19 @@ class AutomationExecutor @Inject constructor(
     }
 
     /** Asks the user (chat card or spoken voice confirmation). */
-    private suspend fun confirm(summary: String): Boolean {
+    private suspend fun confirm(summary: String, tapOnly: Boolean = false): Boolean {
         val question = "proceed with: $summary"
         val confirmation = PendingToolConfirmation(
             id = "ui_${System.currentTimeMillis()}_${summary.hashCode().toUInt().toString(16)}",
             toolName = "ui_automation",
             toolDisplayName = "UI Automation",
             actionSummary = question,
-            speakableQuestion = "Do you want me to $summary? Say yes to confirm, or no to cancel."
+            speakableQuestion = if (tapOnly) {
+                "Please confirm on the screen: $summary."
+            } else {
+                "Do you want me to $summary? Say yes to confirm, or no to cancel."
+            },
+            tapOnly = tapOnly
         )
         return withTimeoutOrNull(300_000L) { confirmationManager.awaitDecision(confirmation) } ?: false
     }

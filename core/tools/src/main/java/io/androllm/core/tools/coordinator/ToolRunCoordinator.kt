@@ -8,6 +8,7 @@ import io.androllm.core.cloud.network.RetryPolicy
 import io.androllm.core.tools.agent.AgentContextBuilder
 import io.androllm.core.tools.agent.AgentPlanner
 import io.androllm.core.tools.agent.AgentVariableStore
+import io.androllm.core.tools.api.ToolAppNotes
 import io.androllm.core.tools.api.ToolCall
 import io.androllm.core.tools.api.ToolEvent
 import io.androllm.core.tools.api.ToolResult
@@ -611,8 +612,9 @@ class ToolRunCoordinator @Inject constructor(
                         if (stillNeeded) {
                             Timber.w("ToolRunCoordinator: prevent early exit — planner said done but original request still needs ${remaining.map { it.toolName }}")
                             // Inject a system nudge to make LLM continue: re-prompt with remaining tools hint
+                            // Branch M (N3): app-authored -> ROLE_APP_NOTE, never framed as untrusted tool data.
                             current = current + ChatPromptMessage(
-                                role = "system",
+                                role = ChatPromptMessage.ROLE_APP_NOTE,
                                 content = "Reminder: the user's original request '${originalRequest.take(100)}' still requires these steps: ${remaining.joinToString(", ") { it.toolName }}. Continue execution — do not stop early. Check if you need to call another tool before answering."
                             )
                             continue // give planner one more round to emit the missing calls
@@ -727,20 +729,24 @@ class ToolRunCoordinator @Inject constructor(
      */
     fun buildLocalToolFeedback(records: List<ToolExecutionRecord>): List<ChatPromptMessage> {
         if (records.isEmpty()) return emptyList()
+        // Branch M (N3): the app-authored parts (intro + registered tool headers
+        // such as the atlas "call app_open_action…" hint) travel as ONE app note;
+        // only the tool output itself is a system message (framed as untrusted
+        // data by ChatTurnPlanner / ToolPrompts.buildUserContent).
+        val note = StringBuilder(LOCAL_FEEDBACK_INTRO)
         val sb = StringBuilder()
-        sb.append(
-            "Tool execution results from the previous step. Use them to answer the " +
-                "user's request. Do not mention 'tool calls' unless the user would understand it.\n"
-        )
         for (record in records) {
             val call = record.call
+            val (header, data) = ToolAppNotes.split(call.name, record.result.summary)
+            if (header != null) note.append('\n').append(call.name).append(": ").append(header)
             val args = call.arguments.entries.joinToString(", ") { (k, v) -> "$k=$v" }
             sb.append("- ").append(call.name)
             if (args.isNotBlank()) sb.append('(').append(args.take(300)).append(')')
-            sb.append(": ").append(record.result.summary).append('\n')
+            sb.append(": ").append(data).append('\n')
         }
-        return chunkText(sb.toString(), LOCAL_FEEDBACK_CHUNK_CHARS)
-            .map { ChatPromptMessage(role = "system", content = it) }
+        return listOf(ChatPromptMessage(role = ChatPromptMessage.ROLE_APP_NOTE, content = note.toString())) +
+            chunkText(sb.toString(), LOCAL_FEEDBACK_CHUNK_CHARS)
+                .map { ChatPromptMessage(role = "system", content = it) }
     }
 
     /** Renders execution records for a chat status line (log only). */
@@ -892,5 +898,10 @@ class ToolRunCoordinator @Inject constructor(
 
         /** Local feedback system messages are split at this size. */
         private const val LOCAL_FEEDBACK_CHUNK_CHARS = 6_000
+
+        /** App-authored intro of the local tool feedback (sent as an app note). */
+        const val LOCAL_FEEDBACK_INTRO =
+            "Tool execution results from the previous step follow as data. Use them to answer the " +
+                "user's request. Do not mention 'tool calls' unless the user would understand it."
     }
 }

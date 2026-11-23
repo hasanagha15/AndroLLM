@@ -3,6 +3,7 @@ package io.androllm.core.tools.executor
 import io.androllm.core.tools.api.ToolCall
 import io.androllm.core.tools.api.ToolResult
 import io.androllm.core.tools.clarification.ClarificationEngine
+import io.androllm.core.tools.confirmation.RiskyActionApproval
 import io.androllm.core.tools.confirmation.ToolConfirmationManager
 import io.androllm.core.tools.confirmation.buildConfirmation
 import io.androllm.core.tools.monitoring.ToolHealthMonitor
@@ -22,6 +23,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import timber.log.Timber
 
@@ -203,7 +205,11 @@ class ToolExecutor @Inject constructor(
                 )
             }
         }
-        val mustConfirm = if (remote != null) {
+        // Branch M: a risky UI action (ui_click "Send"/"Отправить"/"Göndər",
+        // Pay, Delete…, a submitting ui_type) ALWAYS asks with a tap-only card,
+        // whatever the confirmation mode — like tesla_command.
+        val risky = runCatching { tool.riskyAction(call.arguments) }.getOrNull()
+        val mustConfirm = risky != null || if (remote != null) {
             // Never softer than the owner's own setting ("Always" is honoured).
             !RemoteToolPolicy.isAutoAllowed(spec) || settings.shouldConfirm(spec.requiresConfirmation)
         } else {
@@ -212,10 +218,16 @@ class ToolExecutor @Inject constructor(
         if (mustConfirm) {
             // Canonical name: the registry also resolves other-case / padded
             // names, and tap-only checks must see the real tool name.
-            val base = buildConfirmation(call.copy(name = spec.name), spec)
+            val built = buildConfirmation(call.copy(name = spec.name), spec)
+            val base = if (risky == null) built else built.copy(
+                actionSummary = "⚠ $risky\n${built.actionSummary}",
+                speakableQuestion = "Please confirm on the screen: $risky.",
+                tapOnly = true
+            )
             val confirmation = if (remote == null) base else base.copy(
                 toolDisplayName = "${remote.label} · ${base.toolDisplayName}",
-                actionSummary = "Run ${base.toolDisplayName}:\n${RemoteToolPolicy.describeArguments(call)}",
+                actionSummary = (risky?.let { "⚠ $it\n" } ?: "") +
+                    "Run ${base.toolDisplayName}:\n${RemoteToolPolicy.describeArguments(call)}",
                 remoteOrigin = remote.label
             )
             val approved = confirmationManager.awaitDecision(confirmation)
@@ -235,7 +247,14 @@ class ToolExecutor @Inject constructor(
         val execStart = System.currentTimeMillis()
         val rawResult: ToolResult = try {
             // Sandboxing: isolate every execution so a crash becomes a Failure, not an agent crash
-            withTimeout(timeoutMs) { tool.execute(call.arguments) }
+            withTimeout(timeoutMs) {
+                // Branch M: the approval of a risky-action card travels with THIS call only.
+                if (risky != null) {
+                    withContext(RiskyActionApproval(call.id)) { tool.execute(call.arguments) }
+                } else {
+                    tool.execute(call.arguments)
+                }
+            }
         } catch (e: TimeoutCancellationException) {
             val latency = System.currentTimeMillis() - execStart
             healthMonitor.recordFailure(spec.name, latency, "timeout ${timeoutMs}ms", isTimeout = true)

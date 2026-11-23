@@ -7,6 +7,7 @@ import io.androllm.core.tools.api.ToolCategory
 import io.androllm.core.tools.api.ToolPermission
 import io.androllm.core.tools.api.ToolResult
 import io.androllm.core.tools.api.ToolSpec
+import io.androllm.core.tools.confirmation.isRiskyActionApproved
 import io.androllm.core.tools.tool.impl.ToolArgs
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -58,11 +59,18 @@ class UiGestureTool @Inject constructor(
         category = ToolCategory.DEVICE
     )
 
+    override fun riskyAction(arguments: JsonObject): String? =
+        UiRisk.gestureRisk(ToolArgs.str(arguments, "action", "type"), ToolArgs.str(arguments, "label", "target", "text"))
+
     override suspend fun execute(arguments: JsonObject): ToolResult {
         if (!controller.isConnected) return ToolResult.Failure(notConnected())
         val action = ToolArgs.str(arguments, "action", "type")
             ?: return ToolResult.Failure("Missing required argument: action")
         val label = ToolArgs.str(arguments, "label", "target", "text")
+        // Branch M: a gesture on a send / pay / delete element needs the tap-only card first.
+        if (UiRisk.gestureRisk(action, label) != null && !isRiskyActionApproved()) {
+            return ToolResult.Failure(UiRisk.UNCONFIRMED, retryable = false)
+        }
         return when (action.lowercase()) {
             "double_tap", "doubletap" -> {
                 if (label == null) return ToolResult.Failure("double_tap needs a label")

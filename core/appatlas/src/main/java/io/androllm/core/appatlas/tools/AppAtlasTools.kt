@@ -43,6 +43,11 @@ class AppAtlasSearchTool @Inject constructor(
     private val recorder: LearnedPathRecorder
 ) : Tool {
 
+    init {
+        // Branch M (N3): the "call app_open_action…" header is app-authored — keep it outside the untrusted frame.
+        io.androllm.core.tools.api.ToolAppNotes.register(NAME, AtlasSearch.HEADER)
+    }
+
     override val spec = ToolSpec(
         name = NAME,
         description = "Look up installed apps in the on-device App Atlas: how to open a screen directly (deep links, shortcuts, in-app search), UI element ids and learned tap paths. Call it first for any request to do something in an app, then app_open_action.",

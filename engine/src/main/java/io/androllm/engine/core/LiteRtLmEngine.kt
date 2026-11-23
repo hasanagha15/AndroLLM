@@ -1371,7 +1371,11 @@ class LiteRtLmEngine @Inject constructor(
                 if (fc != null) {
                     val rendered = ChatTemplateRenderer().render(
                         template = fc.chatTemplate,
-                        messages = messages.map { ChatTemplateRenderer.RenderMessage(it.role, it.content) },
+                        // Branch M (N2): mirror what LiteRT actually gets — the
+                        // plan (system instruction + seed + framed prompt), not
+                        // the raw chat-layer messages.
+                        messages = ChatTurnPlanner.mirrorMessages(plan)
+                            .map { ChatTemplateRenderer.RenderMessage(it.role, it.content) },
                         bosToken = fc.specialTokens.bos,
                         eosToken = fc.specialTokens.eos,
                         addGenerationPrompt = addAssistant,

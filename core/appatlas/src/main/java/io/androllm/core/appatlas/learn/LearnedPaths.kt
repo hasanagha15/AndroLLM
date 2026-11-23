@@ -95,7 +95,7 @@ object LearnedPathPolicy {
                 else -> "tap $target"
             }
         }
-        val confirm = path.confirmStep?.let { " → (user confirms: ${AtlasText.clean(it, 40) ?: "it"} — use ui_run)" }.orEmpty()
+        val confirm = path.confirmStep?.let { " → (user confirms: ${AtlasText.clean(it, 40) ?: "it"} — ui_click / ui_run ask the user on a tap-only card)" }.orEmpty()
         val state = when {
             path.stale || (currentVersion != null && currentVersion != path.versionCode) -> "stale, recorded on v${path.versionCode} — verify on screen"
             path.verified -> "verified x${path.successCount}"

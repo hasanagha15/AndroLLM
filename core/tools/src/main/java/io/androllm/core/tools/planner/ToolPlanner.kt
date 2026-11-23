@@ -15,6 +15,7 @@ import io.androllm.core.tools.validation.ToolCallValidator
 import io.androllm.core.tools.validation.ToolExecutionLogger
 import io.androllm.core.tools.validation.ValidationResult
 import io.androllm.engine.api.EngineRepository
+import io.androllm.engine.core.UntrustedDataFraming
 import io.androllm.engine.models.ChatPromptMessage
 import io.androllm.engine.models.GenerationConfig
 import javax.inject.Inject
@@ -192,8 +193,10 @@ class ToolPlanner @Inject constructor(
             ?.model?.contextLength
             ?: io.androllm.core.common.AppConstants.Model.DEFAULT_CONTEXT_LENGTH
         val planSystemChars = ((realContext - 512 - 256).coerceAtLeast(0)) * 4
-        val basePlanSystem = ToolPrompts.system(specs, agentContext.buildBlockForCurrentOrigin(), maxChars = planSystemChars)
-        val baseUserContent = ToolPrompts.buildUserContent(messages)
+        // Branch M: only device facts go into the system prompt; tool-written
+        // workflow variables are untrusted data and ride on the user side.
+        val basePlanSystem = ToolPrompts.system(specs, agentContext.factsBlockForCurrentOrigin(), maxChars = planSystemChars)
+        val baseUserContent = ToolPrompts.buildUserContent(messages, agentContext.variablesDataBlockForCurrentOrigin())
 
         val config = GenerationConfig(
             maxTokens = 512,
@@ -722,12 +725,31 @@ CRITICAL SAFETY:
         return sb.toString()
     }
 
-    fun buildUserContent(messages: List<ChatPromptMessage>): String {
+    fun buildUserContent(messages: List<ChatPromptMessage>, variablesData: String = ""): String {
         val sb = StringBuilder()
         sb.append("CONVERSATION:\n")
-        for (msg in messages.takeLast(8)) {
-            sb.append(msg.role).append(": ").append(msg.content.take(800)).append('\n')
+        // Branch M (N1): only the LEADING system block is app-authored. A system /
+        // tool message after the first turn is tool output (inbox, web, atlas,
+        // screen text) — framed as UNTRUSTED_DATA exactly like ChatTurnPlanner
+        // does, so it cannot steer the next tool choice. App notes are labelled.
+        val leadingCount = messages.indexOfFirst { it.role != "system" }.let { if (it < 0) messages.size else it }
+        val start = (messages.size - 8).coerceAtLeast(0)
+        for ((offset, msg) in messages.takeLast(8).withIndex()) {
+            val index = start + offset
+            val text = msg.content.take(800)
+            when {
+                msg.role == ChatPromptMessage.ROLE_APP_NOTE ->
+                    sb.append("app_note: ").append(UntrustedDataFraming.APP_NOTE_PREFIX).append(text)
+                msg.role == "user" || msg.role == "assistant" || msg.role == "model" ->
+                    sb.append(msg.role).append(": ").append(text)
+                msg.role == "system" && index < leadingCount ->
+                    sb.append("system: ").append(text)
+                else -> sb.append("tool_data:\n").append(UntrustedDataFraming.wrap(text))
+            }
+            sb.append('\n')
         }
+        // Branch M: tool-written workflow variables (already UNTRUSTED_DATA-framed).
+        if (variablesData.isNotBlank()) sb.append('\n').append(variablesData).append('\n')
         sb.append("\nOutput the JSON plan for the LATEST user request only.")
         return sb.toString()
     }

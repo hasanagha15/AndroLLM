@@ -20,4 +20,13 @@ interface Tool {
      * return a [ToolResult] instead of throwing.
      */
     suspend fun execute(arguments: JsonObject): ToolResult
+
+    /**
+     * Branch M: a human-readable description when THIS call (not the tool in
+     * general) is a risky UI action — tapping Send / Pay / Confirm / Delete,
+     * typing text that submits — or null. A non-null value makes the executor
+     * ask the owner with a TAP-ONLY card (whatever the confirmation mode, like
+     * tesla_command) and run the call inside [io.androllm.core.tools.confirmation.RiskyActionApproval].
+     */
+    fun riskyAction(arguments: JsonObject): String? = null
 }

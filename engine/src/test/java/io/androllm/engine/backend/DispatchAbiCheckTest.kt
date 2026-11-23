@@ -131,4 +131,28 @@ class DispatchAbiCheckTest {
         assertEquals(setOf("V81"), HardwareBackendProbe.bundledHexagonArchs())
         assertEquals("V75", HardwareBackendProbe.hexagonArchFor("sm8650"))
     }
+
+    @Test
+    fun `soc model with a bin suffix maps by its SMxxxx prefix`() {
+        assertEquals("V75", HardwareBackendProbe.hexagonArchFor("SM8650-AC"))
+        assertEquals("V75", HardwareBackendProbe.hexagonArchFor(" sm8650-ab "))
+        assertEquals("V73", HardwareBackendProbe.hexagonArchFor("SM8550-AB"))
+        assertEquals("V79", HardwareBackendProbe.hexagonArchFor("SM8750P"))
+        assertEquals("V81", HardwareBackendProbe.hexagonArchFor("SM8850-AC"))
+        assertEquals(null, HardwareBackendProbe.hexagonArchFor("SM9999-AC"))
+        assertEquals(null, HardwareBackendProbe.hexagonArchFor("XSM8650"))
+        assertEquals(null, HardwareBackendProbe.hexagonArchFor(""))
+        assertEquals(null, HardwareBackendProbe.hexagonArchFor(null))
+    }
+
+    @Test
+    fun `S24 Ultra SM8650-AC is blocked when only V81 skel is bundled`() {
+        val caps = HardwareBackendProbe.fromProperties(
+            mapOf("ro.soc.manufacturer" to "QTI", "ro.soc.model" to "SM8650-AC"),
+            dispatchLibraries = dispatch,
+            dispatchAbi = DispatchAbiCheck.Result.SUPPORTED, bundledHexagonArchs = setOf("V81")
+        )
+        assertTrue(caps.npuAvailable)
+        assertFalse(caps.npuUsable)
+    }
 }

@@ -14,6 +14,8 @@ import java.net.URI
  * - a model-supplied URI must keep the action's scheme and host and may not
  *   use transport schemes (intent:, file:, content:, javascript:…), so a
  *   prompt-injected link can never be redirected elsewhere;
+ * - https share / compose links (prefilled message, post or e-mail drafts)
+ *   are communication actions and are refused like tel:/sms:/mailto:;
  * - query text is bounded.
  */
 object ActionGuard {
@@ -23,6 +25,11 @@ object ActionGuard {
     private const val USE_CONFIRMED_TOOLS =
         "Calls, messages, e-mails and payments never go through the atlas: use make_call / send_sms / send_email " +
             "(they ask the user first); payments are made by the user."
+
+    /** Branch M: refusal for prefilled share / compose web links. */
+    const val COMPOSE_LINK =
+        "This link opens a prefilled message / post / e-mail draft (a communication action), so the atlas will not open it. " +
+            USE_CONFIRMED_TOOLS
 
     sealed interface Verdict {
         data class Allowed(val uri: String?) : Verdict
@@ -53,6 +60,10 @@ object ActionGuard {
         if (SchemePolicy.isBlockedScheme(action.scheme) || SchemePolicy.isBlockedUri(action.uri) || SchemePolicy.isBlockedUri(action.data)) {
             return Verdict.Refused(USE_CONFIRMED_TOOLS)
         }
+        // Branch M: an https share / compose link (t.me/share, wa.me?text=, Gmail compose…) is a message draft too.
+        if (SchemePolicy.isComposeWebUrl(action.uri) || SchemePolicy.isComposeWebUrl(action.data)) {
+            return Verdict.Refused(COMPOSE_LINK)
+        }
         if (action.kind == ActionKind.SHORTCUT && SchemePolicy.isBlockedShortcutAction(action.intentAction)) {
             return Verdict.Refused(USE_CONFIRMED_TOOLS)
         }
@@ -67,6 +78,7 @@ object ActionGuard {
         val parsed = runCatching { URI(requested) }.getOrNull() ?: return Verdict.Refused("uri is not a valid URI.")
         val scheme = parsed.scheme?.lowercase() ?: return Verdict.Refused("uri has no scheme.")
         if (SchemePolicy.isBlockedScheme(scheme)) return Verdict.Refused("scheme '$scheme' is not allowed. $USE_CONFIRMED_TOOLS")
+        if (SchemePolicy.isComposeWebUrl(requested)) return Verdict.Refused(COMPOSE_LINK)
         if (scheme != action.scheme?.lowercase()) {
             return Verdict.Refused("uri must use the action's scheme '${action.scheme}', got '$scheme'.")
         }

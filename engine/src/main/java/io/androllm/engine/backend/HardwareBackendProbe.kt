@@ -93,13 +93,25 @@ object HardwareBackendProbe {
      * Hexagon HTP arch of well-known Snapdragon SoCs (`ro.soc.model`). Unknown
      * models return null and are not blocked (the runtime decides).
      */
-    fun hexagonArchFor(socModel: String?): String? = when (socModel?.uppercase()?.trim()) {
+    fun hexagonArchFor(socModel: String?): String? = when (socModelKey(socModel)) {
         "SM8450", "SM8475" -> "V69"
         "SM8550" -> "V73"
         "SM8650" -> "V75" // Snapdragon 8 Gen 3 (Galaxy S24 Ultra)
         "SM8750" -> "V79"
         "SM8845", "SM8850" -> "V81"
         else -> null
+    }
+
+    private val SOC_MODEL_PREFIX = Regex("""^SM\d{4}""")
+
+    /**
+     * `ro.soc.model` often carries a bin/variant suffix ("SM8650-AC" on the
+     * Galaxy S24 Ultra "for Galaxy" bin, "SM8550-AB", "SM8750P"): only the
+     * leading SMxxxx part decides the Hexagon arch.
+     */
+    internal fun socModelKey(socModel: String?): String? {
+        val s = socModel?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return null
+        return SOC_MODEL_PREFIX.find(s)?.value ?: s
     }
 
     /**

@@ -238,6 +238,42 @@ class ChatTemplateRendererTest {
         assertEquals("<s>[INST] Hello [/INST]", out)
     }
 
+    @Test
+    fun `mistral lenient folds the leading system block into the first user turn`() {
+        val out = renderer.render(
+            ChatTemplates.mistralLenient,
+            listOf(system(" Tools: x "), user("Hi"), model("Hello!"), user("Again")),
+            bosToken = "<s>",
+            eosToken = "</s>",
+            addGenerationPrompt = true
+        )
+        assertEquals("<s>[INST] Tools: x\n\nHi [/INST] Hello! </s>[INST] Again [/INST]", out)
+    }
+
+    @Test
+    fun `mistral lenient drops non-leading system and equals official without system`() {
+        val noSystem = listOf(user("Hi"), model("Hello!"), user("Again"))
+        assertEquals(
+            renderer.render(ChatTemplates.mistral, noSystem, bosToken = "<s>", eosToken = "</s>", addGenerationPrompt = true),
+            renderer.render(ChatTemplates.mistralLenient, noSystem, bosToken = "<s>", eosToken = "</s>", addGenerationPrompt = true)
+        )
+        val out = renderer.render(
+            ChatTemplates.mistralLenient,
+            listOf(user("Hi"), system("TOOL DATA"), user("Again")),
+            bosToken = "<s>",
+            eosToken = "</s>",
+            addGenerationPrompt = true
+        )
+        assertEquals("<s>[INST] Hi [/INST][INST] Again [/INST]", out)
+    }
+
+    @Test
+    fun `mistral family renders the app system instruction`() {
+        val template = io.androllm.engine.compat.ModelFamilyRegistry.configFor(ModelFamily.MISTRAL).chatTemplate
+        val out = renderer.render(template, listOf(system("SYS"), user("Q")), bosToken = "<s>", eosToken = "</s>")
+        assertEquals("<s>[INST] SYS\n\nQ [/INST]", out)
+    }
+
     // ---- DeepSeek ------------------------------------------------------------
 
     @Test

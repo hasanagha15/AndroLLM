@@ -3,11 +3,13 @@ package io.androllm.core.accessibility.tools
 import io.androllm.core.accessibility.controller.AccessibilityController
 import io.androllm.core.accessibility.executor.AutomationExecutor
 import io.androllm.core.accessibility.finder.UiSelector
+import io.androllm.core.accessibility.planner.SafetyClassifier
 import io.androllm.core.tools.api.Tool
 import io.androllm.core.tools.api.ToolCategory
 import io.androllm.core.tools.api.ToolPermission
 import io.androllm.core.tools.api.ToolResult
 import io.androllm.core.tools.api.ToolSpec
+import io.androllm.core.tools.confirmation.isRiskyActionApproved
 import io.androllm.core.tools.tool.impl.ToolArgs
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -93,6 +95,11 @@ class UiClickTool @Inject constructor(
         category = ToolCategory.DEVICE
     )
 
+    override fun riskyAction(arguments: JsonObject): String? {
+        val label = ToolArgs.str(arguments, "label", "target", "text") ?: return null
+        return UiRisk.clickRisk(label, ToolArgs.str(arguments, "id", "resource_id"))
+    }
+
     override suspend fun execute(arguments: JsonObject): ToolResult {
         if (!controller.isConnected) return ToolResult.Failure(notConnected())
         val label = ToolArgs.str(arguments, "label", "target", "text")
@@ -100,14 +107,11 @@ class UiClickTool @Inject constructor(
         val index = ToolArgs.int(arguments, "index", 0)
         // Branch L: an atlas / learned-path view id is tried first, the label is the fallback.
         val id = ToolArgs.str(arguments, "id", "resource_id")?.trim()?.takeIf { it.isNotEmpty() }
-        // Gate M3: an atlas/learned-path replay must never tap a send/pay/confirm-type element on its own.
-        if (id != null && (io.androllm.core.accessibility.planner.SafetyClassifier.isRiskyTarget(id.replace('_', ' ')) ||
-                io.androllm.core.accessibility.planner.SafetyClassifier.isRiskyTarget(label))
-        ) {
-            return ToolResult.Failure(
-                "'$label' looks like a send / pay / confirm step. Do it with ui_run (it asks the user first) or let the user tap it.",
-                retryable = false
-            )
+        // Gate M3 + branch M: a send / pay / confirm / delete-type element (by label
+        // or atlas / learned-path view id) is tapped only after the owner tapped
+        // Approve on the executor's tap-only card (riskyAction above).
+        if (UiRisk.clickRisk(label, id) != null && !isRiskyActionApproved()) {
+            return ToolResult.Failure(UiRisk.UNCONFIRMED, retryable = false)
         }
         // Exact id match plus label consistency (no "send" → "resend_code" substring hits).
         val byId = id?.let {
@@ -146,11 +150,18 @@ class UiTypeTool @Inject constructor(
         category = ToolCategory.DEVICE
     )
 
+    override fun riskyAction(arguments: JsonObject): String? =
+        ToolArgs.str(arguments, "text", "value", "content")?.let { UiRisk.typeRisk(it) }
+
     override suspend fun execute(arguments: JsonObject): ToolResult {
         if (!controller.isConnected) return ToolResult.Failure(notConnected())
         val text = ToolArgs.str(arguments, "text", "value", "content")
             ?: return ToolResult.Failure("Missing required argument: text")
         val into = ToolArgs.str(arguments, "into", "field")
+        // Branch M: text with a line break can submit ("Enter sends") — only after a tap-only card.
+        if (UiRisk.typeRisk(text) != null && !isRiskyActionApproved()) {
+            return ToolResult.Failure(UiRisk.UNCONFIRMED, retryable = false)
+        }
         val result = controller.type(text, into)
         return if (result.success) ToolResult.Success(result.message) else ToolResult.Failure(result.message, retryable = result.retryable)
     }
@@ -303,3 +314,41 @@ class UiRunTaskTool @Inject constructor(
 /** Shared helper for the "service disabled" failure message. */
 private fun notConnected(): String =
     "The accessibility service is not enabled. Open Settings → Accessibility → AndroLLM UI Automation and turn it on, then ask again."
+
+/**
+ * Branch M: one place that decides when a ui_* call is a risky UI action
+ * (multilingual [SafetyClassifier] — the same predicate the ui_run executor
+ * and the App Atlas learned paths use). Risky calls get a tap-only card from
+ * the ToolExecutor and are refused when they arrive without its approval.
+ */
+object UiRisk {
+
+    const val UNCONFIRMED =
+        "This looks like a send / pay / confirm / delete step and it was not confirmed by the user. " +
+            "It needs the user's tap on the confirmation card (requested automatically when the tool is called normally); " +
+            "otherwise let the user tap it themselves."
+
+    /** Description for the card when tapping [label] / view [id] is risky, else null. */
+    fun clickRisk(label: String?, id: String?): String? {
+        val l = label?.trim().orEmpty()
+        val i = id?.trim()?.takeIf { it.isNotEmpty() }
+        val risky = (l.isNotEmpty() && SafetyClassifier.isRiskyTarget(l)) ||
+            (i != null && SafetyClassifier.isRiskyTarget(i.replace('_', ' ')))
+        if (!risky) return null
+        val what = l.ifEmpty { i.orEmpty() }.take(48)
+        return "tap \"$what\" in the foreground app (a send / pay / confirm / delete step)"
+    }
+
+    /** Description for the card when typing [text] would submit, else null. */
+    fun typeRisk(text: String): String? =
+        if (SafetyClassifier.isSubmittingText(text)) "type text that ends a line — this can send it in the foreground app" else null
+
+    /** ui_gesture: element gestures on a risky label (long-press "Delete", drag a "Pay" slider…). */
+    fun gestureRisk(action: String?, label: String?): String? {
+        val a = action?.lowercase()?.replace("_", "") ?: return null
+        if (a !in setOf("doubletap", "longpress", "drag")) return null
+        val l = label?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (!SafetyClassifier.isRiskyTarget(l)) return null
+        return "$action on \"${l.take(48)}\" in the foreground app (a send / pay / confirm / delete step)"
+    }
+}

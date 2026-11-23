@@ -21,6 +21,7 @@ class ChatTemplateCompatTest {
         "llama3" to ChatTemplates.llama3,
         "phi" to ChatTemplates.phi,
         "mistral" to ChatTemplates.mistral,
+        "mistralLenient" to ChatTemplates.mistralLenient,
         "deepseek" to ChatTemplates.deepseek,
         "tinyLlama" to ChatTemplates.tinyLlama
     )
