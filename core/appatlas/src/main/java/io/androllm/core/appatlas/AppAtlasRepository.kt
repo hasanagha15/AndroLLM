@@ -78,11 +78,15 @@ class AppAtlasRepository @Inject constructor(
                 val token = source.changedSince(if (seq < 0) 0 else seq)
                 val changed = token?.second.orEmpty().toSet()
                 token?.let { settingsStore.changeSequence = it.first }
+                // Gate B2: protected-app rules / the owner's list changed → re-index everything.
+                val fingerprint = source.sensitivityFingerprint()
+                val rulesChanged = fingerprint != settingsStore.sensitivityFingerprint
                 val report = synchronizer.sync(
                     exclusions = settings.exclusions,
-                    force = mode == Mode.FULL,
+                    force = mode == Mode.FULL || rulesChanged,
                     only = (only.orEmpty() + if (seq >= 0) changed else emptySet()).ifEmpty { null }
                 )
+                settingsStore.sensitivityFingerprint = fingerprint
                 val now = System.currentTimeMillis()
                 settingsStore.lastSyncAt = now
                 if (mode != Mode.INCREMENTAL) settingsStore.lastSweepAt = now

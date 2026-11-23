@@ -80,6 +80,10 @@ class AppAtlasSettingsStore @Inject constructor(
         get() = runCatching { prefs.getLong(KEY_LAST_SYNC, 0L) }.getOrDefault(0L)
         set(v) { runCatching { prefs.edit().putLong(KEY_LAST_SYNC, v).apply() } }
 
+    var sensitivityFingerprint: String
+        get() = runCatching { prefs.getString(KEY_SENS_FP, "") }.getOrNull().orEmpty()
+        set(v) { runCatching { prefs.edit().putString(KEY_SENS_FP, v).apply() } }
+
     var lastSweepAt: Long
         get() = runCatching { prefs.getLong(KEY_LAST_SWEEP, 0L) }.getOrDefault(0L)
         set(v) { runCatching { prefs.edit().putLong(KEY_LAST_SWEEP, v).apply() } }
@@ -92,5 +96,6 @@ class AppAtlasSettingsStore @Inject constructor(
         private const val KEY_SEQ = "change_sequence"
         private const val KEY_LAST_SYNC = "last_sync_at"
         private const val KEY_LAST_SWEEP = "last_sweep_at"
+        private const val KEY_SENS_FP = "sensitivity_fingerprint"
     }
 }

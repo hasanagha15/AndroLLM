@@ -123,7 +123,10 @@ class SyncAndLearnedPathTest {
         assertThat(p.verified).isTrue()
         assertThat(p.taskKey).isEqualTo("message+send")
         assertThat(p.versionCode).isEqualTo(7)
-        assertThat(p.steps.map { it.op }).containsExactly("tap", "type", "tap").inOrder()
+        // Gate M3: the path stops BEFORE the risky "Send" tap; the user confirms that step.
+        assertThat(p.steps.map { it.op }).containsExactly("tap", "type").inOrder()
+        assertThat(p.confirmStep).isEqualTo("Send")
+        assertThat(LearnedPathPolicy.render(p, 7)).contains("user confirms: Send")
         val serialized = p.toString()
         assertThat(serialized).doesNotContain("Aunt")
         assertThat(serialized).doesNotContain("late")
@@ -168,7 +171,7 @@ class SyncAndLearnedPathTest {
         val t = PathSessionTracker { 0L }
         t.pendingTaskKey = Concepts.taskKey("telegram new chat")
         t.onStep(UiStep("com.example.chat", UiStep.Op.TAP, "com.example.chat:id/compose_button", null, true), entry)
-        t.onStep(UiStep("com.example.chat", UiStep.Op.TAP, "com.example.chat:id/send", null, true), entry)
+        t.onStep(UiStep("com.example.chat", UiStep.Op.TYPE, "com.example.chat:id/input", null, true), entry)
         val out = t.onStep(UiStep("com.example.other", UiStep.Op.TAP, "com.example.other:id/x", null, true), null)
         assertThat(out.single().verified).isFalse()
         assertThat(out.single().taskKey).isEqualTo("message+new")

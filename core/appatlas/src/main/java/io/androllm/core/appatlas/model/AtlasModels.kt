@@ -164,5 +164,10 @@ data class LearnedPath(
     val verified: Boolean = false,
     /** True once the app updated after recording — kept as a hint only. */
     val stale: Boolean = false,
-    val updatedAt: Long = 0L
+    val updatedAt: Long = 0L,
+    /**
+     * Gate M3: the path is cut BEFORE the first send/pay/confirm-type tap;
+     * this names that step ("send") so the output says the user confirms it.
+     */
+    val confirmStep: String? = null
 )

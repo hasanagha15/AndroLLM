@@ -1,5 +1,7 @@
 package io.androllm.core.appatlas.tools
 
+import io.androllm.core.appatlas.index.SchemePolicy
+import io.androllm.core.appatlas.index.SensitiveClassifier
 import io.androllm.core.appatlas.model.ActionKind
 import io.androllm.core.appatlas.model.AppAtlasEntry
 import io.androllm.core.appatlas.model.AtlasAction
@@ -18,14 +20,18 @@ object ActionGuard {
 
     const val MAX_URI_CHARS = 1_000
     const val MAX_QUERY_CHARS = 300
-    private val FORBIDDEN_SCHEMES = setOf("intent", "file", "content", "javascript", "data", "android-app", "jar")
+    private const val USE_CONFIRMED_TOOLS =
+        "Calls, messages, e-mails and payments never go through the atlas: use make_call / send_sms / send_email " +
+            "(they ask the user first); payments are made by the user."
 
     sealed interface Verdict {
         data class Allowed(val uri: String?) : Verdict
         data class Refused(val reason: String) : Verdict
     }
 
-    fun check(entry: AppAtlasEntry, action: AtlasAction, uri: String?, query: String?): Verdict {
+    fun check(stored: AppAtlasEntry, action: AtlasAction, uri: String?, query: String?): Verdict {
+        // Gate B2: sensitivity is re-evaluated now, not trusted from the database.
+        val entry = SensitiveClassifier.effective(stored)
         if (entry.sensitive && action.kind != ActionKind.LAUNCH) {
             return Verdict.Refused(
                 "${entry.label} is a protected app (${entry.sensitiveReason ?: "no automation"}): only action_id=open is allowed."
@@ -37,6 +43,13 @@ object ActionGuard {
         if (query != null && query.length > MAX_QUERY_CHARS) {
             return Verdict.Refused("query is too long (max $MAX_QUERY_CHARS characters).")
         }
+        // Gate B1: never call / message / mail / pay / delete / install, whatever the database says.
+        if (SchemePolicy.isBlockedScheme(action.scheme) || SchemePolicy.isBlockedUri(action.uri) || SchemePolicy.isBlockedUri(action.data)) {
+            return Verdict.Refused(USE_CONFIRMED_TOOLS)
+        }
+        if (action.kind == ActionKind.SHORTCUT && SchemePolicy.isBlockedShortcutAction(action.intentAction)) {
+            return Verdict.Refused(USE_CONFIRMED_TOOLS)
+        }
         if (action.kind != ActionKind.DEEP_LINK) return Verdict.Allowed(null)
         val requested = uri?.trim()?.takeIf { it.isNotEmpty() } ?: return Verdict.Allowed(action.uri)
         return validateUri(action, requested)
@@ -47,7 +60,7 @@ object ActionGuard {
         if (requested.any { it.isWhitespace() || it.code < 0x20 }) return Verdict.Refused("uri must not contain spaces or control characters (percent-encode them).")
         val parsed = runCatching { URI(requested) }.getOrNull() ?: return Verdict.Refused("uri is not a valid URI.")
         val scheme = parsed.scheme?.lowercase() ?: return Verdict.Refused("uri has no scheme.")
-        if (scheme in FORBIDDEN_SCHEMES) return Verdict.Refused("scheme '$scheme' is not allowed.")
+        if (SchemePolicy.isBlockedScheme(scheme)) return Verdict.Refused("scheme '$scheme' is not allowed. $USE_CONFIRMED_TOOLS")
         if (scheme != action.scheme?.lowercase()) {
             return Verdict.Refused("uri must use the action's scheme '${action.scheme}', got '$scheme'.")
         }
@@ -58,5 +71,16 @@ object ActionGuard {
             if (parsed.userInfo != null) return Verdict.Refused("uri must not contain user info.")
         }
         return Verdict.Allowed(requested)
+    }
+
+    /**
+     * Gate m3: the same scheme/host rules applied to what the LAUNCH parser
+     * (android.net.Uri) sees, so a parser differential cannot slip through.
+     */
+    fun launchParseMatches(action: AtlasAction, scheme: String?, host: String?, userInfo: String?): Boolean {
+        val s = scheme?.lowercase() ?: return false
+        if (SchemePolicy.isBlockedScheme(s) || s != action.scheme?.lowercase()) return false
+        val expectedHost = action.host?.lowercase() ?: return true
+        return host?.lowercase() == expectedHost && userInfo == null
     }
 }

@@ -30,29 +30,31 @@ class AtlasIndexer(
 ) {
 
     fun index(basics: PackageBasics): AppAtlasEntry {
-        val sensitiveReason = SensitiveClassifier.reason(basics.packageName, basics.label)
+        val label = AtlasText.clean(basics.label, MAX_TITLE) ?: basics.packageName.take(MAX_TITLE)
         val launch = AtlasAction(
             id = ACTION_OPEN,
             kind = ActionKind.LAUNCH,
-            title = "Open ${basics.label}".take(MAX_TITLE),
+            title = "Open $label".take(MAX_TITLE),
             component = basics.launcherActivity?.let { "${basics.packageName}/$it" }
         )
-        if (sensitiveReason != null) {
-            return AppAtlasEntry(
-                packageName = basics.packageName,
-                label = basics.label.take(MAX_TITLE),
-                versionCode = basics.versionCode,
-                versionName = basics.versionName?.take(MAX_STRING),
-                lastUpdateTime = basics.lastUpdateTime,
-                sensitive = true,
-                sensitiveReason = sensitiveReason,
-                manifestParsed = false,
-                actions = listOf(launch),
-                indexedAt = clock()
-            )
-        }
+        fun metadataOnly(reason: String, manifestParsed: Boolean) = AppAtlasEntry(
+            packageName = basics.packageName,
+            label = label,
+            versionCode = basics.versionCode,
+            versionName = AtlasText.clean(basics.versionName, MAX_STRING),
+            lastUpdateTime = basics.lastUpdateTime,
+            sensitive = true,
+            sensitiveReason = reason,
+            manifestParsed = manifestParsed,
+            actions = listOf(launch),
+            indexedAt = clock()
+        )
+        SensitiveClassifier.reason(basics.packageName, basics.label)?.let { return metadataOnly(it, false) }
 
         val manifest = source.manifest(basics.packageName)
+        // Gate B1: an app that handles a payment scheme (upi:, bitcoin:…) is a payment app,
+        // whatever its name — metadata only, open only.
+        paymentScheme(manifest)?.let { return metadataOnly("payment app (handles $it: links) — open only", true) }
         val actions = mutableListOf(launch)
         actions += searchAction(basics, manifest)
         actions += shortcutActions(basics, manifest)
@@ -61,9 +63,9 @@ class AtlasIndexer(
         val (ids, strings) = source.vocabulary(basics.packageName, VOCAB_CANDIDATES)
         return AppAtlasEntry(
             packageName = basics.packageName,
-            label = basics.label.take(MAX_TITLE),
+            label = label,
             versionCode = basics.versionCode,
-            versionName = basics.versionName?.take(MAX_STRING),
+            versionName = AtlasText.clean(basics.versionName, MAX_STRING),
             lastUpdateTime = basics.lastUpdateTime,
             sensitive = false,
             manifestParsed = manifest != null,
@@ -73,6 +75,13 @@ class AtlasIndexer(
             indexedAt = clock()
         )
     }
+
+    private fun paymentScheme(manifest: ParsedManifest?): String? =
+        manifest?.components?.asSequence()
+            ?.flatMap { it.filters.asSequence() }
+            ?.flatMap { it.data.asSequence() }
+            ?.mapNotNull { it.scheme }
+            ?.firstOrNull { it in SchemePolicy.PAYMENT_SCHEMES }
 
     private fun searchAction(basics: PackageBasics, manifest: ParsedManifest?): List<AtlasAction> {
         val activity = if (manifest != null) {
@@ -86,7 +95,7 @@ class AtlasIndexer(
             AtlasAction(
                 id = ACTION_SEARCH_ID,
                 kind = ActionKind.SEARCH,
-                title = "Search in ${basics.label}".take(MAX_TITLE),
+                title = "Search in ${AtlasText.clean(basics.label, MAX_TITLE) ?: basics.packageName}".take(MAX_TITLE),
                 component = "${basics.packageName}/$activity"
             )
         )
@@ -116,6 +125,9 @@ class AtlasIndexer(
         val intent = s.intents.lastOrNull() ?: return null
         val targetPkg = intent.targetPackage ?: pkg
         if (targetPkg != pkg) return null // never jump into another app from this entry
+        // Gate B1: no call / send / delete / install shortcuts, no tel:/sms:/mailto:/upi: data.
+        if (s.intents.any { SchemePolicy.isBlockedShortcutAction(it.action) || SchemePolicy.isBlockedUri(it.data) }) return null
+        val data = intent.data?.let { AtlasText.cleanUri(it, MAX_URI) ?: return null }
         val cls = intent.targetClass?.let { if (it.startsWith(".")) pkg + it else it }
         val fireable = when {
             cls == null -> intent.action != null // implicit intent, resolved inside the package
@@ -126,11 +138,14 @@ class AtlasIndexer(
         return AtlasAction(
             id = "shortcut:$sid",
             kind = ActionKind.SHORTCUT,
-            title = (s.shortLabel ?: s.longLabel ?: sid).take(MAX_TITLE),
+            title = AtlasText.clean(s.shortLabel ?: s.longLabel, MAX_TITLE) ?: sid,
             component = cls?.let { "$pkg/$it" },
             intentAction = intent.action,
-            data = intent.data?.take(MAX_URI),
-            extras = intent.extras,
+            data = data,
+            extras = intent.extras.mapNotNull { (k, v) ->
+                val ck = AtlasText.clean(k, MAX_STRING) ?: return@mapNotNull null
+                ck to (AtlasText.clean(v, MAX_URI) ?: return@mapNotNull null)
+            }.toMap(),
             fireable = fireable
         )
     }
@@ -143,7 +158,7 @@ class AtlasIndexer(
             if (!c.startableByOthers) continue
             for (f in c.filters) {
                 if (ACTION_VIEW !in f.actions) continue
-                val schemes = f.data.mapNotNull { it.scheme }.distinct().filter { it !in IGNORED_SCHEMES }
+                val schemes = f.data.mapNotNull { it.scheme }.distinct().filter { !SchemePolicy.isBlockedScheme(it) }
                 if (schemes.isEmpty()) continue
                 val hosts: List<String?> = f.data.mapNotNull { it.host }.distinct().filter { it != "*" }.ifEmpty { listOf(null) }
                 val paths: List<String?> = f.data.mapNotNull { d ->
@@ -152,13 +167,13 @@ class AtlasIndexer(
                 val browsable = CATEGORY_BROWSABLE in f.categories
                 for (s in schemes.take(3)) for (h in hosts.take(4)) for (p in paths.take(3)) {
                     if (s in WEB_SCHEMES && h == null) continue
-                    val uri = buildUri(s, h, p).take(MAX_URI)
+                    val uri = AtlasText.cleanUri(buildUri(s, h, p), MAX_URI) ?: continue
                     var score = 0
                     if (browsable) score += 2
                     if (s !in WEB_SCHEMES) score += 1
                     if (p != null) score += 1
                     val where = listOfNotNull(h, p).joinToString("").ifEmpty { "$s:" }
-                    val title = (c.label ?: humanize(c.name)) + " ($where)"
+                    val title = (AtlasText.clean(c.label, MAX_TITLE) ?: humanize(c.name)) + " (" + (AtlasText.clean(where, MAX_TITLE) ?: s) + ")"
                     cands += Cand(uri, s, h, p, title.take(MAX_TITLE), score)
                 }
             }
@@ -197,8 +212,6 @@ class AtlasIndexer(
         private const val ACTION_SEARCH_INTENT = "android.intent.action.SEARCH"
         private const val CATEGORY_BROWSABLE = "android.intent.category.BROWSABLE"
         private val WEB_SCHEMES = setOf("http", "https")
-        /** Document viewers / internal transports — not app actions. */
-        private val IGNORED_SCHEMES = setOf("file", "content", "data", "javascript", "intent", "android-app")
 
         /**
          * Candidate resource entry names probed in every app (as `id` and as
@@ -247,7 +260,8 @@ class AtlasIndexer(
             val seen = HashSet<String>()
             val out = ArrayList<String>()
             for (raw in items) {
-                val s = raw.trim().replace(Regex("\\s+"), " ")
+                // Gate M1: third-party text — control chars / line breaks / markup removed.
+                val s = AtlasText.clean(raw, MAX_STRING + 1) ?: continue
                 if (s.length < 2 || s.length > MAX_STRING) continue
                 if (idStyle && !s.all { it.isLetterOrDigit() || it == '_' }) continue
                 if (seen.add(s.lowercase())) out += s

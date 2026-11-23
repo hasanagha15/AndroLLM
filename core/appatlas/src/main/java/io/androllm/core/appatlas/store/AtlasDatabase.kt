@@ -36,7 +36,8 @@ data class LearnedPathRow(
     val successCount: Int,
     val verified: Boolean,
     val stale: Boolean,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val confirmStep: String? = null
 )
 
 data class VersionRow(val packageName: String, val versionCode: Long, val lastUpdateTime: Long)
@@ -83,7 +84,7 @@ abstract class AtlasDao {
     }
 }
 
-@Database(entities = [AtlasAppRow::class, LearnedPathRow::class], version = 1, exportSchema = false)
+@Database(entities = [AtlasAppRow::class, LearnedPathRow::class], version = 2, exportSchema = false)
 abstract class AtlasDatabase : RoomDatabase() {
     abstract fun dao(): AtlasDao
 
@@ -150,7 +151,8 @@ class RoomAtlasStore(private val dao: AtlasDao) : AtlasStore {
             successCount = row.successCount,
             verified = row.verified,
             stale = row.stale,
-            updatedAt = row.updatedAt
+            updatedAt = row.updatedAt,
+            confirmStep = row.confirmStep
         )
     }.getOrNull()
 
@@ -162,6 +164,7 @@ class RoomAtlasStore(private val dao: AtlasDao) : AtlasStore {
         successCount = p.successCount,
         verified = p.verified,
         stale = p.stale,
-        updatedAt = p.updatedAt
+        updatedAt = p.updatedAt,
+        confirmStep = p.confirmStep
     )
 }

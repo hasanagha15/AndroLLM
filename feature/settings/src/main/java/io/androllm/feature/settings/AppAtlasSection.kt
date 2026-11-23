@@ -63,7 +63,8 @@ class AppAtlasSettingsViewModel @Inject constructor(
     /** Saves the exclusion list and drops excluded apps from the atlas. Returns the number saved. */
     fun saveExclusions(raw: String): Int {
         val saved = store.setExclusions(raw)
-        repository.requestSync(AppAtlasRepository.Mode.INCREMENTAL)
+        // Gate B2: rebuild everything after a list change (cheap enough, done in the background).
+        repository.requestSync(AppAtlasRepository.Mode.FULL)
         return saved.size
     }
 }

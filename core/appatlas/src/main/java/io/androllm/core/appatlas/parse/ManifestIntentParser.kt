@@ -39,10 +39,13 @@ object ManifestIntentParser {
     private const val MAX_COMPONENTS = 400
     private const val MAX_FILTERS_PER_COMPONENT = 12
     private const val MAX_DATA_PER_FILTER = 24
+    private const val MAX_ACTIONS_PER_FILTER = 16
 
     fun parse(parser: XmlPullParser, resolver: ValueResolver, expectedPackage: String?): ParsedManifest? {
         var packageName: String? = null
         var versionCode: Long? = null
+        // <application android:permission> is inherited by every component without its own.
+        var appPermission: String? = null
         val components = mutableListOf<ParsedComponent>()
 
         // Current component state.
@@ -71,13 +74,14 @@ object ManifestIntentParser {
                         if (expectedPackage != null && packageName != expectedPackage) return null
                         versionCode = parser.androidAttr("versionCode")?.toLongOrNull()
                     }
+                    "application" -> appPermission = parser.androidAttr("permission")?.takeIf { it.isNotBlank() }
                     "activity", "activity-alias" -> if (packageName != null && components.size < MAX_COMPONENTS) {
                         val alias = parser.name == "activity-alias"
                         compName = resolveClass(packageName, parser.androidAttr("name"))
                         compLabel = resolver.resolve(parser.androidAttr("label"))?.trim()?.takeIf { it.isNotEmpty() }
                         compExported = parser.androidAttr("exported")
                         compEnabled = parser.androidAttr("enabled")?.lowercase() != "false"
-                        compPermission = parser.androidAttr("permission")?.takeIf { it.isNotBlank() }
+                        compPermission = parser.androidAttr("permission")?.takeIf { it.isNotBlank() } ?: appPermission
                         compShortcuts = null
                         compAlias = alias
                         compDepth = parser.depth
@@ -89,8 +93,8 @@ object ManifestIntentParser {
                         fCategories = mutableSetOf()
                         fData = mutableListOf()
                     }
-                    "action" -> if (inFilter) parser.androidAttr("name")?.let { fActions += it }
-                    "category" -> if (inFilter) parser.androidAttr("name")?.let { fCategories += it }
+                    "action" -> if (inFilter && fActions.size < MAX_ACTIONS_PER_FILTER) parser.androidAttr("name")?.let { fActions += it }
+                    "category" -> if (inFilter && fCategories.size < MAX_ACTIONS_PER_FILTER) parser.androidAttr("name")?.let { fCategories += it }
                     "data" -> if (inFilter && fData.size < MAX_DATA_PER_FILTER) {
                         fData += DataSpec(
                             scheme = parser.androidAttr("scheme")?.lowercase(),

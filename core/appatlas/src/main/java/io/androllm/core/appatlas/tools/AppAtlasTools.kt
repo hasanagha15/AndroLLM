@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.androllm.core.appatlas.AppAtlasRepository
+import io.androllm.core.appatlas.index.SensitiveClassifier
 import io.androllm.core.appatlas.learn.LearnedPathPolicy
 import io.androllm.core.appatlas.learn.LearnedPathRecorder
 import io.androllm.core.appatlas.model.ActionKind
@@ -153,7 +154,7 @@ class AppOpenActionTool @Inject constructor(
         if (pkg == context.packageName) {
             return ToolResult.Failure("This assistant cannot open itself through the atlas.", retryable = false)
         }
-        val entry = repository.entry(pkg)
+        val entry = repository.entry(pkg)?.let(SensitiveClassifier::effective)
             ?: return ToolResult.Failure(
                 "\"$pkg\" is not in the App Atlas (not installed, not launchable, or excluded in Settings). Call app_atlas_search first.",
                 retryable = false
@@ -169,6 +170,12 @@ class AppOpenActionTool @Inject constructor(
             is ActionGuard.Verdict.Allowed -> v.uri
         }
 
+        if (action.kind == ActionKind.DEEP_LINK && uriToUse != null) {
+            val u = runCatching { Uri.parse(uriToUse) }.getOrNull()
+            if (u == null || !ActionGuard.launchParseMatches(action, u.scheme, u.host, u.userInfo)) {
+                return ToolResult.Failure("uri was rejected: it must keep the scheme and host of '${action.id}'.", retryable = false)
+            }
+        }
         val intent = buildIntent(entry, action, uriToUse, query)
             ?: return ToolResult.Failure("Could not build an intent for '${action.id}' of ${entry.label}.", retryable = false)
         val resolvable = runCatching { intent.resolveActivity(context.packageManager) != null }.getOrDefault(false)

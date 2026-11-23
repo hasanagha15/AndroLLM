@@ -10,6 +10,7 @@ import android.content.res.Resources
 import android.os.Build
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.androllm.core.accessibility.controller.SensitiveAppGuard
+import io.androllm.core.appatlas.index.SensitiveClassifier
 import io.androllm.core.appatlas.model.PackageBasics
 import io.androllm.core.appatlas.model.ParsedManifest
 import io.androllm.core.appatlas.model.ParsedShortcut
@@ -44,9 +45,10 @@ class AndroidPackageSource @Inject constructor(
 
     override val ownPackage: String get() = context.packageName
 
-    init {
-        // The owner's extra banking/payment packages join the sensitive set.
+    override fun sensitivityFingerprint(): String {
+        // The owner's extra banking/payment packages join the sensitive set (read off the main thread).
         SensitiveAppGuard.loadExtras(context)
+        return "${SensitiveClassifier.RULES_VERSION}|" + SensitiveAppGuard.extraPackages.sorted().joinToString(",").hashCode()
     }
 
     override fun launchablePackages(): List<PackageBasics> {

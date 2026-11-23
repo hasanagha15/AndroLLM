@@ -100,7 +100,19 @@ class UiClickTool @Inject constructor(
         val index = ToolArgs.int(arguments, "index", 0)
         // Branch L: an atlas / learned-path view id is tried first, the label is the fallback.
         val id = ToolArgs.str(arguments, "id", "resource_id")?.trim()?.takeIf { it.isNotEmpty() }
-        val byId = id?.let { controller.click(UiSelector(resourceId = it, index = index), maxScrolls = 0) }
+        // Gate M3: an atlas/learned-path replay must never tap a send/pay/confirm-type element on its own.
+        if (id != null && (io.androllm.core.accessibility.planner.SafetyClassifier.isRiskyTarget(id.replace('_', ' ')) ||
+                io.androllm.core.accessibility.planner.SafetyClassifier.isRiskyTarget(label))
+        ) {
+            return ToolResult.Failure(
+                "'$label' looks like a send / pay / confirm step. Do it with ui_run (it asks the user first) or let the user tap it.",
+                retryable = false
+            )
+        }
+        // Exact id match plus label consistency (no "send" → "resend_code" substring hits).
+        val byId = id?.let {
+            controller.click(UiSelector(resourceId = it, resourceIdExact = true, labelIfPresent = label, index = index), maxScrolls = 0)
+        }
         val result = if (byId?.success == true || byId?.retryable == false) byId
         else controller.click(UiSelector(textContains = label, index = index))
         return if (result.success) {
