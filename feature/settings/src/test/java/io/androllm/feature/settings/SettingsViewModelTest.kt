@@ -229,7 +229,7 @@ class SettingsViewModelTest {
         val viewModel = newViewModel()
         var done = false
         viewModel.leaveGuestMode { done = true }
-        coVerify { preferencesDataStore.setGuestMode(false) }
+        coVerify { preferencesDataStore.endGuestSession(any()) }
         assertTrue(done)
         assertFalse(viewModel.guestMode.value)
     }

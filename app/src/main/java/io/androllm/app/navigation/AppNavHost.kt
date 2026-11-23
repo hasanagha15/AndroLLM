@@ -135,10 +135,7 @@ fun AppNavHost(
                     scope.launch {
                         // Ending a guest session: guest-period usage must never
                         // be uploaded by analytics sync under this account.
-                        if (preferencesDataStore.guestMode.first()) {
-                            preferencesDataStore.setGuestUsageCutoffMs(System.currentTimeMillis())
-                        }
-                        preferencesDataStore.setGuestMode(false)
+                        preferencesDataStore.endGuestSession()
                         // Everyone lands on the setup screen after sign-in; it
                         // skips itself (LaunchedEffect) when already completed.
                         navigateClearing(pendingRoute ?: if (isNewUser) Routes.PROFILE_SETUP else Routes.SETUP)

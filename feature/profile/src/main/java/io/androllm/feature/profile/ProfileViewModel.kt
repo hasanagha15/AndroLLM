@@ -82,7 +82,8 @@ class ProfileViewModel @Inject constructor(
     fun leaveGuestMode(onDone: () -> Unit = {}) {
         viewModelScope.launch {
             Timber.i("[Auth] Leaving guest mode")
-            runCatching { preferencesDataStore.setGuestMode(false) }
+            // Records the guest-usage cutoff and clears the flag (one edit).
+            runCatching { preferencesDataStore.endGuestSession() }
                 .onFailure { e -> Timber.w(e, "[Auth] clearing guest mode failed") }
             onDone()
         }

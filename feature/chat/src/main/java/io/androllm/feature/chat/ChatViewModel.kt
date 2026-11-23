@@ -1696,8 +1696,15 @@ class ChatViewModel @Inject constructor(
      * keyed by this chat, so the engine never continues another chat's
      * resident session.
      */
-    private fun localTurnConfig(): GenerationConfig =
-        _genConfig.value.copy(sessionKey = "owner:chat:${_currentConversationId.value}")
+    private fun localTurnConfig(): GenerationConfig {
+        val id = _currentConversationId.value
+        // No conversation id yet: a temporary key per ViewModel, never a
+        // shared "owner:chat:" key.
+        val key = if (id.isNotBlank()) "owner:chat:$id" else "owner:chat:tmp-$unsavedChatKey"
+        return _genConfig.value.copy(sessionKey = key)
+    }
+
+    private val unsavedChatKey: String = java.util.UUID.randomUUID().toString()
 
     /** Converts engine-native markers into executor-ready [ToolCall]s. */
     private fun nativeToToolCalls(calls: List<NativeToolCall>): List<ToolCall> =

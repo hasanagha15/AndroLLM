@@ -384,6 +384,21 @@ class PreferencesDataStore @Inject constructor(
     }
 
     /**
+     * Ends a local guest session (Leave guest mode, or a real sign-in): when
+     * a guest session was active, records [guestUsageCutoffMs] = [nowMs] so
+     * guest-period usage is never uploaded, then clears [guestMode]. One
+     * atomic edit; a no-op for the cutoff when no guest session was active.
+     */
+    suspend fun endGuestSession(nowMs: Long = System.currentTimeMillis()) {
+        dataStore.edit { preferences ->
+            if (preferences[Keys.GUEST_MODE] == true) {
+                preferences[Keys.GUEST_USAGE_CUTOFF_MS] = nowMs
+            }
+            preferences[Keys.GUEST_MODE] = false
+        }
+    }
+
+    /**
      * Debug-only: force the native engine to load models on the CPU backend
      * (gpuLayers = 0) instead of offloading layers to Vulkan. Used to bisect
      * GPU-vs-CPU output corruption and compare token speeds. Defaults to false.

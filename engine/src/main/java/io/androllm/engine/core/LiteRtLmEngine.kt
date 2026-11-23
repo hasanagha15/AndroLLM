@@ -1235,6 +1235,7 @@ class LiteRtLmEngine @Inject constructor(
                 outputDecoder?.reset()
                 if (messages.isEmpty()) throw EngineException("Empty message history")
                 val plan = ChatTurnPlanner.plan(messages, normalDataBudget())
+                overflowPlanThisTurn = null
                 val conv = ensureConversationForHistory(eng, plan, config)
                 val startedAt = System.currentTimeMillis()
                 val rawResult = sendMessageWithContextTrim(
@@ -1255,7 +1256,7 @@ class LiteRtLmEngine @Inject constructor(
                     fallbackPromptTokens = messages.sumOf { it.content.length } / 4L,
                     stopReason = "eos"
                 )
-                updateConsumedTranscript(plan, cleanResult)
+                updateConsumedTranscript(overflowPlanThisTurn ?: plan, cleanResult)
                 cleanResult
             }
         } finally {
@@ -1287,6 +1288,7 @@ class LiteRtLmEngine @Inject constructor(
         // Seed / system instruction / prompt for this turn (tool results stay
         // in the user-role transcript, never in the system instruction).
         val plan = ChatTurnPlanner.plan(messages, normalDataBudget())
+        overflowPlanThisTurn = null
 
         var conv: Conversation
         try {
@@ -1475,7 +1477,7 @@ class LiteRtLmEngine @Inject constructor(
             // not leak into the next turn's context.
             if (persistTranscript) {
                 val persisted = outputDecoder?.clean(stripControlTokens(fullClean)) ?: stripControlTokens(fullClean)
-                updateConsumedTranscript(plan, persisted)
+                updateConsumedTranscript(overflowPlanThisTurn ?: plan, persisted)
             }
             close()
         }
@@ -1924,6 +1926,9 @@ class LiteRtLmEngine @Inject constructor(
             conversationSystemPrompt = system
             conversationSessionKey = config.sessionKey
             consumedTurns = reseed
+            // Bookkeeping must describe what the session REALLY holds: the
+            // trimmed seed and the capped prompt, not the full plan.
+            overflowPlanThisTurn = ChatTurnPlan(system, reseed, prompt)
             checkNotNull(conversation) to prompt
         }
     }
@@ -2336,6 +2341,14 @@ class LiteRtLmEngine @Inject constructor(
      */
     @Volatile
     private var conversationSessionKey: String? = null
+
+    /**
+     * Set by [reseedAfterOverflow] for the current turn: the plan actually
+     * sent (trimmed seed + capped prompt), used for [consumedTurns] instead of
+     * the full plan. Reset at the start of every chat turn.
+     */
+    @Volatile
+    private var overflowPlanThisTurn: ChatTurnPlan? = null
 
     /** Context window of the loaded model in tokens (4096 when unknown). */
     private fun contextTokens(): Int =

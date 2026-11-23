@@ -93,12 +93,12 @@ class ProfileViewModelTest {
     }
 
     @Test
-    fun `leaveGuestMode clears the flag then calls back`() = runTest {
+    fun `leaveGuestMode ends the guest session (cutoff + flag) then calls back`() = runTest {
         every { preferencesDataStore.guestMode } returns flowOf(true)
         val viewModel = ProfileViewModel(appContext, conversationRepository, modelRepository, telemetryRepository, preferencesDataStore)
         var done = false
         viewModel.leaveGuestMode { done = true }
-        coVerify { preferencesDataStore.setGuestMode(false) }
+        coVerify { preferencesDataStore.endGuestSession(any()) }
         assertTrue(done)
     }
 

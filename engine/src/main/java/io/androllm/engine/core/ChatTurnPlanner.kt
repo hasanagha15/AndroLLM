@@ -61,6 +61,16 @@ internal object ChatTurnPlanner {
     const val DATA_CLOSE = "<<<END_UNTRUSTED_DATA>>>"
     const val APP_NOTE_PREFIX = "[AndroLLM app note] "
 
+    /**
+     * Any look-alike of the open/close markers inside third-party data:
+     * case-insensitive, tolerant of whitespace, `_`/`-`/space separators and
+     * a leading slash (`<<< end_untrusted data >>>`, `<</UNTRUSTED-DATA`).
+     */
+    private val FORGED_MARKER = Regex(
+        """<{2,}\s*/?\s*(?:END[\s_\-]*)?UNTRUSTED[\s_\-]*DATA[^>\n]*>*""",
+        RegexOption.IGNORE_CASE
+    )
+
     /** Share of the context for untrusted data on a normal turn. */
     const val NORMAL_DATA_FRACTION = 0.5
 
@@ -203,8 +213,7 @@ internal object ChatTurnPlanner {
 
     private fun wrapData(text: String): String {
         // A spoofed marker inside third-party data must not close the block.
-        val clean = text.replace("<<<END_UNTRUSTED_DATA", "[marker removed]")
-            .replace("<<<UNTRUSTED_DATA", "[marker removed]")
+        val clean = FORGED_MARKER.replace(text, "[marker removed]")
         return DATA_OPEN + "\n" + clean + "\n" + DATA_CLOSE
     }
 
