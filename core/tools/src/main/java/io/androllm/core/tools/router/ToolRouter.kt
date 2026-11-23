@@ -184,12 +184,28 @@ class ToolRouter @Inject constructor() {
         // your bank app?". Put launch_app FIRST so it survives the tool-list
         // budget of small local models (open only, no further automation).
         val paymentPromoted = !mathMatch && isPaymentRequest(q) && enabledTools.any { it.name == PAYMENT_HELPER_TOOL }
-        val finalSpecs = if (paymentPromoted) {
+        val paymentSpecs = if (paymentPromoted) {
             enabledTools.filter { it.name == PAYMENT_HELPER_TOOL } + specs.filter { it.name != PAYMENT_HELPER_TOOL }
         } else {
             specs
         }
-        val finalReason = if (paymentPromoted) "$reason; payment request — launch_app first (open the app, never pay)" else reason
+        val paymentReason = if (paymentPromoted) "$reason; payment request — launch_app first (open the app, never pay)" else reason
+
+        // Branch L (App Atlas): "do X in app Y" → the atlas tools go FIRST (deep
+        // links / shortcuts / learned paths instead of screenshot exploration),
+        // then launch_app, then whatever the route picked. Never for payments
+        // (launch_app only), math, attachments or no-tool turns.
+        val atlasSpecs = enabledTools.filter { it.name in ATLAS_TOOLS }.sortedBy { ATLAS_TOOLS.indexOf(it.name) }
+        val atlasPromoted = !paymentPromoted && atlasSpecs.isNotEmpty() &&
+            intent != ToolIntent.MATH && intent != ToolIntent.ATTACHMENT && intent != ToolIntent.NO_TOOLS &&
+            isAppControlRequest(q)
+        val finalSpecs = if (atlasPromoted) {
+            val launcher = enabledTools.filter { it.name == PAYMENT_HELPER_TOOL }
+            (atlasSpecs + launcher + paymentSpecs).distinctBy { it.name }
+        } else {
+            paymentSpecs
+        }
+        val finalReason = if (atlasPromoted) "$paymentReason; app-control request — app atlas first" else paymentReason
 
         return RoutedTools(
             intent = intent,
@@ -206,6 +222,15 @@ class ToolRouter @Inject constructor() {
     internal fun isPaymentRequest(query: String): Boolean {
         val q = PAYMENT_FALSE_FRIENDS.fold(normalize(query)) { acc, phrase -> acc.replace(phrase, " ") }
         return PAYMENT_WORDS_REGEX.containsMatchIn(q) || PAYMENT_STEMS.any { it in q }
+    }
+
+    /**
+     * Branch L: a request to open or operate an app ("open YouTube and search
+     * cats", "открой телеграм", "Spotify-da mahnı aç", "in the Uber app …").
+     */
+    internal fun isAppControlRequest(query: String): Boolean {
+        val q = normalize(query)
+        return APP_CONTROL_REGEX.containsMatchIn(q) || APP_CONTROL_STEMS.any { it in q }
     }
 
     /**
@@ -319,6 +344,20 @@ class ToolRouter @Inject constructor() {
 
         private val PAYMENT_WORDS_REGEX = Regex(
             """\b(pay|paying|payment|payments|bill|bills|top up|top-up|send money|transfer money|money transfer|banking|bank app)\b"""
+        )
+
+        /** Branch L: App Atlas tools, in the order they are offered. */
+        internal val ATLAS_TOOLS = listOf("app_atlas_search", "app_open_action")
+
+        private val APP_CONTROL_REGEX = Regex(
+            """\b(open|launch|go to|switch to)\b\s+\S+|\bin (the )?\S+ app\b|\b(app|application)\b"""
+        )
+
+        /** Russian / Azerbaijani stems + Latin transliteration of "open / launch / in the app". */
+        private val APP_CONTROL_STEMS = listOf(
+            "открой", "открыть", "запусти", "зайди в", "перейди в", "приложени",
+            " aç", "tətbiq", "proqramı", "proqrami",
+            "otkroy", "zapusti", "prilozhen", "tetbiq"
         )
 
         /** Phrases that contain "pay"/"bill" but are not payment requests. */

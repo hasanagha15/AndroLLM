@@ -165,6 +165,7 @@ dependencies {
     implementation(project(":core:utils"))
     // Jarvis reverse channel (MQTT) — branch b-mqtt
     implementation(project(":core:jarvislink"))
+    implementation(project(":core:appatlas")) // branch L: App Atlas
     
     // Feature modules
     implementation(project(":feature:home"))

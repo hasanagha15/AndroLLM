@@ -64,9 +64,10 @@ object LiveTree {
         selector.textContains?.let { contains ->
             if (!labelOf(node).contains(contains, ignoreCase = true)) return false
         }
-        selector.resourceId?.let { id ->
-            if (!node.viewIdResourceName.orEmpty().contains(id, ignoreCase = true)) return false
+        selector.resourceId?.let { _ ->
+            if (!selector.resourceIdMatches(node.viewIdResourceName)) return false
         }
+        if (selector.labelIfPresent != null && !selector.labelConsistent(labelOf(node))) return false
         selector.type?.let { type ->
             val (t, _) = UiElementClassifier.classify(
                 className = node.className?.toString(),

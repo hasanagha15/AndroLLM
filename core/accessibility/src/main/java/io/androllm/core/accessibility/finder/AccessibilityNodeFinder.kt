@@ -17,8 +17,27 @@ data class UiSelector(
     val resourceId: String? = null,
     val type: UiElementType? = null,
     /** Which match to use when several nodes satisfy the selector. */
-    val index: Int = 0
+    val index: Int = 0,
+    /** Branch L: [resourceId] must match exactly (":id/<name>" suffix or the whole id), not as a substring. */
+    val resourceIdExact: Boolean = false,
+    /** Branch L: when the node has a label, it must contain this text (id/label consistency check). */
+    val labelIfPresent: String? = null
 ) {
+    /** Shared resource-id rule for both finders. */
+    fun resourceIdMatches(viewId: String?): Boolean {
+        val id = resourceId ?: return true
+        val v = viewId.orEmpty()
+        return if (resourceIdExact) v.equals(id, ignoreCase = true) || v.endsWith(":id/$id", ignoreCase = true)
+        else v.contains(id, ignoreCase = true)
+    }
+
+    /** Shared label-consistency rule for both finders. */
+    fun labelConsistent(label: String): Boolean {
+        val want = labelIfPresent?.trim()?.takeIf { it.isNotEmpty() } ?: return true
+        val have = label.trim()
+        return have.isEmpty() || have.contains(want, ignoreCase = true) || want.contains(have, ignoreCase = true)
+    }
+
     val summary: String
         get() = buildString {
             text?.let { append("text=\"$it\" ") }
@@ -70,8 +89,8 @@ object AccessibilityNodeFinder {
             val n = node.label
             if (!n.contains(contains, ignoreCase = true)) return false
         }
-        selector.resourceId?.let { id ->
-            if (!node.resourceId.contains(id, ignoreCase = true)) return false
+        selector.resourceId?.let { _ ->
+            if (!selector.resourceIdMatches(node.resourceId)) return false
         }
         selector.type?.let { type ->
             if (node.type != type) return false

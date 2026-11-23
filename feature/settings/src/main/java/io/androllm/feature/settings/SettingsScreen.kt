@@ -549,6 +549,7 @@ fun SettingsScreen(
                         onUpdate = { viewModel.updateAccessibilitySettings(it) },
                         onOpenSettings = { viewModel.openAccessibilitySettings() }
                     )
+                    AppAtlasSettingsCard() // branch L: App Atlas
                 }
 
                 settingsAccordionItem(
