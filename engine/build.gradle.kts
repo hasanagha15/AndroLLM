@@ -30,7 +30,7 @@ android {
     kotlin {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-            // The LiteRT-LM / LiteRT AARs (0.16.0 / 2.2.0) ship Kotlin 2.3.0
+            // The LiteRT-LM / LiteRT AARs (0.19.1 / 2.4.0) ship newer Kotlin
             // metadata while this project's toolchain is Kotlin 2.1.20. The
             // AAR's own POM pins kotlin-reflect 2.2.21, so its runtime needs
             // are satisfied by 2.2.x — the version check is the only blocker.
@@ -71,9 +71,19 @@ dependencies {
     implementation("com.jakewharton.timber:timber:5.0.1")
 
     // LiteRT-LM: the official Kotlin runtime for on-device LLM inference
-    // (chat/generation). Version 0.16.0 (2026-08-11) — see
-    // documentation/LOCAL_LLM_ARCHITECTURE.md for the pin rationale.
-    implementation("com.google.ai.edge.litertlm:litertlm-android:0.16.0")
+    // (chat/generation). Version 0.19.1 (2026-11-05; was 0.16.0) — branch
+    // h-litert019, see C:/jarvis/androllm/branches/H-result.md. 0.17+ changed
+    // Message.model's role to "assistant" (Gemma template maps it) and moved
+    // the prompt-template override to ConversationConfig.chatTemplate.
+    // Its POM pulls kotlin-reflect 2.4.0 -> kotlin-stdlib 2.4.0 for the WHOLE
+    // app, which the project's Kotlin 2.2.10 compiler cannot read (every
+    // module then fails with "metadata version 2.4.0, expected 2.2.0"). Keep
+    // reflect at the 2.2.x line the 0.16.0 POM used; the app does not use the
+    // LiteRT-LM reflection-based tool API. Remove once the project is on 2.4.
+    implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1") {
+        exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
+    }
+    implementation("org.jetbrains.kotlin:kotlin-reflect:2.2.21")
 
     // Raw LiteRT runtime + CompiledModel API, used by the embedding pipeline
     // (memory search). The LiteRT-LM EmbeddingEngine is unreleased as of
@@ -88,10 +98,16 @@ dependencies {
     // 1.7.4) and breaking the app at runtime (NoSuchMethodError on FlowRow
     // in ModelWalletCard, compiled against 1.7.4). Excluding the unused
     // lifecycle dep keeps Compose on the project BOM.
-    implementation("com.google.ai.edge.litert:litert:2.2.0") {
+    implementation("com.google.ai.edge.litert:litert:2.4.0") {
         exclude(group = "androidx.lifecycle", module = "lifecycle-runtime")
     }
-    implementation("com.google.ai.edge.litert:litert-api:2.2.0") {
+    implementation("com.google.ai.edge.litert:litert-api:2.4.0") {
+        exclude(group = "androidx.lifecycle", module = "lifecycle-runtime")
+    }
+    // Since LiteRT 2.3 the OpenCL/GL GPU accelerator (libLiteRtClGlAccelerator.so)
+    // is no longer inside the `litert` AAR but in `litert-gpu`. liblitertlm_jni.so
+    // dlopen()s it for Backend.GPU(), so without this the LLM GPU path is lost.
+    implementation("com.google.ai.edge.litert:litert-gpu:2.4.0") {
         exclude(group = "androidx.lifecycle", module = "lifecycle-runtime")
     }
 

@@ -134,6 +134,23 @@ class ChatTemplateRendererTest {
         assertEquals("<bos><start_of_turn>user\nHello<end_of_turn>\n<start_of_turn>model\n", out)
     }
 
+    @Test
+    fun `gemma lenient maps both model and assistant roles to model turn`() {
+        // LiteRT-LM 0.16 sends Message.model as "model", >= 0.17 as "assistant".
+        val expected = "<bos><start_of_turn>user\nHi<end_of_turn>\n" +
+            "<start_of_turn>model\nHello!<end_of_turn>\n" +
+            "<start_of_turn>user\nAgain<end_of_turn>\n<start_of_turn>model\n"
+        for (role in listOf("model", "assistant")) {
+            val out = renderer.render(
+                ChatTemplates.gemmaLenient,
+                listOf(user("Hi"), ChatTemplateRenderer.RenderMessage(role, "Hello!"), user("Again")),
+                bosToken = "<bos>",
+                addGenerationPrompt = true
+            )
+            assertEquals("role=$role", expected, out)
+        }
+    }
+
     // ---- Llama 3 -------------------------------------------------------------
 
     @Test

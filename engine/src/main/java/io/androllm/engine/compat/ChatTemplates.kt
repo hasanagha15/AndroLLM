@@ -35,6 +35,11 @@ object ChatTemplates {
      * template *raises* on a system role, but this app supports system prompts
      * (ConversationConfig.systemInstruction), so the engine uses this variant:
      * system messages are skipped, everything else renders byte-identically.
+     *
+     * LiteRT-LM >= 0.17 serializes `Message.model(...)` with role `assistant`
+     * (upstream commit fca1a5d6, "Standardize Kotlin Message Role.MODEL to
+     * generate assistant"); 0.16 sent `model`. Both are mapped to Gemma's
+     * `model` turn so history renders identically on either runtime.
      */
     val gemmaLenient: String =
         "{{ bos_token }}" +
@@ -42,7 +47,7 @@ object ChatTemplates {
             "{% if message['role'] == 'system' %}{% set skip = true %}{% else %}{% set skip = false %}{% endif %}" +
             "{% if not skip %}" +
             "{% if message['role'] == 'user' %}{% set role = 'user' %}" +
-            "{% elif message['role'] == 'model' %}{% set role = 'model' %}{% endif %}" +
+            "{% elif message['role'] == 'model' or message['role'] == 'assistant' %}{% set role = 'model' %}{% endif %}" +
             "{{ '<start_of_turn>' + role + '\\n' + message['content'] | trim + '<end_of_turn>\\n' }}" +
             "{% endif %}" +
             "{% endfor %}" +
