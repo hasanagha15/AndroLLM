@@ -45,6 +45,10 @@ class AndroLLMApplication : Application(), WorkConfiguration.Provider {
     @Inject
     lateinit var analyticsSyncTrigger: io.androllm.app.sync.AnalyticsSyncTrigger
 
+    // Branch L: App Atlas — package receiver, start-up incremental sync, weekly sweep.
+    @Inject
+    lateinit var appAtlasStarter: io.androllm.core.appatlas.sync.AppAtlasStarter
+
     override val workManagerConfiguration: WorkConfiguration
         get() = WorkConfiguration.Builder().setWorkerFactory(workerFactory).build()
 
@@ -81,6 +85,10 @@ class AndroLLMApplication : Application(), WorkConfiguration.Provider {
         // debounced upload (~8s), so the dashboard reflects usage in <10s.
         runCatching { analyticsSyncTrigger.bind() }
             .onFailure { Timber.w("[AnalyticsSync] trigger bind failed: ${it.message}") }
+
+        // Branch L: App Atlas (the first sync waits 30 s, off the cold-start path).
+        runCatching { appAtlasStarter.start() }
+            .onFailure { Timber.w("[AppAtlas] start failed: ${it.message}") }
 
         registerComponentCallbacks(object : ComponentCallbacks2 {
             override fun onTrimMemory(level: Int) {

@@ -62,6 +62,7 @@ dependencies {
     implementation(project(":core:mcp"))
     implementation(project(":core:jarvistools"))
     implementation(project(":core:jarvislink"))
+    implementation(project(":core:appatlas")) // branch L: App Atlas
     implementation(project(":feature:voice"))
     implementation(project(":core:utils"))
     implementation(project(":engine"))

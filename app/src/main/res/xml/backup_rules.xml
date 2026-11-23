@@ -8,4 +8,6 @@
     <exclude domain="sharedpref" path="sensitive_app_guard.xml" />
     <!-- K: protected payment apps moved to DataStore (legacy sharedpref above kept excluded) -->
     <exclude domain="file" path="datastore/sensitive_app_guard_prefs.preferences_pb" />
+    <!-- Branch L: App Atlas settings (exclusion list names installed apps); the atlas DB itself lives in no_backup -->
+    <exclude domain="sharedpref" path="app_atlas_settings.xml" />
 </full-backup-content>

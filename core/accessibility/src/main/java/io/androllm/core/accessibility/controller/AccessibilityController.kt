@@ -21,6 +21,8 @@ import io.androllm.core.accessibility.settings.AccessibilitySettingsStore
 import io.androllm.core.accessibility.tree.UiElementType
 import io.androllm.core.accessibility.util.MainThread
 import io.androllm.core.tools.tool.impl.ToolIntents
+import io.androllm.core.tools.uistep.UiStep
+import io.androllm.core.tools.uistep.UiStepJournal
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -120,6 +122,8 @@ class AccessibilityController @Inject constructor(
         val visible = onMain { node.isVisibleToUser } ?: false
         if (!visible) return UiActionResult.fail("Element '${selector.summary}' is not visible.")
         val ok = gestures.clickNode(node)
+        // Branch L (App Atlas): report the step (view id + targeted label, never screen text).
+        reportStep(root, node, UiStep.Op.TAP, selector.text ?: selector.textContains ?: selector.resourceId, ok)
         val msg = if (ok) "Tapped ${selector.summary}." else "Tapping ${selector.summary} failed."
         return if (ok) UiActionResult.ok(msg) else UiActionResult.fail(msg)
     }
@@ -194,6 +198,8 @@ class AccessibilityController @Inject constructor(
             return UiActionResult.fail("No text field$what is available on this screen.")
         }
         val ok = textInput.setText(field, text)
+        // Branch L (App Atlas): field identity only — the typed text is never reported.
+        reportStep(root, field, UiStep.Op.TYPE, into, ok)
         return if (ok) {
             UiActionResult.ok("Typed into the field${into?.let { " ($it)" } ?: ""}.")
         } else {
@@ -212,6 +218,7 @@ class AccessibilityController @Inject constructor(
             "down" -> scrollable?.let { gestures.scrollForward(it) } ?: swipeGesture("up")
             else -> swipeGesture(direction)
         }
+        UiStepJournal.step(UiStep(onMain { root.packageName?.toString() }.orEmpty(), UiStep.Op.SCROLL, null, direction, ok))
         return if (ok) UiActionResult.ok("Scrolled $direction.") else UiActionResult.fail("Could not scroll $direction.")
     }
 
@@ -248,6 +255,15 @@ class AccessibilityController @Inject constructor(
 
     /** The user's extra protected packages (for the screen analyzer). */
     internal suspend fun sensitiveExtras(): Set<String> = sensitiveApps.current()
+
+    /** Branch L: tells the App Atlas recorder what was done (best effort, never throws). */
+    private suspend fun reportStep(root: AccessibilityNodeInfo, node: AccessibilityNodeInfo, op: UiStep.Op, label: String?, ok: Boolean) {
+        runCatching {
+            val pkg = onMain { root.packageName?.toString() }.orEmpty()
+            val rid = onMain { node.viewIdResourceName }
+            UiStepJournal.step(UiStep(pkg, op, rid, label, ok))
+        }
+    }
 
     /** Guard refusal for the current foreground app, or null (also when unknown). */
     private suspend fun foregroundBlockedReason(): String? {

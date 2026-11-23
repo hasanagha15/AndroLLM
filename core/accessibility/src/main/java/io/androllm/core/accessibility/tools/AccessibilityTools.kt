@@ -82,6 +82,10 @@ class UiClickTool @Inject constructor(
                     put("type", "integer")
                     put("description", "Which match to use when several elements share the label (default 0)")
                 }
+                putJsonObject("id") {
+                    put("type", "string")
+                    put("description", "Optional view resource id from app_atlas_search (e.g. 'search_button'); tried before the label")
+                }
             }
             putJsonArray("required") { add("label") }
         },
@@ -94,7 +98,11 @@ class UiClickTool @Inject constructor(
         val label = ToolArgs.str(arguments, "label", "target", "text")
             ?: return ToolResult.Failure("Missing required argument: label")
         val index = ToolArgs.int(arguments, "index", 0)
-        val result = controller.click(UiSelector(textContains = label, index = index))
+        // Branch L: an atlas / learned-path view id is tried first, the label is the fallback.
+        val id = ToolArgs.str(arguments, "id", "resource_id")?.trim()?.takeIf { it.isNotEmpty() }
+        val byId = id?.let { controller.click(UiSelector(resourceId = it, index = index), maxScrolls = 0) }
+        val result = if (byId?.success == true || byId?.retryable == false) byId
+        else controller.click(UiSelector(textContains = label, index = index))
         return if (result.success) {
             ToolResult.Success(result.message)
         } else {
@@ -264,6 +272,8 @@ class UiRunTaskTool @Inject constructor(
         val goal = ToolArgs.str(arguments, "goal", "task", "query")
             ?: return ToolResult.Failure("Missing required argument: goal")
         val result = executor.run(goal)
+        // Branch L (App Atlas): a finished task may become a learned path (concepts only, see LearnedPathRecorder).
+        io.androllm.core.tools.uistep.UiStepJournal.taskFinished(goal, result.success)
         return if (result.success) {
             ToolResult.Success(
                 summary = "Task complete in ${result.steps} step(s): ${result.summary}",
