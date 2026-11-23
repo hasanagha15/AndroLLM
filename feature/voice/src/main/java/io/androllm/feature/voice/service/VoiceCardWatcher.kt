@@ -34,34 +34,45 @@ class VoiceCardWatcher(
         data class Resolved(val card: PendingToolConfirmation, val approved: Boolean) : Event
     }
 
-    /** Tap-only cards of this turn announced and still awaiting an outcome. */
-    private val announced = LinkedHashMap<String, PendingToolConfirmation>()
-    private val closed = HashSet<String>()
+    /**
+     * Tap-only cards of this turn announced and still awaiting an outcome,
+     * keyed by [PendingToolConfirmation.decisionSeq] — NOT by id: call ids
+     * repeat (deterministic local ids), so an older outcome with the same id
+     * must never resolve a newer card.
+     */
+    private val announced = LinkedHashMap<Long, PendingToolConfirmation>()
+    private val closed = HashSet<Long>()
     private var ownCardPending = false
     private var approvedAtMs: Long? = null
 
     /** True when [card] was raised by this spoken turn. */
     fun isOwn(card: PendingToolConfirmation?): Boolean = card != null && card.voiceTurnId == turnId
 
+    /**
+     * [outcomes] is the manager's recent-outcome log
+     * ([ToolConfirmationManager.recentOutcomes]); entries are matched to
+     * announced cards by their decision sequence number only.
+     */
     @Synchronized
     fun update(
         pending: PendingToolConfirmation?,
-        lastOutcome: ConfirmationOutcome?,
+        outcomes: List<ConfirmationOutcome>,
         nowMs: Long
     ): List<Event> {
         val events = ArrayList<Event>(2)
-        if (lastOutcome != null) {
-            announced.remove(lastOutcome.id)?.let { card ->
-                closed += card.id
-                events += Event.Resolved(card, lastOutcome.approved)
-                approvedAtMs = if (lastOutcome.approved) nowMs else null
+        for (outcome in outcomes) {
+            if (outcome.seq <= 0L) continue
+            announced.remove(outcome.seq)?.let { card ->
+                closed += outcome.seq
+                events += Event.Resolved(card, outcome.approved)
+                approvedAtMs = if (outcome.approved) nowMs else null
             }
         }
         val own = pending?.takeIf { isOwn(it) }
         if (own != null && ToolConfirmationManager.isTapOnly(own) &&
-            own.id !in announced && own.id !in closed
+            own.decisionSeq !in announced && own.decisionSeq !in closed
         ) {
-            announced[own.id] = own
+            announced[own.decisionSeq] = own
             events += Event.TapOnlyCard(own)
         }
         ownCardPending = own != null

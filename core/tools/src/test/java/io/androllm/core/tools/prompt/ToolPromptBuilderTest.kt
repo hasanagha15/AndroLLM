@@ -199,4 +199,23 @@ class ToolPromptBuilderTest {
         assertThat(ad).contains("- tesla_command")
         assertThat(ad).contains("lock")
     }
+
+    @Test
+    fun `compact lines keep a confirm marker for confirmation tools only`() {
+        val builder = ToolPromptBuilder(mockk(relaxed = true))
+        val sms = ToolSpec(
+            name = "send_sms",
+            description = "Send an SMS to a phone number. Always requires the confirmation of the user before sending anything at all.",
+            requiresConfirmation = true,
+            category = ToolCategory.DEVICE
+        )
+        val specs = listOf(sms) + synthetic(62)
+        val compact = builder.render(specs, maxChars = ToolAdvertisementBudget.charsFor(4096))
+        assertThat(compact).doesNotContain("example:")
+        val smsLine = compact.lines().first { it.startsWith("- send_sms") }
+        assertThat(smsLine).contains(ToolPromptBuilder.CONFIRM_MARKER)
+        assertThat(compact.lines().filter { it.startsWith("- tool_") }.none { it.contains("[confirm]") }).isTrue()
+        // Full format is unchanged (the description itself says it).
+        assertThat(builder.render(listOf(sms))).doesNotContain("[confirm]")
+    }
 }

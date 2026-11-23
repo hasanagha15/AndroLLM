@@ -154,6 +154,7 @@ class AccessibilityController @Inject constructor(
 
     /** Two-finger pinch around the screen center. */
     suspend fun pinch(zoomIn: Boolean): UiActionResult {
+        foregroundBlockedReason()?.let { return UiActionResult.blocked(it) }
         val dm = context.resources.displayMetrics
         val ok = gestures.pinch(dm.widthPixels / 2f, dm.heightPixels / 2f, zoomIn)
         return if (ok) {
@@ -202,6 +203,7 @@ class AccessibilityController @Inject constructor(
 
     suspend fun scroll(direction: String): UiActionResult {
         val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
+        SensitiveAppGuard.blockedReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
         val scrollable = onMain { LiveTree.findScrollable(root) }
         val ok = when (direction) {
             "up" -> scrollable?.let { gestures.scrollBackward(it) } ?: swipeGesture("down")
@@ -212,8 +214,17 @@ class AccessibilityController @Inject constructor(
     }
 
     suspend fun swipe(direction: String): UiActionResult {
+        // A swipe is a raw gesture on the foreground app (a slider in the Tesla
+        // app, a swipe-to-reply in WhatsApp): same guard as taps.
+        foregroundBlockedReason()?.let { return UiActionResult.blocked(it) }
         val ok = swipeGesture(direction)
         return if (ok) UiActionResult.ok("Swiped $direction.") else UiActionResult.fail("Swipe $direction failed.")
+    }
+
+    /** Guard refusal for the current foreground app, or null (also when unknown). */
+    private suspend fun foregroundBlockedReason(): String? {
+        val root = onMain { service?.rootInActiveWindow } ?: return null
+        return SensitiveAppGuard.blockedReason(onMain { root.packageName })
     }
 
     private suspend fun swipeGesture(direction: String): Boolean {

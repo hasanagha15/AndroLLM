@@ -159,6 +159,7 @@ class VoiceAssistantService : Service() {
 
     override fun onDestroy() {
         stopLoop()
+        VoiceCardNotifier.cancel(this)
         // Kill every child coroutine (generation jobs, persistence, the state
         // collector) so no inference or DB write outlives the service.
         scope.cancel()
@@ -936,7 +937,7 @@ class VoiceAssistantService : Service() {
             val tickAt = System.currentTimeMillis()
             for (event in cardWatcher.update(
                 toolConfirmationManager.pending.value,
-                toolConfirmationManager.lastOutcome.value,
+                toolConfirmationManager.recentOutcomes.value,
                 tickAt
             )) {
                 when (event) {

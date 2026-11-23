@@ -13,6 +13,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import io.androllm.core.navigation.Routes
 import io.androllm.core.tools.confirmation.PendingToolConfirmation
+import io.androllm.core.tools.confirmation.ToolConfirmationManager
 import io.androllm.core.voice.lang.VoiceLanguage
 import timber.log.Timber
 
@@ -58,8 +59,10 @@ object VoiceCardNotifier {
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setOngoing(true)
+            // Not ongoing: if the process dies before cancel() the owner can
+            // still swipe it away, and it expires with the card itself.
             .setAutoCancel(true)
+            .setTimeoutAfter(ToolConfirmationManager.CONFIRMATION_TIMEOUT_MS)
             .apply { if (open != null) setContentIntent(open) }
             .build()
         runCatching { NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, notification) }

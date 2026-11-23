@@ -144,6 +144,10 @@ class ChatManager @Inject constructor(
         if (trimmed.isEmpty()) return@channelFlow
         if (busyReply != null && currentRemoteOrigin() == null && remoteTurnActive.get()) {
             Timber.tag("CHAT").i("Turn refused: a remote task holds the pipeline")
+            // Keep the owner's words: the request and the busy reply land in
+            // the active conversation, so nothing said is silently lost.
+            runCatching { persistRefusedTurn(trimmed, origin, busyReply) }
+                .onFailure { Timber.w(it, "ChatManager: could not save the refused voice turn") }
             send(busyReply)
             return@channelFlow
         }
@@ -499,6 +503,40 @@ class ChatManager @Inject constructor(
             if (remoteTurn) remoteTurnActive.set(false)
         }
         } // turnLock
+    }
+
+    /**
+     * Saves a turn that was answered with [reply] without running (remote task
+     * busy): the user message and the reply go into the active conversation
+     * (a new one when none exists). No memory processing, no tool trace.
+     */
+    private suspend fun persistRefusedTurn(content: String, origin: MessageOrigin, reply: String) {
+        val now = System.currentTimeMillis()
+        var convId = conversationRepository.observeActive().first().firstOrNull()?.id.orEmpty()
+        if (convId.isBlank()) {
+            convId = UUID.randomUUID().toString()
+            val title = if (content.length > 30) content.take(30) + "..." else content
+            conversationRepository.upsert(Conversation(id = convId, title = title, createdAt = now, updatedAt = now))
+        }
+        messageRepository.upsert(
+            Message(
+                id = UUID.randomUUID().toString(),
+                conversationId = convId,
+                role = MessageRole.USER,
+                content = content,
+                timestamp = now,
+                origin = origin
+            )
+        )
+        messageRepository.upsert(
+            Message(
+                id = UUID.randomUUID().toString(),
+                conversationId = convId,
+                role = MessageRole.ASSISTANT,
+                content = reply,
+                timestamp = now + 1
+            )
+        )
     }
 
     /**

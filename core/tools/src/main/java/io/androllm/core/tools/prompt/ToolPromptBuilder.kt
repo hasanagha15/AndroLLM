@@ -88,6 +88,9 @@ class ToolPromptBuilder @Inject constructor(
             val line = StringBuilder()
             line.append("- ").append(spec.name)
             line.append(" — ").append(spec.description.take(if (compact) COMPACT_DESCRIPTION_CHARS else DESCRIPTION_CHARS))
+            // The cut description may lose "always asks the user first": keep
+            // the model aware that the action goes through a confirmation card.
+            if (compact && spec.requiresConfirmation) line.append(CONFIRM_MARKER)
             val params = describeParameters(spec.parameters)
             if (params.isNotBlank()) line.append(" | arguments: ").append(params)
             if (!compact) {
@@ -159,6 +162,9 @@ class ToolPromptBuilder @Inject constructor(
 
         /** Description length in the compact line used when the budget is tight. */
         const val COMPACT_DESCRIPTION_CHARS = 70
+
+        /** Suffix on compact lines of tools that always need a user confirmation. */
+        const val CONFIRM_MARKER = " [confirm]"
 
         /** Enum values listed per argument before "|…". */
         const val MAX_ENUM_VALUES = 12

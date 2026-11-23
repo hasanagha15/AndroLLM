@@ -103,7 +103,7 @@ class ToolConfirmationManagerTest {
         job.join()
         assertThat(result.await()).isFalse()
         assertThat(manager.pending.value).isNull()
-        assertThat(manager.lastOutcome.value).isEqualTo(ConfirmationOutcome("c4", false))
+        assertThat(manager.lastOutcome.value?.let { it.id to it.approved }).isEqualTo("c4" to false)
     }
 
     @Test
@@ -127,7 +127,7 @@ class ToolConfirmationManagerTest {
         manager.confirm("r1")
         job.join()
         assertThat(result.await()).isTrue()
-        assertThat(manager.lastOutcome.value).isEqualTo(ConfirmationOutcome("r1", true))
+        assertThat(manager.lastOutcome.value?.let { it.id to it.approved }).isEqualTo("r1" to true)
     }
 
     @Test
@@ -229,5 +229,38 @@ class ToolConfirmationManagerTest {
         for (n in listOf("Tesla_Command", "TESLA_COMMAND", " tesla_command ", "Glasses_Show_Text", "WhatsApp_Reply")) {
             assertThat(ToolConfirmationManager.isTapOnly(confirmation("n").copy(toolName = n))).isTrue()
         }
+    }
+
+    @Test
+    fun `the same call id gets a new decision sequence each time and both outcomes are logged`() = runTest {
+        val manager = ToolConfirmationManager()
+        val seqs = mutableListOf<Long>()
+        repeat(2) { round ->
+            val job = launch { manager.awaitDecision(confirmation("call_abc_0").copy(toolName = "tesla_command")) }
+            while (manager.pending.value == null) kotlinx.coroutines.yield()
+            seqs += manager.pending.value!!.decisionSeq
+            if (round == 0) manager.deny("call_abc_0") else manager.confirm("call_abc_0")
+            job.join()
+        }
+        assertThat(seqs[0]).isGreaterThan(0L)
+        assertThat(seqs[1]).isGreaterThan(seqs[0])
+        val log = manager.recentOutcomes.value
+        assertThat(log.map { Triple(it.id, it.approved, it.seq) }).containsExactly(
+            Triple("call_abc_0", false, seqs[0]),
+            Triple("call_abc_0", true, seqs[1])
+        ).inOrder()
+    }
+
+    @Test
+    fun `outcome log is bounded`() = runTest {
+        val manager = ToolConfirmationManager()
+        repeat(ToolConfirmationManager.OUTCOME_LOG_SIZE + 5) { i ->
+            val job = launch { manager.awaitDecision(confirmation("c$i")) }
+            while (manager.pending.value == null) kotlinx.coroutines.yield()
+            manager.deny("c$i")
+            job.join()
+        }
+        assertThat(manager.recentOutcomes.value).hasSize(ToolConfirmationManager.OUTCOME_LOG_SIZE)
+        assertThat(manager.recentOutcomes.value.last().id).isEqualTo("c${ToolConfirmationManager.OUTCOME_LOG_SIZE + 4}")
     }
 }

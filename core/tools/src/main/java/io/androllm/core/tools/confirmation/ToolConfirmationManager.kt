@@ -13,6 +13,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -46,7 +47,15 @@ data class PendingToolConfirmation(
      * Non-null when the card was raised inside a SPOKEN turn (stamped from
      * [VoiceTurnOrigin]); the voice loop uses it to recognise its own cards.
      */
-    val voiceTurnId: String? = null
+    val voiceTurnId: String? = null,
+    /**
+     * Unique per decision (set by [ToolConfirmationManager] when the card is
+     * published). Card ids are call ids, and local-model call ids are
+     * deterministic (`call_<hash>_<index>`, `_fallback_0`), so the SAME id
+     * comes back on a repeated request — only this number tells two cards
+     * apart. 0 = not published yet.
+     */
+    val decisionSeq: Long = 0L
 ) {
     /** Which surface raised the card (scopes [ToolConfirmationManager.cancelPending]). */
     val surface: ConfirmationSurface
@@ -61,7 +70,12 @@ data class PendingToolConfirmation(
 enum class ConfirmationSurface { TYPED, VOICE, REMOTE }
 
 /** Final outcome of one card ([approved] false also covers timeout / cancel). */
-data class ConfirmationOutcome(val id: String, val approved: Boolean)
+data class ConfirmationOutcome(
+    val id: String,
+    val approved: Boolean,
+    /** [PendingToolConfirmation.decisionSeq] of the closed card. */
+    val seq: Long = 0L
+)
 
 /**
  * Central hub for high-risk action confirmations, shared by the chat UI and
@@ -92,6 +106,16 @@ class ToolConfirmationManager @Inject constructor() {
     /** Outcome of the most recently closed card (voice loop announces it). */
     private val _lastOutcome = MutableStateFlow<ConfirmationOutcome?>(null)
     val lastOutcome: StateFlow<ConfirmationOutcome?> = _lastOutcome
+
+    /**
+     * The last [OUTCOME_LOG_SIZE] outcomes, oldest first. A poller (the voice
+     * loop ticks about once a second) reads this instead of [lastOutcome] so
+     * two cards closing within one tick never lose a resolution.
+     */
+    private val _recentOutcomes = MutableStateFlow<List<ConfirmationOutcome>>(emptyList())
+    val recentOutcomes: StateFlow<List<ConfirmationOutcome>> = _recentOutcomes
+
+    private val decisionCounter = java.util.concurrent.atomic.AtomicLong(0L)
 
     /**
      * Optional voice-mode responder. Set by [io.androllm.feature.voice.service.
@@ -133,7 +157,7 @@ class ToolConfirmationManager @Inject constructor() {
         }
         // One card at a time: concurrent requests (typed turn + remote task)
         // queue instead of replacing each other on the single pending slot.
-        return decisionLock.withLock { decide(effective) }
+        return decisionLock.withLock { decide(effective.copy(decisionSeq = decisionCounter.incrementAndGet())) }
     }
 
     private val decisionLock = Mutex()
@@ -184,7 +208,9 @@ class ToolConfirmationManager @Inject constructor() {
             responses.remove(confirmation.id)
             cards.remove(confirmation.id)
             if (_pending.value?.id == confirmation.id) _pending.value = null
-            _lastOutcome.value = ConfirmationOutcome(confirmation.id, outcome)
+            val closed = ConfirmationOutcome(confirmation.id, outcome, confirmation.decisionSeq)
+            _recentOutcomes.update { (it + closed).takeLast(OUTCOME_LOG_SIZE) }
+            _lastOutcome.value = closed
         }
     }
 
@@ -221,6 +247,9 @@ class ToolConfirmationManager @Inject constructor() {
     companion object {
         /** How long a chat confirmation card stays live before auto-denying. */
         const val CONFIRMATION_TIMEOUT_MS = 300_000L
+
+        /** Outcomes kept in [recentOutcomes]. */
+        const val OUTCOME_LOG_SIZE = 16
 
         /** Tools whose confirmation may only be given by tapping the card. */
         val TAP_ONLY_TOOLS: Set<String> = setOf("tesla_command", "whatsapp_reply", "glasses_show_text")
