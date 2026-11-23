@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.library")
     id("org.jetbrains.kotlin.android")
@@ -7,6 +9,16 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+// Branch F: host of the owner's private model server (Tailscale only), NOT committed
+// (public fork): set `jarvis.modelsHost=<tailscale ip or MagicDNS>:8806` in the
+// git-ignored local.properties. The placeholder keeps builds and tests working.
+val jarvisModelsHost: String = run {
+    val f = rootProject.file("local.properties")
+    val p = Properties()
+    if (f.exists()) f.inputStream().use { p.load(it) }
+    p.getProperty("jarvis.modelsHost")?.trim()?.takeIf { it.isNotEmpty() } ?: "pi-brain.example.ts.net:8806"
+}
+
 android {
     namespace = "io.androllm.feature.models"
     compileSdk = 36
@@ -14,6 +26,7 @@ android {
         minSdk = 28
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
+        buildConfigField("String", "MODELS_TAILNET_HOST", "\"$jarvisModelsHost\"")
     }
     buildTypes {
         release {
@@ -32,6 +45,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 packaging {
         resources {

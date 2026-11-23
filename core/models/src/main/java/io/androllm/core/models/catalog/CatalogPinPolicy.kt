@@ -22,6 +22,15 @@ object CatalogPinPolicy {
 
     /** Null when [model] is pinned, otherwise a human-readable reason. */
     fun problem(model: CatalogModel): String? {
+        // Branch F: the owner's private model, content-addressed by sha256 (see PrivateModelUrl).
+        if (PrivateModelUrl.isPrivate(model.downloadUrl)) {
+            val sha = PrivateModelUrl.sha256Of(model.downloadUrl)
+                ?: return "${model.id}: downloadUrl is not a valid tailnet://androllm-models/<sha256>/<file> URL"
+            if (!sha.equals(model.sha256, ignoreCase = true)) {
+                return "${model.id}: sha256 in the private downloadUrl does not match the entry's sha256"
+            }
+            return null
+        }
         val main = urlProblem(model.downloadUrl, model.repoId, model.revision, "downloadUrl")
         if (main != null) return "${model.id}: $main"
         if (model.companionUrl.isNotBlank()) {

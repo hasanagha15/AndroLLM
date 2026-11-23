@@ -1,5 +1,7 @@
 package io.androllm.feature.models.downloader
 
+import io.androllm.core.models.catalog.PrivateModelUrl
+import io.androllm.feature.models.BuildConfig
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -88,7 +90,8 @@ class ModelDownloadWorker(
     override suspend fun doWork(): Result {
         val modelId = inputData.getString(KEY_MODEL_ID) ?: return Result.failure()
         val modelName = inputData.getString(KEY_MODEL_NAME) ?: "Model"
-        val downloadUrl = inputData.getString(KEY_DOWNLOAD_URL) ?: return Result.failure()
+        // Branch F: private tailnet:// model URLs resolve to the owner's Tailscale host here.
+        val downloadUrl = resolveDownloadUrl(inputData.getString(KEY_DOWNLOAD_URL) ?: return Result.failure())
         val targetPath = inputData.getString(KEY_TARGET_PATH) ?: return Result.failure()
         val expectedSha256 = inputData.getString(KEY_EXPECTED_SHA256)
         val companionUrl = inputData.getString(KEY_COMPANION_URL).orEmpty()
@@ -1008,6 +1011,15 @@ internal fun resolveTotalBytes(
     expectedSize > 0 -> expectedSize
     else -> -1L
 }
+
+/**
+ * Branch F: maps a private `tailnet://androllm-models/<sha256>/<file>` catalog URL to
+ * `http://<host>/<sha256>/<file>` with the host from local.properties (`jarvis.modelsHost`).
+ * Other URLs pass through unchanged; a malformed private URL also stays unchanged so
+ * [isValidDownloadUrl] rejects it (tailnet:// is not an http scheme).
+ */
+internal fun resolveDownloadUrl(url: String, host: String = BuildConfig.MODELS_TAILNET_HOST): String =
+    PrivateModelUrl.resolve(url, host) ?: url
 
 /**
  * True when the URL is usable for a download: non-blank, parseable, and with

@@ -69,7 +69,7 @@ class DownloadManager @Inject constructor(
     fun startDownload(model: Model, priority: DownloadPriority = DownloadPriority.NORMAL) {
         scope.launch {
             val downloadUrl = model.downloadUrl ?: ""
-            if (!isValidDownloadUrl(downloadUrl)) {
+            if (!isValidDownloadUrl(resolveDownloadUrl(downloadUrl))) {
                 Timber.e("Blocking download of ${model.name}: invalid URL '$downloadUrl'")
                 modelRepository.updateDownloadState(
                     id = model.id,

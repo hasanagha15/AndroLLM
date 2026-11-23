@@ -130,7 +130,9 @@ object CatalogValidator {
                 errors += "$id: sha256 must be 64 hex characters"
             }
 
-            if (!model.downloadUrl.startsWith("https://")) {
+            // Private tailnet models are content-addressed (sha256 in the URL, checked
+            // by CatalogPinPolicy) and travel inside the WireGuard tunnel — see PrivateModelUrl.
+            if (!model.downloadUrl.startsWith("https://") && !PrivateModelUrl.isPrivate(model.downloadUrl)) {
                 errors += "$id: downloadUrl must be https"
             }
             // Fork policy: mutable `resolve/main` URLs drift (upstream re-exports
