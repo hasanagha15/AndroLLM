@@ -133,6 +133,10 @@ android {
             pickFirsts += "**/libsherpa-onnx-jni.so"
             pickFirsts += "**/libsherpa-onnx-c-api.so"
             pickFirsts += "**/libsherpa-onnx-cxx-api.so"
+            // Branch h-litert019: the Qualcomm dispatcher now comes from
+            // litert-npu-runtime-qualcomm (engine); its AOT compiler plugin is
+            // a host/offline tool the app never loads - keep it out of the APK.
+            excludes += "**/libLiteRtCompilerPlugin_Qualcomm.so"
         }
     }
 }

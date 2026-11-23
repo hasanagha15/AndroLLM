@@ -644,6 +644,17 @@ class LiteRtLmEngine @Inject constructor(
             )
             familyConfig = if (family.family == ModelFamily.GENERIC) {
                 val embedded = container?.metadata?.jinjaPromptTemplate
+                if (ChatTemplateCompat.looksStringOnlyContent(embedded)) {
+                    // e.g. a hand-imported file with the old HF Qwen3 template
+                    // whose family was not detected: LiteRT-LM >= 0.18 passes
+                    // content as a list of parts, so this template may render
+                    // an empty user turn (LiteRT-LM #3688).
+                    logger.w(
+                        "TEMPLATE WARNING: ${model.name} embeds a chat template that handles only " +
+                            "string message content; LiteRT-LM >= 0.18 sends a list of parts — " +
+                            "replies may ignore the prompt. Re-export with a parts-aware template."
+                    )
+                }
                 if (embedded.isNullOrBlank()) appTemplateConfig else family.config.copy(chatTemplate = embedded)
             } else {
                 appTemplateConfig

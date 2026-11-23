@@ -19,6 +19,12 @@ package io.androllm.engine.compat
  * already is one (0.16 runtime, the app's own [ChatTemplateRenderer]), or the
  * concatenated `text` parts otherwise — and the body reads `msgns.text`.
  *
+ * Limits: parts without text (image/audio) flatten to nothing — fine for the
+ * family templates (VLMs run as GENERIC with their own embedded template).
+ * qwen3's tool-call branch keys on `content is none`; an empty parts list
+ * (`[]`) with `tool_calls` would drop the call — unreachable, the app never
+ * sends LiteRT-LM tool messages (tools run as text via NativeToolCallScanner).
+ *
  * Only the app-defined templates are rewritten. The unmodified constants stay
  * in [ChatTemplates] because [ModelCompatibilityResolver] compares container
  * templates against them for family detection.
@@ -47,6 +53,22 @@ object ChatTemplateCompat {
 
     /** Marker so a template is never rewritten twice. */
     private const val MARKER = "{% set msgns = namespace("
+
+    private val CONTENT_ACCESS = Regex("""message(\.content|\['content']|\["content"])""")
+    private val TEXT_PART = Regex("""['"]text['"]""")
+
+    /**
+     * Heuristic for a container-embedded template written for string content
+     * only (e.g. the old Hugging Face Qwen3 template: `message.content is
+     * string` else `''`, or plain `+ message['content']`): it reads message
+     * content but never looks at a `'text'` part. On LiteRT-LM >= 0.18 such a
+     * template renders an empty user turn or fails (#3688). Used only to log
+     * a warning for GENERIC containers; their template is passed through.
+     */
+    fun looksStringOnlyContent(template: String?): Boolean {
+        if (template.isNullOrBlank()) return false
+        return CONTENT_ACCESS.containsMatchIn(template) && !TEXT_PART.containsMatchIn(template)
+    }
 
     fun partsAware(template: String): String {
         if (template.contains(MARKER)) return template

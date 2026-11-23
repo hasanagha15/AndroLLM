@@ -30,11 +30,13 @@ android {
     kotlin {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
-            // The LiteRT-LM / LiteRT AARs (0.19.1 / 2.4.0) ship newer Kotlin
-            // metadata while this project's toolchain is Kotlin 2.1.20. The
-            // AAR's own POM pins kotlin-reflect 2.2.21, so its runtime needs
-            // are satisfied by 2.2.x — the version check is the only blocker.
-            // Bumping the whole project to Kotlin 2.3 is tracked separately.
+            // The LiteRT-LM 0.19.1 AAR ships Kotlin 2.4 metadata while this
+            // project's toolchain is Kotlin 2.2.10. Its POM pins
+            // kotlin-reflect 2.4.0, which is excluded below and replaced by
+            // 2.2.21 (stdlib stays 2.2.21 app-wide); its bytecode only uses
+            // stdlib members present in 2.2.x (checked: same refs as 0.16.0),
+            // so the metadata version check is the only blocker here.
+            // Bumping the whole project to Kotlin 2.4 is tracked separately.
             freeCompilerArgs.add("-Xskip-metadata-version-check")
         }
     }
@@ -110,6 +112,13 @@ dependencies {
     implementation("com.google.ai.edge.litert:litert-gpu:2.4.0") {
         exclude(group = "androidx.lifecycle", module = "lifecycle-runtime")
     }
+    // Qualcomm NPU dispatcher (libLiteRtDispatch_Qualcomm.so, Apache-2.0,
+    // Google Maven) with the dispatch ABI LiteRT-LM 0.19.x resolves
+    // (LiteRtDispatchQueryInterface). Replaces the LiteRT 2.2.0-era copy in
+    // app/src/main/jniLibs, which exports only the legacy LiteRtDispatchGetApi.
+    // QNN libraries (libQnn*.so, Hexagon skel/stub) are NOT in this AAR and
+    // stay as shipped by g-16kb (QAIRT 2.47, V81 only).
+    implementation("com.google.ai.edge.litert:litert-npu-runtime-qualcomm:2.4.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")

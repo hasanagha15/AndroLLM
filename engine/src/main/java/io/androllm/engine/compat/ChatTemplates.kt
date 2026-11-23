@@ -31,10 +31,14 @@ object ChatTemplates {
             "{% if add_generation_prompt %}{{ '<start_of_turn>model\\n' }}{% endif %}"
 
     /**
-     * The same Gemma template with the system branch neutralized. The official
-     * template *raises* on a system role, but this app supports system prompts
-     * (ConversationConfig.systemInstruction), so the engine uses this variant:
-     * system messages are skipped, everything else renders byte-identically.
+     * The Gemma template the engine renders. The official Gemma 3 template
+     * above *raises* on a system role; Google's HF template folds a LEADING
+     * system message into the first user turn (system, a blank line, user),
+     * and so does this variant, so Gemma sees the app's system prompt and tool
+     * list (ConversationConfig.systemInstruction arrives as messages[0]).
+     * Leading-only, like SystemPromptMerger: a system message anywhere else
+     * (e.g. mid-history tool output) is dropped, never folded. Without a
+     * system message the output is byte-identical to [gemma].
      *
      * LiteRT-LM >= 0.17 serializes `Message.model(...)` with role `assistant`
      * (upstream commit fca1a5d6, "Standardize Kotlin Message Role.MODEL to
@@ -43,12 +47,17 @@ object ChatTemplates {
      */
     val gemmaLenient: String =
         "{{ bos_token }}" +
+            "{% set gemmans = namespace(prefix='') %}" +
             "{% for message in messages %}" +
-            "{% if message['role'] == 'system' %}{% set skip = true %}{% else %}{% set skip = false %}{% endif %}" +
-            "{% if not skip %}" +
+            "{% if message['role'] == 'system' %}" +
+            "{% if loop.first and message['content'] is not none %}" +
+            "{% set gemmans.prefix = message['content'] | trim + '\\n\\n' %}" +
+            "{% endif %}" +
+            "{% else %}" +
             "{% if message['role'] == 'user' %}{% set role = 'user' %}" +
             "{% elif message['role'] == 'model' or message['role'] == 'assistant' %}{% set role = 'model' %}{% endif %}" +
-            "{{ '<start_of_turn>' + role + '\\n' + message['content'] | trim + '<end_of_turn>\\n' }}" +
+            "{{ '<start_of_turn>' + role + '\\n' + gemmans.prefix + message['content'] | trim + '<end_of_turn>\\n' }}" +
+            "{% set gemmans.prefix = '' %}" +
             "{% endif %}" +
             "{% endfor %}" +
             "{% if add_generation_prompt %}{{ '<start_of_turn>model\\n' }}{% endif %}"
