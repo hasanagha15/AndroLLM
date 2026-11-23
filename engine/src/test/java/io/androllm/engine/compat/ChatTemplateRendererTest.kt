@@ -113,14 +113,58 @@ class ChatTemplateRendererTest {
     }
 
     @Test
-    fun `gemma lenient template drops system messages`() {
+    fun `gemma lenient folds the leading system message into the first user turn`() {
         val out = renderer.render(
             ChatTemplates.gemmaLenient,
             listOf(system("sys"), user("Hi")),
             bosToken = "<bos>",
             addGenerationPrompt = true
         )
-        assertEquals("<bos><start_of_turn>user\nHi<end_of_turn>\n<start_of_turn>model\n", out)
+        assertEquals("<bos><start_of_turn>user\nsys\n\nHi<end_of_turn>\n<start_of_turn>model\n", out)
+    }
+
+    @Test
+    fun `gemma lenient folds system only into the first turn of a multi-turn history`() {
+        val out = renderer.render(
+            ChatTemplates.gemmaLenient,
+            listOf(system(" sys "), user("Hi"), model("Hello!"), user("Again")),
+            bosToken = "<bos>",
+            addGenerationPrompt = true
+        )
+        assertEquals(
+            "<bos><start_of_turn>user\nsys\n\nHi<end_of_turn>\n" +
+                "<start_of_turn>model\nHello!<end_of_turn>\n" +
+                "<start_of_turn>user\nAgain<end_of_turn>\n<start_of_turn>model\n",
+            out
+        )
+    }
+
+    @Test
+    fun `gemma lenient never folds a mid-history system message`() {
+        // Leading-only rule (SystemPromptMerger): e.g. tool output arriving as
+        // a later system message must not be injected into a user turn.
+        val out = renderer.render(
+            ChatTemplates.gemmaLenient,
+            listOf(user("Hi"), model("Hello!"), system("TOOL OUTPUT"), user("Again")),
+            bosToken = "<bos>",
+            addGenerationPrompt = true
+        )
+        assertEquals(
+            "<bos><start_of_turn>user\nHi<end_of_turn>\n" +
+                "<start_of_turn>model\nHello!<end_of_turn>\n" +
+                "<start_of_turn>user\nAgain<end_of_turn>\n<start_of_turn>model\n",
+            out
+        )
+        assertTrue(!out.contains("TOOL OUTPUT"))
+    }
+
+    @Test
+    fun `gemma lenient without system is byte-identical to the official template`() {
+        val msgs = listOf(user("Hi"), model("Hello!"), user("Again"))
+        val official = renderer.render(ChatTemplates.gemma,
+            msgs.map { if (it.role == "assistant") ChatTemplateRenderer.RenderMessage("model", it.content) else it },
+            bosToken = "<bos>", addGenerationPrompt = true)
+        assertEquals(official, renderer.render(ChatTemplates.gemmaLenient, msgs, bosToken = "<bos>", addGenerationPrompt = true))
     }
 
     @Test
@@ -132,6 +176,23 @@ class ChatTemplateRendererTest {
             addGenerationPrompt = true
         )
         assertEquals("<bos><start_of_turn>user\nHello<end_of_turn>\n<start_of_turn>model\n", out)
+    }
+
+    @Test
+    fun `gemma lenient maps both model and assistant roles to model turn`() {
+        // LiteRT-LM 0.16 sends Message.model as "model", >= 0.17 as "assistant".
+        val expected = "<bos><start_of_turn>user\nHi<end_of_turn>\n" +
+            "<start_of_turn>model\nHello!<end_of_turn>\n" +
+            "<start_of_turn>user\nAgain<end_of_turn>\n<start_of_turn>model\n"
+        for (role in listOf("model", "assistant")) {
+            val out = renderer.render(
+                ChatTemplates.gemmaLenient,
+                listOf(user("Hi"), ChatTemplateRenderer.RenderMessage(role, "Hello!"), user("Again")),
+                bosToken = "<bos>",
+                addGenerationPrompt = true
+            )
+            assertEquals("role=$role", expected, out)
+        }
     }
 
     // ---- Llama 3 -------------------------------------------------------------

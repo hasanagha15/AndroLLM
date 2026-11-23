@@ -24,6 +24,7 @@ import io.androllm.engine.backend.BackendCapabilities
 import io.androllm.engine.backend.BackendSelector
 import io.androllm.engine.backend.HardwareBackendProbe
 import io.androllm.engine.backend.InferenceBackend
+import io.androllm.engine.compat.ChatTemplateCompat
 import io.androllm.engine.compat.ChatTemplateRenderer
 import io.androllm.engine.compat.ContainerMetadataReader
 import io.androllm.engine.compat.ModelCompatibilityException
@@ -635,11 +636,28 @@ class LiteRtLmEngine @Inject constructor(
             // chat template (identity override — nothing is guessed); the
             // generic fallback in ChatTemplates only serves containers that
             // embed no template at all.
+            // App-defined templates are rewritten to accept LiteRT-LM >= 0.18's
+            // list-of-parts message content (ChatTemplateCompat); the
+            // container's own embedded template is passed through untouched.
+            val appTemplateConfig = family.config.copy(
+                chatTemplate = ChatTemplateCompat.partsAware(family.config.chatTemplate)
+            )
             familyConfig = if (family.family == ModelFamily.GENERIC) {
                 val embedded = container?.metadata?.jinjaPromptTemplate
-                if (embedded.isNullOrBlank()) family.config else family.config.copy(chatTemplate = embedded)
+                if (ChatTemplateCompat.looksStringOnlyContent(embedded)) {
+                    // e.g. a hand-imported file with the old HF Qwen3 template
+                    // whose family was not detected: LiteRT-LM >= 0.18 passes
+                    // content as a list of parts, so this template may render
+                    // an empty user turn (LiteRT-LM #3688).
+                    logger.w(
+                        "TEMPLATE WARNING: ${model.name} embeds a chat template that handles only " +
+                            "string message content; LiteRT-LM >= 0.18 sends a list of parts — " +
+                            "replies may ignore the prompt. Re-export with a parts-aware template."
+                    )
+                }
+                if (embedded.isNullOrBlank()) appTemplateConfig else family.config.copy(chatTemplate = embedded)
             } else {
-                family.config
+                appTemplateConfig
             }
             // Stop-sequence metadata merge: the family's official stop tokens,
             // the container's declared stop tokens (LlmMetadata.stop_tokens)
@@ -1754,7 +1772,12 @@ class LiteRtLmEngine @Inject constructor(
             // the overwritten template and the channel markers always agree.
             channels = fam?.thinkingChannel?.let {
                 listOf(LiteRtChannel(it.channelName, it.start, it.end))
-            }
+            },
+            // Family's official chat template (null = container's own).
+            // LiteRT-LM >= 0.17 takes it per conversation here; the global
+            // ExperimentalFlags.overwritePromptTemplate is deprecated and is
+            // only consulted when this is null.
+            chatTemplate = fam?.chatTemplate
         )
     }
 
@@ -1763,23 +1786,23 @@ class LiteRtLmEngine @Inject constructor(
      * template override, KV-cache channel filtering) to the GLOBAL
      * [ExperimentalFlags] singleton, then creates a conversation.
      *
-     * `ExperimentalFlags.overwritePromptTemplate` is read by
-     * `nativeCreateConversation`, so the flag must be set immediately before
-     * every conversation creation. This is the enforcement point of the
+     * Since LiteRT-LM 0.17 the template is passed per conversation via
+     * `ConversationConfig.chatTemplate`; only `filterChannelContentFromKvCache`
+     * is still a global flag read by `nativeCreateConversation`, so it must be
+     * set immediately before every conversation creation. This is the enforcement point of the
      * family contract: the runtime renders the family's official template —
      * never the container's — so the prompt shape always matches what the
      * model was trained on.
      */
     @OptIn(ExperimentalApi::class)
+    @Suppress("DEPRECATION")
     private fun createConversationWithFamilyFlags(eng: Engine, config: ConversationConfig): Conversation {
         val fam = familyConfig
-        if (fam == null) {
-            ExperimentalFlags.overwritePromptTemplate = null
-            ExperimentalFlags.filterChannelContentFromKvCache = false
-        } else {
-            ExperimentalFlags.overwritePromptTemplate = fam.chatTemplate
-            ExperimentalFlags.filterChannelContentFromKvCache = fam.thinkingChannel != null
-        }
+        // The template now travels in ConversationConfig.chatTemplate (see
+        // conversationConfigForSampler); keep the deprecated global cleared so
+        // a stale value can never leak into a template-less conversation.
+        ExperimentalFlags.overwritePromptTemplate = null
+        ExperimentalFlags.filterChannelContentFromKvCache = fam?.thinkingChannel != null
         logger.d(
             "SESSION CREATE: conversation on ${activeBackendInfo?.displayName ?: "active delegate"} " +
                 "(the DELEGATE itself is NOT recreated — only this lightweight session)"

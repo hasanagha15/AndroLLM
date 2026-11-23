@@ -3,6 +3,7 @@ package io.androllm.engine.backend
 import android.content.Context
 import android.content.pm.PackageManager
 import java.io.File
+import timber.log.Timber
 
 /**
  * Startup hardware probe — runs ONCE at engine initialization and produces the
@@ -51,7 +52,54 @@ object HardwareBackendProbe {
         // Uncompressed jniLibs (16 KB packaging): nativeLibraryDir is empty, so
         // also look at the APK's lib/<abi>/ entries (central directory only).
         val dispatchLibs = extracted.ifEmpty { NpuLibraryDir.bundledDispatchLibs(context) }
-        return fromProperties(props, nnApiAvailable = nnApi, dispatchLibraries = dispatchLibs)
+        // Dispatch ABI: read the vendor lib's ELF symbol table (never dlopen).
+        val abi = dispatchLibs.firstOrNull()?.let { lib ->
+            val bytes = if (extracted.isNotEmpty()) {
+                runCatching { File(libDir, lib).readBytes() }.getOrNull()
+            } else {
+                readApkLib(context, lib)
+            }
+            DispatchAbiCheck.check(bytes)
+        }
+        if (abi != null && abi != DispatchAbiCheck.Result.SUPPORTED) {
+            Timber.w(
+                "[NPU] ${dispatchLibs.first()} does not export ${DispatchAbiCheck.REQUIRED_SYMBOL} " +
+                    "($abi) — incompatible with the bundled LiteRT-LM runtime; NPU disabled"
+            )
+        }
+        return fromProperties(
+            props,
+            nnApiAvailable = nnApi,
+            dispatchLibraries = dispatchLibs,
+            dispatchAbi = abi ?: DispatchAbiCheck.Result.UNREADABLE,
+            bundledHexagonArchs = bundledHexagonArchs()
+        )
+    }
+
+    /** Bytes of `lib/<abi>/<name>` inside the APK (uncompressed jniLibs), or null. */
+    private fun readApkLib(context: Context, name: String): ByteArray? = runCatching {
+        val abi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+        java.util.zip.ZipFile(context.applicationInfo.sourceDir).use { apk ->
+            val entry = apk.getEntry("lib/$abi/$name") ?: return@use null
+            apk.getInputStream(entry).use { it.readBytes() }
+        }
+    }.getOrNull()
+
+    /** Hexagon archs the APK ships a QNN skel for (from [NpuLibraryDir.SKEL_LIB], e.g. V81). */
+    fun bundledHexagonArchs(): Set<String> =
+        Regex("""V\d\d""").findAll(NpuLibraryDir.SKEL_LIB).map { it.value }.toSet()
+
+    /**
+     * Hexagon HTP arch of well-known Snapdragon SoCs (`ro.soc.model`). Unknown
+     * models return null and are not blocked (the runtime decides).
+     */
+    fun hexagonArchFor(socModel: String?): String? = when (socModel?.uppercase()?.trim()) {
+        "SM8450", "SM8475" -> "V69"
+        "SM8550" -> "V73"
+        "SM8650" -> "V75" // Snapdragon 8 Gen 3 (Galaxy S24 Ultra)
+        "SM8750" -> "V79"
+        "SM8845", "SM8850" -> "V81"
+        else -> null
     }
 
     /**
@@ -61,7 +109,9 @@ object HardwareBackendProbe {
     fun fromProperties(
         props: Map<String, String>,
         nnApiAvailable: Boolean = false,
-        dispatchLibraries: List<String> = emptyList()
+        dispatchLibraries: List<String> = emptyList(),
+        dispatchAbi: DispatchAbiCheck.Result = DispatchAbiCheck.Result.SUPPORTED,
+        bundledHexagonArchs: Set<String> = emptySet()
     ): BackendCapabilities {
         val vendor = NpuVendor.detect(
             socManufacturer = props[PROP_SOC_MANUFACTURER],
@@ -90,7 +140,19 @@ object HardwareBackendProbe {
         val dispatchFound = dispatchLibraries.any { lib ->
             if (vendor.detected) lib.contains(vendor.vendorId, ignoreCase = true) else true
         }
-        val npuUsable = npuAvailable && dispatchFound
+        // The dispatch lib must speak the runtime's dispatch ABI (LiteRT-LM
+        // 0.19.x: LiteRtDispatchQueryInterface). A legacy (2.2.0-era) lib or
+        // one we could not read can never initialize — don't offer NPU, so
+        // AUTO never tries it (and never risks a native abort in that path).
+        val abiOk = dispatchAbi == DispatchAbiCheck.Result.SUPPORTED
+        // Qualcomm: the APK ships the QNN skel for specific Hexagon archs
+        // only (V81 today). A known SoC with a different arch (e.g. SM8650 /
+        // V75, Galaxy S24 Ultra) cannot run the bundled skel.
+        val socArch = if (vendor.vendorId.equals("qualcomm", ignoreCase = true)) {
+            hexagonArchFor(props[PROP_SOC_MODEL])
+        } else null
+        val archOk = socArch == null || bundledHexagonArchs.isEmpty() || socArch in bundledHexagonArchs
+        val npuUsable = npuAvailable && dispatchFound && abiOk && archOk
 
         return BackendCapabilities(
             cpuAvailable = true,

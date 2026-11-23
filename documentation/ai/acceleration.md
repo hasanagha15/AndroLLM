@@ -103,6 +103,29 @@ independent constraints must both hold:
    `Qnn System library version … is mismatched. The minimum supported
    version is 1.11.0`.
 
+> **LiteRT-LM 0.19.1 (branch h-litert019).** The runtime resolves the vendor
+> entry point `LiteRtDispatchQueryInterface` (new dispatch ABI) and no longer
+> looks up `LiteRtDispatchGetApi`, which is all the v2.2.0-era lib below
+> exports. The dispatcher now comes from Google Maven
+> `com.google.ai.edge.litert:litert-npu-runtime-qualcomm:2.4.0` (Apache-2.0;
+> the AAR carries only `libLiteRtDispatch_Qualcomm.so` + the AOT compiler
+> plugin, which the app excludes). The QNN libs below are unchanged (QAIRT
+> 2.47, V81). Whether the 2.4.0 dispatcher (built against QAIRT 2.52) accepts
+> QAIRT 2.47 `libQnnSystem.so` is only verifiable on a device — on mismatch it
+> logs `Qnn … library version … not supported` and the chain falls back.
+> `HardwareBackendProbe` reports `npuUsable = false` when the dispatcher lacks
+> `LiteRtDispatchQueryInterface` (ELF `.dynsym` check, no dlopen) or when a
+> known Snapdragon's Hexagon arch has no bundled skel (e.g. SM8650 = V75 on
+> the Galaxy S24 Ultra; only V81 is bundled).
+>
+> NPU on SM8650 / V75 would additionally need: `libQnnHtpV75Skel.so` (asset,
+> like the V81 skel) and `libQnnHtpV75Stub.so` from QAIRT ≥ 2.47 (Qualcomm
+> licence — obtain via the gallery app's SoC APK or Qualcomm's SDK, not
+> committed here), the matching `libQnnHtp.so`/`libQnnSystem.so`, and a model
+> compiled AOT for SM8650 (litert-community only has Gemma 3 ones, gated:
+> `gemma3-270m-it-q8.qualcomm.sm8650.litertlm`,
+> `Gemma3-1B-IT_q4_ekv1280_sm8650.litertlm`).
+
 **Where the working set comes from** (verified on SM8845 / Hexagon V81):
 
 - Dispatch lib: LiteRT v2.2.0 release asset
