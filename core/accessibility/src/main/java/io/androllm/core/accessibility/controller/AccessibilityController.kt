@@ -7,6 +7,7 @@ import android.graphics.Bitmap
 import android.os.Build
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.androllm.core.accessibility.AccessibilityAutomationService
 import io.androllm.core.accessibility.analyzer.ScreenAnalyzer
@@ -227,16 +228,26 @@ class AccessibilityController @Inject constructor(
         SensitiveAppGuard.blockedReason(pkg, sensitiveApps.current())
 
     /**
-     * Screen-read refusal (tree / screenshot / OCR) for the current foreground
-     * app, or null. Banking/payment apps, Tesla and WhatsApp are hidden (K).
+     * Screen-capture refusal (screenshot / OCR / scan_qr) or null (K).
+     * Fail-closed: refuses when the service is off or the active window is
+     * unknown, when the active or last tracked app is protected, and when any
+     * visible application window (split screen, PiP, floating) is protected.
      */
     suspend fun screenReadBlockedReason(): String? {
-        val root = onMain { service?.rootInActiveWindow } ?: return null
-        return screenReadBlockedReason(onMain { root.packageName })
+        val s = service ?: return notConnected()
+        val activePkg = onMain { s.rootInActiveWindow?.packageName?.toString() }
+        val visible = onMain {
+            s.windows
+                .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+                .map { w -> w.root?.packageName?.toString() }
+        } ?: listOf(null)
+        return SensitiveAppGuard.screenCaptureBlockedReason(
+            activePkg, uiState.currentPackage.value, visible, sensitiveApps.current()
+        )
     }
 
-    internal suspend fun screenReadBlockedReason(pkg: CharSequence?): String? =
-        SensitiveAppGuard.screenReadBlockedReason(pkg, sensitiveApps.current())
+    /** The user's extra protected packages (for the screen analyzer). */
+    internal suspend fun sensitiveExtras(): Set<String> = sensitiveApps.current()
 
     /** Guard refusal for the current foreground app, or null (also when unknown). */
     private suspend fun foregroundBlockedReason(): String? {
@@ -311,7 +322,7 @@ class AccessibilityController @Inject constructor(
     suspend fun captureScreenshot(): Bitmap? {
         val s = service ?: return null
         if (Build.VERSION.SDK_INT < 30) return null
-        // K: never capture a banking/payment, Tesla or WhatsApp screen.
+        // K: never capture a banking/payment, Tesla or WhatsApp screen (any visible window).
         if (screenReadBlockedReason() != null) return null
         // takeScreenshot must be invoked from the main thread; the result
         // arrives on the main executor, so both sides stay on main. A timeout

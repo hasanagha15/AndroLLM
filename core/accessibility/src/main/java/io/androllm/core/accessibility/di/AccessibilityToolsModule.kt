@@ -40,6 +40,11 @@ abstract class AccessibilityToolsModule {
     @Binds @IntoSet abstract fun bindUiRun(tool: UiRunTaskTool): Tool
     @Binds @IntoSet abstract fun bindQrScan(tool: QrScanTool): Tool
 
+    /** K: content-hide notifications of protected apps in read_notifications. */
+    @Binds abstract fun bindNotificationPrivacy(
+        filter: io.androllm.core.accessibility.controller.SensitiveNotificationFilter
+    ): io.androllm.core.tools.tool.impl.NotificationPrivacyFilter
+
     companion object {
         /**
          * The OCR engine for the vision fallback. The pluggable interface is

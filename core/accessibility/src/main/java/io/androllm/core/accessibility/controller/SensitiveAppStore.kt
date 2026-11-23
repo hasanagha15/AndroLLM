@@ -40,7 +40,11 @@ class SensitiveAppStore @Inject constructor(
     private val dataStore: DataStore<Preferences> = context.sensitiveAppsDataStore
 
     val extras: Flow<Set<String>> = dataStore.data
-        .catch { emit(androidx.datastore.preferences.core.emptyPreferences()) }
+        .catch { e ->
+            // Built-in list + Tesla/WhatsApp still apply; only the user list is lost.
+            timber.log.Timber.w(e, "SensitiveAppStore: user list unreadable, using built-in list only")
+            emit(androidx.datastore.preferences.core.emptyPreferences())
+        }
         .map { prefs -> SensitiveAppGuard.parsePackages(prefs[KEY_EXTRA_PACKAGES]) }
 
     /** The user's extra packages; empty when unset or unreadable. */

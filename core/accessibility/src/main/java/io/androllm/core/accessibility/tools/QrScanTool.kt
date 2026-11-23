@@ -7,6 +7,7 @@ import com.google.zxing.MultiFormatReader
 import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.common.HybridBinarizer
 import io.androllm.core.accessibility.controller.AccessibilityController
+import io.androllm.core.accessibility.controller.SensitiveAppGuard
 import io.androllm.core.tools.api.Tool
 import io.androllm.core.tools.api.ToolCategory
 import io.androllm.core.tools.api.ToolPermission
@@ -66,7 +67,9 @@ class QrScanTool @Inject constructor(
             if (!controller.isConnected) {
                 return ToolResult.Failure(notConnected())
             }
-            controller.screenReadBlockedReason()?.let { return ToolResult.Failure(it, retryable = false) }
+            controller.screenReadBlockedReason()?.let {
+                return ToolResult.Failure(it, retryable = it == SensitiveAppGuard.UNKNOWN_WINDOW_REASON)
+            }
             controller.captureScreenshot()
                 ?: return ToolResult.Failure("Could not capture the screen (needs Android 11+ and the UI Automation service).")
         }

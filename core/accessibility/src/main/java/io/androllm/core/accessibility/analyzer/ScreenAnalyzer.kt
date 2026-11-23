@@ -1,6 +1,8 @@
 package io.androllm.core.accessibility.analyzer
 
 import io.androllm.core.accessibility.controller.AccessibilityController
+import io.androllm.core.accessibility.controller.SensitiveAppGuard
+import io.androllm.core.accessibility.controller.UiContextSnapshot
 import io.androllm.core.accessibility.controller.UIStateTracker
 import io.androllm.core.accessibility.debug.AccessibilityDebugStore
 import io.androllm.core.accessibility.finder.AccessibilityNodeFinder
@@ -27,23 +29,23 @@ class ScreenAnalyzer @Inject constructor(
 
     suspend fun read(controller: AccessibilityController): UiScreenSnapshot {
         val root = controller.onMain { controller.serviceOrNull()?.rootInActiveWindow }
-        // K: banking/payment apps, Tesla and WhatsApp are never read (no tree, no OCR).
-        if (root != null) {
-            val pkg = controller.onMain { root.packageName }
-            controller.screenReadBlockedReason(pkg)?.let { reason ->
-                return UiScreenSnapshot.hidden(pkg?.toString().orEmpty(), reason)
-            }
+        val activePkg = root?.let { controller.onMain { it.packageName } }?.toString()
+        val context = uiState.snapshot()
+        // K: banking/payment apps, Tesla and WhatsApp are never read (no tree,
+        // no OCR, no tracker text). Fail-closed when the active window is unknown.
+        val gate = readGate(activePkg, context, controller.sensitiveExtras())
+        gate.hiddenReason?.let { reason ->
+            return UiScreenSnapshot.hidden(gate.packageName, reason, gate.hiddenRetryable)
         }
         val uiRoot = root?.let { controller.onMain { UiTreeBuilder.build(it) } }
 
-        val context = uiState.snapshot()
         val loading = uiRoot?.flatten()?.any { it.type == UiElementType.PROGRESS } ?: false
         uiState.setLoading(loading)
 
         val focused = uiRoot?.let { AccessibilityNodeFinder.findFocused(it) }?.label
-            ?: context.focusedText
+            ?: gate.trackerFocused
         val selected = uiRoot?.flatten()?.firstOrNull { it.selected }?.label
-            ?: context.selectedText
+            ?: gate.trackerSelected
 
         var ocrLines = emptyList<String>()
         val settings = settingsStore.current()
@@ -54,7 +56,7 @@ class ScreenAnalyzer @Inject constructor(
         }
 
         val snapshot = UiScreenSnapshot(
-            packageName = context.currentPackage,
+            packageName = gate.packageName,
             windowTitle = context.windowTitle,
             root = uiRoot,
             focusedText = focused,
@@ -68,4 +70,37 @@ class ScreenAnalyzer @Inject constructor(
         }
         return snapshot
     }
+}
+
+/** Outcome of the pre-read privacy gate (K). */
+internal data class ReadGate(
+    val hiddenReason: String?,
+    val hiddenRetryable: Boolean,
+    val packageName: String,
+    val trackerFocused: String,
+    val trackerSelected: String
+)
+
+/**
+ * Pure pre-read gate. [activePackage] = package of rootInActiveWindow (null =
+ * unknown). Refuses when the active or the last tracked app is protected;
+ * refuses (retryable) when the active window is unknown; otherwise passes the
+ * tracker's focused/selected text only when it belongs to the active app.
+ */
+internal fun readGate(activePackage: String?, ctx: UiContextSnapshot, extras: Set<String>): ReadGate {
+    val pkg = activePackage?.takeIf { it.isNotBlank() } ?: ctx.currentPackage
+    SensitiveAppGuard.screenReadGate(activePackage, ctx.currentPackage, extras)?.let {
+        return ReadGate(it, false, pkg, "", "")
+    }
+    if (activePackage.isNullOrBlank()) {
+        return ReadGate(SensitiveAppGuard.UNKNOWN_WINDOW_REASON, true, pkg, "", "")
+    }
+    val sameApp = ctx.textPackage.isNotBlank() && ctx.textPackage == activePackage
+    return ReadGate(
+        hiddenReason = null,
+        hiddenRetryable = false,
+        packageName = pkg,
+        trackerFocused = if (sameApp) ctx.focusedText else "",
+        trackerSelected = if (sameApp) ctx.selectedText else ""
+    )
 }

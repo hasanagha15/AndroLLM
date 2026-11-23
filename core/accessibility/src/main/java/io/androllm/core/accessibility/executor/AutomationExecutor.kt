@@ -80,8 +80,15 @@ class AutomationExecutor @Inject constructor(
             onStatus("Step ${step + 1} of ${settings.maxSteps}…")
 
             val screen = controller.readScreen()
-            // K: a hidden screen (banking/payment, Tesla, WhatsApp) ends the run.
-            screen.hiddenReason?.let { return AutomationResult(false, it, steps.size, retryable = false) }
+            // K: a hidden screen (banking/payment, Tesla, WhatsApp) ends the run;
+            // an unknown active window (app switching) is waited out like loading.
+            screen.hiddenReason?.let {
+                if (screen.hiddenRetryable) {
+                    delay(600)
+                    continue
+                }
+                return AutomationResult(false, it, steps.size, retryable = false)
+            }
             // App transitions / loading spinners: wait, don't burn a step.
             if (screen.loading || (screen.isEmpty && step > 0)) {
                 delay(600)

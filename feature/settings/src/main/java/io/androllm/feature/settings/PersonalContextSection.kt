@@ -34,7 +34,10 @@ import io.androllm.core.memory.personal.ReplyLanguage
 import io.androllm.core.ui.components.CloudGlassCard
 import io.androllm.core.ui.theme.ledger
 import javax.inject.Inject
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -53,8 +56,27 @@ class PersonalContextViewModel @Inject constructor(
         .map { it.joinToString(", ") }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    private val _paymentAppsStatus = MutableStateFlow<String?>(null)
+    /** "Saved" / "Not saved …" after the last "Save apps" (K N3). */
+    val paymentAppsStatus: StateFlow<String?> = _paymentAppsStatus.asStateFlow()
+
+    private val _normalizedPaymentApps = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    /** The stored, normalized list after each successful save (K N4: the field shows it). */
+    val normalizedPaymentApps: SharedFlow<String> = _normalizedPaymentApps.asSharedFlow()
+
     fun savePaymentApps(raw: String) {
-        viewModelScope.launch { sensitiveApps.save(raw) }
+        viewModelScope.launch {
+            // A DataStore write failure (I/O, corrupt file) must not crash the app.
+            runCatching { sensitiveApps.save(raw) }
+                .onSuccess { saved ->
+                    _normalizedPaymentApps.tryEmit(saved.joinToString(", "))
+                    _paymentAppsStatus.value = "Saved (${saved.size})"
+                }
+                .onFailure { e ->
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    _paymentAppsStatus.value = "Not saved: storage error. Built-in protection still applies; try again."
+                }
+        }
     }
 
     val settings: StateFlow<PersonalContextSettings?> = store.settings
@@ -89,11 +111,15 @@ fun PersonalContextCard(viewModel: PersonalContextViewModel = hiltViewModel()) {
     val storedPaymentApps by viewModel.paymentApps.collectAsStateWithLifecycle()
     var paymentApps by remember { mutableStateOf("") }
     var paymentAppsLoaded by remember { mutableStateOf(false) }
+    val paymentAppsStatus by viewModel.paymentAppsStatus.collectAsStateWithLifecycle()
     LaunchedEffect(storedPaymentApps) {
         val s = storedPaymentApps ?: return@LaunchedEffect
-        // First load fills the field; after "Save apps" it shows the normalized list.
         paymentApps = s
         paymentAppsLoaded = true
+    }
+    // After "Save apps" the field always shows the normalized list, even if unchanged.
+    LaunchedEffect(Unit) {
+        viewModel.normalizedPaymentApps.collect { paymentApps = it }
     }
     LaunchedEffect(settings) {
         val s = settings
@@ -174,10 +200,21 @@ fun PersonalContextCard(viewModel: PersonalContextViewModel = hiltViewModel()) {
                 maxLines = 4,
                 placeholder = { Text("com.example.bank, com.example.wallet") }
             )
-            Button(
-                onClick = { viewModel.savePaymentApps(paymentApps) },
-                enabled = paymentAppsLoaded
-            ) { Text("Save apps") }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Button(
+                    onClick = { viewModel.savePaymentApps(paymentApps) },
+                    enabled = paymentAppsLoaded
+                ) { Text("Save apps") }
+                paymentAppsStatus?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.ledger.deskInk)
+                    )
+                }
+            }
         }
     }
 }

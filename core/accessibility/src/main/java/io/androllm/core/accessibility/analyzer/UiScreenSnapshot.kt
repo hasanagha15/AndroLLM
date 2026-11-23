@@ -19,6 +19,8 @@ data class UiScreenSnapshot(
     val ocrLines: List<String> = emptyList(),
     /** Non-null when the screen was deliberately not read (SensitiveAppGuard). */
     val hiddenReason: String? = null,
+    /** True when [hiddenReason] is transient (active window unknown): retry later. */
+    val hiddenRetryable: Boolean = false,
     val capturedAt: Long = System.currentTimeMillis()
 ) {
 
@@ -64,7 +66,7 @@ data class UiScreenSnapshot(
 
     companion object {
         /** A snapshot that carries no screen content at all, only the refusal. */
-        fun hidden(packageName: String, reason: String) =
-            UiScreenSnapshot(packageName = packageName, hiddenReason = reason)
+        fun hidden(packageName: String, reason: String, retryable: Boolean = false) =
+            UiScreenSnapshot(packageName = packageName, hiddenReason = reason, hiddenRetryable = retryable)
     }
 }

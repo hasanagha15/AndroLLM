@@ -39,4 +39,24 @@ class HiddenScreenExecutorTest {
         coVerify(exactly = 0) { llm.nextAction(any(), any(), any()) }
         coVerify(exactly = 0) { heuristic.nextAction(any(), any(), any()) }
     }
+
+    @Test
+    fun `unknown active window is waited out, never planned on`() = runTest {
+        val controller = mockk<AccessibilityController>()
+        every { controller.isConnected } returns true
+        coEvery { controller.readScreen() } returns
+            UiScreenSnapshot.hidden("", SensitiveAppGuard.UNKNOWN_WINDOW_REASON, retryable = true)
+        val settings = mockk<AccessibilitySettingsStore>()
+        coEvery { settings.current() } returns AccessibilitySettings(maxSteps = 3)
+        val llm = mockk<LlmActionPlanner>(relaxed = true)
+        val heuristic = mockk<HeuristicActionPlanner>(relaxed = true)
+
+        val result = AutomationExecutor(controller, settings, llm, heuristic, mockk(relaxed = true), mockk(relaxed = true))
+            .run("open youtube")
+
+        assertThat(result.success).isFalse()
+        assertThat(result.summary).contains("step limit")
+        coVerify(exactly = 0) { llm.nextAction(any(), any(), any()) }
+        coVerify(exactly = 0) { heuristic.nextAction(any(), any(), any()) }
+    }
 }

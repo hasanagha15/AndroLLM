@@ -19,8 +19,20 @@ import kotlinx.serialization.json.putJsonObject
  * Requires Notification access, which the user enables once in Android
  * settings; the tool explains how when it is missing.
  */
+/**
+ * Decides which apps' notifications are content-hidden (K: banking/payment,
+ * Tesla, WhatsApp: amounts, balances, OTP codes, other people's messages).
+ * Bound by core:accessibility to SensitiveAppGuard + the user's list.
+ */
+interface NotificationPrivacyFilter {
+    suspend fun hideContent(packageName: String): Boolean
+}
+
 @Singleton
-class NotificationTool @Inject constructor() : Tool {
+class NotificationTool @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val context: android.content.Context,
+    private val privacy: NotificationPrivacyFilter
+) : Tool {
 
     override val spec = ToolSpec(
         name = "read_notifications",
@@ -53,20 +65,52 @@ class NotificationTool @Inject constructor() : Tool {
         if (items.isEmpty()) {
             return ToolResult.Success("No notifications are currently visible.")
         }
-        val sb = StringBuilder("Notifications:")
-        val dataItems = mutableListOf<JsonObject>()
-        for (item in items) {
-            dataItems += buildJsonObject {
-                put("app", item.packageName)
-                put("title", item.title)
-                put("text", item.text.take(200))
+        val hidden = items.map { it.packageName }.distinct()
+            .filter { runCatching { privacy.hideContent(it) }.getOrDefault(true) }
+            .toSet()
+        val (summary, data) = format(items, hidden) { pkg -> appLabel(pkg) }
+        return ToolResult.Success(summary = summary, data = data)
+    }
+
+    private fun appLabel(pkg: String): String = runCatching {
+        val pm = context.packageManager
+        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+    }.getOrDefault(pkg)
+
+    companion object {
+        /**
+         * Builds the summary + data. For [hiddenPackages] only "notification
+         * from <app label>" is returned: no title, no text (OTP safety).
+         */
+        internal fun format(
+            items: List<AndroNotificationListener.ActiveNotification>,
+            hiddenPackages: Set<String>,
+            label: (String) -> String
+        ): Pair<String, JsonObject> {
+            val sb = StringBuilder("Notifications:")
+            val dataItems = mutableListOf<JsonObject>()
+            for (item in items) {
+                if (item.packageName in hiddenPackages) {
+                    val app = label(item.packageName)
+                    dataItems += buildJsonObject {
+                        put("app", item.packageName)
+                        put("hidden", true)
+                    }
+                    sb.append(" Notification from ").append(app).append(" (content hidden for privacy).")
+                    continue
+                }
+                dataItems += buildJsonObject {
+                    put("app", item.packageName)
+                    put("title", item.title)
+                    put("text", item.text.take(200))
+                }
+                val itemLabel = item.title.ifBlank { item.packageName }
+                val body = item.text.take(100)
+                sb.append(' ').append(itemLabel)
+                if (body.isNotBlank()) sb.append(" — ").append(body)
             }
-            val label = item.title.ifBlank { item.packageName }
-            val body = item.text.take(100)
-            sb.append(' ').append(label)
-            if (body.isNotBlank()) sb.append(" — ").append(body)
+            val data = buildJsonObject { putJsonArray("notifications") { dataItems.forEach { add(it) } } }
+            return sb.toString() to data
         }
-        val data = buildJsonObject { putJsonArray("notifications") { dataItems.forEach { add(it) } } }
-        return ToolResult.Success(summary = sb.toString(), data = data)
     }
 }

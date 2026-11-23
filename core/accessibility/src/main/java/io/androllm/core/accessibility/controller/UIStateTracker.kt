@@ -38,24 +38,48 @@ class UIStateTracker @Inject constructor() {
 
     private val MAX_STACK = 8
 
+    /** Package the focused/selected text belongs to ("" = none). */
+    @Volatile private var textPackage: String = ""
+
     fun onEvent(event: AccessibilityEvent) {
-        val pkg = event.packageName?.toString().orEmpty()
+        onEvent(
+            pkg = event.packageName?.toString().orEmpty(),
+            eventType = event.eventType,
+            className = event.className?.toString(),
+            firstText = event.text.firstOrNull()
+        )
+    }
+
+    /** Event core, plain values only (unit-testable). */
+    internal fun onEvent(pkg: String, eventType: Int, className: String?, firstText: CharSequence?) {
         if (pkg.isNotBlank() && pkg != _currentPackage.value) {
             _currentPackage.value = pkg
             _navStack.value = (listOf(pkg) + _navStack.value.filter { it != pkg }).take(MAX_STACK)
+            // K: text typed/focused in the previous app (a bank amount, a card
+            // number) must never follow the user into the next app's snapshot.
+            clearText()
         }
 
         // Window title = the activity label when available, else package.
-        val title = event.className?.toString()?.substringAfterLast('.') ?: ""
-        when (event.eventType) {
+        val title = className?.substringAfterLast('.') ?: ""
+        when (eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
                 _windowTitle.value = title
             }
             AccessibilityEvent.TYPE_VIEW_FOCUSED -> {
-                event.text.firstOrNull()?.let { _focusedText.value = it.toString().take(80) }
+                firstText?.let {
+                    _focusedText.value = it.toString().take(80)
+                    textPackage = pkg.ifBlank { _currentPackage.value }
+                }
             }
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> Unit // freshness signal only
         }
+    }
+
+    private fun clearText() {
+        _focusedText.value = ""
+        _selectedText.value = ""
+        textPackage = ""
     }
 
     /** Called by the screen analyzer after a tree read (loading detection). */
@@ -65,10 +89,12 @@ class UIStateTracker @Inject constructor() {
 
     fun setFocusedText(text: String) {
         _focusedText.value = text.take(80)
+        textPackage = _currentPackage.value
     }
 
     fun setSelectedText(text: String) {
         _selectedText.value = text.take(80)
+        textPackage = _currentPackage.value
     }
 
     fun snapshot(): UiContextSnapshot = UiContextSnapshot(
@@ -76,6 +102,7 @@ class UIStateTracker @Inject constructor() {
         windowTitle = _windowTitle.value,
         focusedText = _focusedText.value,
         selectedText = _selectedText.value,
+        textPackage = textPackage,
         loading = _loading.value,
         navStack = _navStack.value
     )
@@ -87,6 +114,8 @@ data class UiContextSnapshot(
     val windowTitle: String = "",
     val focusedText: String = "",
     val selectedText: String = "",
+    /** Package [focusedText]/[selectedText] came from; only valid for that app. */
+    val textPackage: String = "",
     val loading: Boolean = false,
     val navStack: List<String> = emptyList()
 )

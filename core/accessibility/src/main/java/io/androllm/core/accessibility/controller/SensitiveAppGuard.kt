@@ -129,6 +129,55 @@ object SensitiveAppGuard {
         return "Screen reading is blocked in $pkg for privacy. Use the dedicated tool ($hint) instead."
     }
 
+    /** Refusal when the active window cannot be identified (fail-closed, K). */
+    const val UNKNOWN_WINDOW_REASON =
+        "Screen reading refused: the active window could not be identified (the screen may be switching apps). Try again in a moment."
+
+    /**
+     * Read gate for the accessibility tree (K, fail-closed): refuses when the
+     * active window's package OR the last package seen in accessibility events
+     * ([trackedPackage]) is protected. Null [activePackage] alone is not a
+     * refusal here; the caller treats an unknown window as "nothing to read".
+     */
+    fun screenReadGate(
+        activePackage: CharSequence?,
+        trackedPackage: CharSequence?,
+        extras: Set<String> = emptySet()
+    ): String? {
+        val active = activePackage?.toString()?.trim().orEmpty()
+        val tracked = trackedPackage?.toString()?.trim().orEmpty()
+        screenReadBlockedReason(active, extras)?.let { return it }
+        if (tracked != active) screenReadBlockedReason(tracked, extras)?.let { return it }
+        return null
+    }
+
+    /**
+     * Gate for a full-display screenshot (OCR, scan_qr). Fail-closed: refuses
+     * when the active window is unknown, when the active or tracked app is
+     * protected, and when ANY visible application window (split screen,
+     * picture-in-picture, floating window; [visibleAppPackages], null = window
+     * whose app could not be identified) belongs to a protected app.
+     */
+    fun screenCaptureBlockedReason(
+        activePackage: CharSequence?,
+        trackedPackage: CharSequence?,
+        visibleAppPackages: List<CharSequence?>,
+        extras: Set<String> = emptySet()
+    ): String? {
+        if (activePackage.isNullOrBlank()) return UNKNOWN_WINDOW_REASON
+        screenReadGate(activePackage, trackedPackage, extras)?.let { return it }
+        for (p in visibleAppPackages) {
+            if (p.isNullOrBlank()) {
+                return "Screen capture refused: an app window on screen could not be identified."
+            }
+            screenReadBlockedReason(p, extras)?.let {
+                return "Screen capture refused: a protected app is visible on screen (split screen / " +
+                    "picture-in-picture). $it"
+            }
+        }
+        return null
+    }
+
     /** "a.b" style: segments of letters/digits/underscore, first starts with a letter, at least one dot. */
     private fun isPackageName(s: String): Boolean {
         val parts = s.split('.')
