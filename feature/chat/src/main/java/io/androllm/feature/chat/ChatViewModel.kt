@@ -964,7 +964,7 @@ class ChatViewModel @Inject constructor(
         cloudJob?.cancel()
         turnJob?.cancel()
 
-        android.util.Log.i(TAG, "SEND CLICK prompt=\"$trimmed\" (${trimmed.length} chars)")
+        android.util.Log.i(TAG, describeSendClickForLog(trimmed, _genConfig.value.debugTokenLogging))
 
         turnJob = viewModelScope.launch {
             _preparing.value = true
@@ -2255,6 +2255,10 @@ private fun ChatMessage.toCoreMessage(): Message = Message(
     origin = origin,
     attachmentsJson = attachmentsJson
 )
+
+/** Branch Q (gate B1): the "SEND CLICK" line — length only unless debugTokenLogging. */
+internal fun describeSendClickForLog(prompt: String, includeContent: Boolean): String =
+    "SEND CLICK prompt=${ContentLog.text(prompt, 80, includeContent)} (${prompt.length} chars)"
 
 /**
  * Branch Q: content-free description of a built prompt for logcat —

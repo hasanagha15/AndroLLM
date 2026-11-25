@@ -65,7 +65,7 @@ class ToolExecutionLogger @Inject constructor() {
         if (result.isValid) {
             Timber.i("ToolExecutionLogger: validation passed for '$toolName'")
         } else {
-            Timber.w("ToolExecutionLogger: validation failed for '$toolName': ${(result as ValidationResult.Invalid).errors}")
+            Timber.w("ToolExecutionLogger: validation failed for '$toolName': ${ContentLog.errors((result as ValidationResult.Invalid).errors)}")
         }
     }
 

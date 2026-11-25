@@ -63,7 +63,7 @@ class StreamingToolCallBuffer(
             json.parseToJsonElement(argsString)
             true
         } catch (e: Exception) {
-            Timber.w("StreamingToolCallBuffer: buffered JSON still invalid for index ${event.index}: ${e.message}")
+            Timber.w("StreamingToolCallBuffer: buffered JSON still invalid for index ${event.index}: ${e.javaClass.simpleName}")
             false
         }
 
@@ -113,7 +113,7 @@ class StreamingToolCallBuffer(
             try {
                 json.parseToJsonElement(argsString)
             } catch (e: Exception) {
-                Timber.w("StreamingToolCallBuffer: discarding malformed JSON for '$name' at index $index: ${e.message}")
+                Timber.w("StreamingToolCallBuffer: discarding malformed JSON for '$name' at index $index: ${e.javaClass.simpleName}")
                 continue
             }
             // Optional strict validation against schema if validator present

@@ -1,5 +1,6 @@
 package io.androllm.core.voice.tts
 
+import io.androllm.core.common.log.ContentLog
 import android.content.Context
 import com.k2fsa.sherpa.onnx.GeneratedAudio
 import com.k2fsa.sherpa.onnx.OfflineTts
@@ -262,7 +263,7 @@ class SherpaOnnxOfflineTtsEngine @Inject constructor(
             // Anything still outside the VITS lexicon (brands, jargon) would
             // be silently dropped by the model — spell it instead ("LLM"→"l l m").
             val covered = lexicon?.let { EnglishTtsNormalizer.spellOutOfLexicon(normalized, it) } ?: normalized
-            Timber.d("TTS: speaking '${covered}'")
+            Timber.d("TTS: speaking %s", ContentLog.text(covered, 40))
             val audio: GeneratedAudio = t.generate(covered, 0, speed.coerceIn(0.5f, 2.0f))
             lastSampleRate = audio.sampleRate.takeIf { it > 0 } ?: t.sampleRate()
             audio.samples
@@ -277,7 +278,7 @@ class SherpaOnnxOfflineTtsEngine @Inject constructor(
     private fun synthesizeRussian(r: OfflineTts, text: String, speed: Float): FloatArray? = runCatching {
         val cleaned = RussianTtsText.clean(text)
         if (cleaned.isBlank()) return null
-        Timber.d("TTS[ru]: speaking '$cleaned'")
+        Timber.d("TTS[ru]: speaking %s", ContentLog.text(cleaned, 40))
         val audio: GeneratedAudio = r.generate(cleaned, 0, speed.coerceIn(0.5f, 2.0f))
         lastSampleRate = audio.sampleRate.takeIf { it > 0 } ?: r.sampleRate()
         audio.samples

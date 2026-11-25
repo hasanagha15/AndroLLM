@@ -359,6 +359,8 @@ class PlaybookFastPath(
                 if (r.summary.startsWith("The user declined")) {
                     io.androllm.core.tools.remote.UtteranceFastPaths.Outcome(reply = "Cancelled.")
                 } else {
+                    // Gate Q N1: refused before the replay started (gone, not eligible, stale,
+                    // protected, not installed) → no note, the model answers as usual.
                     io.androllm.core.tools.remote.UtteranceFastPaths.Outcome(modelNote = partialNote(m.playbook, r.data))
                 }
         }
@@ -379,25 +381,31 @@ class PlaybookFastPath(
          * replay stopped. Ids, counts, op types and the machine reason only —
          * never slot values (the owner's words) or screen text.
          */
-        fun partialNote(p: Playbook, data: JsonObject): String {
+        fun partialNote(p: Playbook, data: JsonObject): String? {
             fun str(key: String) = (data[key] as? JsonPrimitive)?.contentOrNull
+            // Only a replay that actually ran has a failing step + machine reason.
+            val reason = str("reason")?.takeIf { it.matches(OP_PATTERN) } ?: return null
+            val failedOp = str("failed_op")?.takeIf { it.matches(OP_PATTERN) }
             val done = str("steps_done")?.toIntOrNull() ?: 0
             val total = str("steps_total")?.toIntOrNull() ?: p.steps.size
             val ops = (data["done_ops"] as? kotlinx.serialization.json.JsonArray)
                 ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
                 ?.filter { it.matches(OP_PATTERN) }
                 .orEmpty()
-            val reason = str("reason")?.takeIf { it.matches(OP_PATTERN) } ?: "not_started"
             return buildString {
                 append("Fast path: playbook ").append(p.id).append(" was started for this request and stopped. ")
                 append("Steps completed: ").append(done).append(" of ").append(total)
                 if (ops.isNotEmpty()) append(" (").append(ops.joinToString(", ")).append(')')
-                append(". Reason: ").append(reason).append(". ")
+                append(". Stopped at step ").append((str("failed_step")?.toIntOrNull() ?: done) + 1)
+                if (failedOp != null) append(" (").append(failedOp).append(')')
+                append(", reason: ").append(reason).append(". ")
                 if (done > 0) {
-                    append("The app may already be partly changed (e.g. a screen opened or text typed); ")
+                    append("The app may already be partly changed (e.g. a screen opened or text typed), ")
+                    append("and the failing step may have partly run; ")
                     append("check the current screen before repeating those steps.")
                 } else {
-                    append("Nothing was done on screen.")
+                    append("No step completed, but the app may have been opened and the failing step may have partly run; ")
+                    append("check the current screen.")
                 }
             }
         }

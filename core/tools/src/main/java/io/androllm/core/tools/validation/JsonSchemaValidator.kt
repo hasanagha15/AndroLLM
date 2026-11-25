@@ -232,6 +232,14 @@ object JsonSchemaValidator {
         return true
     }
 
+    /** "Malformed JSON at offset N" (or without the offset) — never a fragment of the input. */
+    private const val OFFSET_RE = "offset (\\d+)"
+
+    internal fun malformedJsonError(e: Throwable): String {
+        val offset = e.message?.let { Regex(OFFSET_RE).find(it)?.groupValues?.get(1) }
+        return if (offset != null) "Malformed JSON at offset $offset" else "Malformed JSON"
+    }
+
     /**
      * Validates raw JSON string is well-formed. Returns error if malformed.
      */
@@ -241,7 +249,9 @@ object JsonSchemaValidator {
             kotlinx.serialization.json.Json.parseToJsonElement(raw)
             ValidationResult.Valid
         } catch (e: Exception) {
-            ValidationResult.Invalid("Malformed JSON: ${e.message?.take(200) ?: "invalid JSON"}", retryable = true)
+            // Branch Q (gate B3): the parser message quotes the input ("JSON input: …") —
+            // keep only the offset; the model can retry from that.
+            ValidationResult.Invalid(malformedJsonError(e), retryable = true)
         }
     }
 }

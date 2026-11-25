@@ -302,7 +302,7 @@ class ToolCallingPipeline @Inject constructor(
         return s.ifBlank { "I couldn't generate a response. Please try again." }
     }
 
-    private fun heuristicFallback(userMessage: String, specs: List<io.androllm.core.tools.api.ToolSpec>): List<ToolCall> {
+    internal fun heuristicFallback(userMessage: String, specs: List<io.androllm.core.tools.api.ToolSpec>): List<ToolCall> {
         if (userMessage.isBlank() || specs.isEmpty()) return emptyList()
         val lower = userMessage.lowercase()
         val specsByName = specs.associateBy { it.name }
@@ -311,7 +311,7 @@ class ToolCallingPipeline @Inject constructor(
         if (specsByName.containsKey("calculate") && (lower.contains("calculat") || Regex("""\d+\s*[+\-*/x×÷^%]\s*\d+""").containsMatchIn(userMessage))) {
             extractMathExpressionFromUser(userMessage)?.let { expr ->
                 if (expr.isNotBlank()) {
-                    Timber.i("ToolCallingPipeline: heuristicFallback — calculator with expression '$expr'")
+                    Timber.i("ToolCallingPipeline: heuristicFallback — calculator with expression ${ContentLog.text(expr)}")
                     return listOf(ToolCall(id = "call_calculate_heuristic_0", name = "calculate", arguments = buildJsonObject { put("expression", expr) }))
                 }
             }
@@ -328,7 +328,7 @@ class ToolCallingPipeline @Inject constructor(
         // Weather
         if (specsByName.containsKey("get_weather") && (lower.contains("weather") || lower.contains("forecast"))) {
             val loc = extractWeatherLocationFromUser(userMessage) ?: "Current"
-            Timber.i("ToolCallingPipeline: heuristicFallback — get_weather with location '$loc'")
+            Timber.i("ToolCallingPipeline: heuristicFallback — get_weather with location ${ContentLog.text(loc)}")
             return listOf(ToolCall(id = "call_get_weather_heuristic_0", name = "get_weather", arguments = buildJsonObject { put("location", loc) }))
         }
         return emptyList()

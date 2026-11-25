@@ -25,6 +25,15 @@ class PromptLogContentFreeTest {
     }
 
     @Test
+    fun `SEND CLICK line has the length only (gate Q B1)`() {
+        val prompt = "Q7USERTEXT call mom about the contract"
+        val line = describeSendClickForLog(prompt, includeContent = false)
+        assertEquals("SEND CLICK prompt=[${prompt.length} chars] (${prompt.length} chars)", line)
+        assertFalse(line.contains("Q7USERTEXT"))
+        assertTrue(describeSendClickForLog(prompt, includeContent = true).contains("Q7USERTEXT"))
+    }
+
+    @Test
     fun `debug token logging adds the head of each message`() {
         val line = describePromptForLog(messages, includeContent = true)
         assertTrue(line.contains("Q7USERTEXT"))

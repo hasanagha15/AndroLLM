@@ -1,5 +1,6 @@
 package io.androllm.core.tools.tool.impl
 
+import io.androllm.core.common.log.ContentLog
 import android.content.Context
 import android.content.Intent
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -70,7 +71,7 @@ class AppLauncherTool @Inject constructor(
         }
 
         val result = AppSearch.search(entries, app)
-        Timber.i("AppLauncherTool: '%s' → %d match(es), ambiguous=%s", app, result.matches.size, result.ambiguous)
+        Timber.i("AppLauncherTool: %s → %d match(es), ambiguous=%s", ContentLog.text(app, 40), result.matches.size, result.ambiguous)
 
         if (result.matches.isEmpty()) {
             // STEP 9 — never falsely claim it isn't installed; offer the Play Store.

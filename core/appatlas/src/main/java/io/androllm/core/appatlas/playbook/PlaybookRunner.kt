@@ -95,8 +95,9 @@ class PlaybookRunner(
 
         val r = engine.run(p, slots, strict = status == PlaybookStatus.UNVERIFIED)
         if (r.success) {
-            // Branch Q: a success with the postcondition seen makes the playbook fast-path trusted.
-            repository.recordSuccess(p.id, verified = r.hasPostcondition && r.verified)
+            // Branch Q: a success with the postcondition seen makes the playbook fast-path trusted —
+            // only on the owner's own runs (gate Q N2): a remote (Jarvis) playbook_run never earns trust.
+            repository.recordSuccess(p.id, verified = r.hasPostcondition && r.verified && currentRemoteOrigin() == null)
             if (r.hasPostcondition && !r.verified) repository.recordUnverified(p.id, version)
             Timber.i("Playbooks: %s ok in %d ms (verified=%s)", p.id, r.elapsedMs, r.verified)
             return ToolResult.Success(
@@ -182,7 +183,7 @@ class PlaybookRunner(
         put("status", "failed")
         put("playbook", p.id)
         put("verified", false)
-        f?.let { put("failed_step", it.stepIndex); put("reason", it.kind.wire) }
+        f?.let { put("failed_step", it.stepIndex); put("failed_op", it.op); put("reason", it.kind.wire) }
         // Branch Q (N rec 2): what already happened on screen — count + op types, never slot values.
         put("steps_done", stepsDone)
         put("steps_total", p.steps.size)

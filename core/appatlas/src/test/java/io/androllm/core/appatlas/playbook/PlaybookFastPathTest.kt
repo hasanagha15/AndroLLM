@@ -177,7 +177,7 @@ class PlaybookFastPathTest {
         val note = out.modelNote!!
         assertThat(note).contains("playbook com.example.video/search")
         assertThat(note).contains("Steps completed: 2 of 3 (tap, type)")
-        assertThat(note).contains("Reason: target_not_found")
+        assertThat(note).contains("Stopped at step 3 (tap), reason: target_not_found")
         assertThat(note).contains("check the current screen")
         // The slot value (the owner's words) never goes into the note.
         assertThat(driver.typed).containsExactly("cats")
@@ -202,11 +202,48 @@ class PlaybookFastPathTest {
     }
 
     @Test
-    fun `note for a playbook that never started says nothing was done`() {
+    fun `no note when the replay never started (gone, not eligible, stale, protected)`() = runTest {
         val p = PlaybookFixtures.searchPlaybook()
-        val note = PlaybookFastPath.partialNote(p, kotlinx.serialization.json.buildJsonObject { })
+        assertThat(PlaybookFastPath.partialNote(p, kotlinx.serialization.json.buildJsonObject { })).isNull()
+        // Stale on the installed version: refused before any step — the model answers without a note.
+        store.items[p.id] = StoredPlaybook(p, source = "file", status = PlaybookStatus.STALE, flaggedVersion = 150)
+        assertThat(fastPath.handle(utterance)).isEqualTo(UtteranceFastPaths.Outcome.NONE)
+        val gone = PlaybookFastPath(
+            routable = { listOf(StoredPlaybook(p, source = "file")) },
+            runPlaybook = { sp, slots -> runner.runResolved(sp, slots, allowFallback = false) },
+            lookup = { null },
+            atlasEnabled = { true },
+            fastCommandsEnabled = { true }
+        )
+        assertThat(gone.handle(utterance)).isEqualTo(UtteranceFastPaths.Outcome.NONE)
+        assertThat(driver.taps).isEmpty()
+    }
+
+    @Test
+    fun `note after a failure at step 0 does not claim nothing happened (gate Q N1)`() {
+        val p = PlaybookFixtures.searchPlaybook()
+        val data = kotlinx.serialization.json.buildJsonObject {
+            put("failed_step", kotlinx.serialization.json.JsonPrimitive(0))
+            put("failed_op", kotlinx.serialization.json.JsonPrimitive("tap"))
+            put("reason", kotlinx.serialization.json.JsonPrimitive("expect_timeout"))
+            put("steps_done", kotlinx.serialization.json.JsonPrimitive(0))
+            put("steps_total", kotlinx.serialization.json.JsonPrimitive(3))
+        }
+        val note = PlaybookFastPath.partialNote(p, data)!!
         assertThat(note).contains("Steps completed: 0 of 3")
-        assertThat(note).contains("Reason: not_started")
-        assertThat(note).contains("Nothing was done on screen.")
+        assertThat(note).contains("Stopped at step 1 (tap), reason: expect_timeout")
+        assertThat(note).contains("the app may have been opened")
+        assertThat(note).doesNotContain("Nothing was done")
+    }
+
+    @Test
+    fun `a remote (Jarvis) playbook_run never earns fast-path trust (gate Q N2)`() = runTest {
+        val p = PlaybookFixtures.searchPlaybook()
+        stored(p, PlaybookRepository.SOURCE_JARVIS)
+        val r = withContext(RemoteToolOrigin()) { runner.run(p.id, mapOf("query" to "cats"), allowFallback = false) }
+        assertThat(r).isInstanceOf(io.androllm.core.tools.api.ToolResult.Success::class.java)
+        assertThat(store.items[p.id]!!.successCount).isEqualTo(1)
+        assertThat(store.items[p.id]!!.verifiedCount).isEqualTo(0)
+        assertThat(fastPath.handle(utterance)).isEqualTo(UtteranceFastPaths.Outcome.NONE)
     }
 }

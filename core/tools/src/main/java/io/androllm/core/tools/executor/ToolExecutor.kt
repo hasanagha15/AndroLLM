@@ -1,5 +1,6 @@
 package io.androllm.core.tools.executor
 
+import io.androllm.core.common.log.ContentLog
 import io.androllm.core.tools.api.ToolCall
 import io.androllm.core.tools.api.ToolResult
 import io.androllm.core.tools.clarification.ClarificationEngine
@@ -280,7 +281,7 @@ class ToolExecutor @Inject constructor(
             is ToolOutputValidator.OutputValidation.Invalid -> {
                 val latency = System.currentTimeMillis() - execStart
                 healthMonitor.recordFailure(spec.name, latency, "output invalid: ${outVal.reason}", isTimeout = false)
-                Timber.w("ToolExecutor: output validation failed for '${spec.name}': ${outVal.reason}")
+                Timber.w("ToolExecutor: output validation failed for '${spec.name}': ${ContentLog.text(outVal.reason, 120)}")
                 // Recover without restarting entire execution: treat as retryable failure so coordinator can retry/alternative
                 return finish(
                     ToolResult.Failure("Tool '${spec.name}' returned invalid output: ${outVal.reason}", retryable = outVal.retryable),
