@@ -18,6 +18,35 @@ class ModelResourceGuardTest {
     // An 8B-class Q4 model: ~4.9 GB file, 8k context, 32 layers, GQA 8/128.
     private val bigModelBytes = 4_900L * 1024 * 1024
 
+    private val mb = 1024L * 1024
+
+    @Test
+    fun `available RAM does not subtract this process native heap a second time`() {
+        // Step 4 on the phone: availMem ~3.5 GB, ~2.5 GB native heap (the
+        // resident Qwen) → the old code reported "avail=0MB"... and refused Gemma 4.
+        val avail = ModelResourceGuard().computeAvailableBytes(
+            availMem = 3_500 * mb,
+            processNativeHeapBytes = 2_500 * mb,
+            replacingResidentModel = false
+        )
+        assertEquals(3_500 * mb, avail)
+    }
+
+    @Test
+    fun `heap of a resident model being replaced counts as reclaimable`() {
+        val avail = ModelResourceGuard().computeAvailableBytes(
+            availMem = 1_000 * mb,
+            processNativeHeapBytes = 2_000 * mb,
+            replacingResidentModel = true
+        )
+        assertEquals(3_000 * mb, avail)
+    }
+
+    @Test
+    fun `negative inputs are floored`() {
+        assertEquals(0L, ModelResourceGuard().computeAvailableBytes(-1L, -5L, true))
+    }
+
     @Test
     fun `small model fits on a 6 GB device`() {
         val result = ModelResourceGuard().checkAgainst(

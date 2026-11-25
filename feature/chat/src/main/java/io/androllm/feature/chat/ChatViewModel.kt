@@ -760,11 +760,29 @@ class ChatViewModel @Inject constructor(
             val toolCharsBudget = (systemCharsBudget - assistantInstructions.length).coerceAtLeast(1)
             val routeQuery = history.lastOrNull { it.role == MessageRole.USER }?.content.orEmpty()
             val routeHasAttachments = turnAttachments.isNotEmpty()
+            // Branch P: tell the local model HOW to call a tool (its family's
+            // format), and hand the tools to the runtime's native API on
+            // families that use it (Gemma 4: the container template renders
+            // the declarations, so the text block keeps only the header).
+            val readyModel = (engineRepository.engineState.value as? EngineState.Ready)?.model
+            val useNativeTools = !isCloudTurn && readyModel?.nativeToolApi == true
             val toolAdvertisement = toolPromptBuilder.advertisement(
                 maxChars = minOf(toolCharsBudget, familyAdCapChars),
                 query = routeQuery,
-                hasAttachments = routeHasAttachments
+                hasAttachments = routeHasAttachments,
+                callInstruction = if (isCloudTurn) null else readyModel?.toolCallInstruction,
+                listTools = !useNativeTools
             )
+            turnNativeTools = if (useNativeTools && toolAdvertisement != null) {
+                io.androllm.engine.core.NativeToolDeclarations.fitBudget(
+                    toolPromptBuilder.routedSpecs(routeQuery, routeHasAttachments).map {
+                        io.androllm.engine.models.NativeToolSpec(it.name, it.description, it.parameters.toString())
+                    },
+                    maxChars = toolCharsBudget
+                )
+            } else {
+                emptyList()
+            }
 
             // Reserve the ACTUAL system-turn cost (memory context + attachment
             // block + tool advertisement + template framing) rather than a
@@ -1703,12 +1721,16 @@ class ChatViewModel @Inject constructor(
      * keyed by this chat, so the engine never continues another chat's
      * resident session.
      */
+    /** Branch P: native tool declarations for the current local turn (Gemma 4 only). */
+    @Volatile
+    private var turnNativeTools: List<io.androllm.engine.models.NativeToolSpec> = emptyList()
+
     private fun localTurnConfig(): GenerationConfig {
         val id = _currentConversationId.value
         // No conversation id yet: a temporary key per ViewModel, never a
         // shared "owner:chat:" key.
         val key = if (id.isNotBlank()) "owner:chat:$id" else "owner:chat:tmp-$unsavedChatKey"
-        return _genConfig.value.copy(sessionKey = key)
+        return _genConfig.value.copy(sessionKey = key, nativeTools = turnNativeTools)
     }
 
     private val unsavedChatKey: String = java.util.UUID.randomUUID().toString()

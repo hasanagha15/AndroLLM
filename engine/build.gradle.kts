@@ -5,6 +5,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+// Branch P: single source of truth for the LiteRT-LM runtime version — the
+// dependency below and BuildConfig.LITERTLM_VERSION (engine logs/diagnostics,
+// was a stale "0.16.0" string constant) both read it.
+val litertLmVersion = "0.19.1"
+
 android {
     namespace = "io.androllm.engine"
     compileSdk = 36
@@ -13,6 +18,7 @@ android {
         minSdk = 28
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
+        buildConfigField("String", "LITERTLM_VERSION", "\"$litertLmVersion\"")
     }
 
     buildTypes {
@@ -82,7 +88,7 @@ dependencies {
     // module then fails with "metadata version 2.4.0, expected 2.2.0"). Keep
     // reflect at the 2.2.x line the 0.16.0 POM used; the app does not use the
     // LiteRT-LM reflection-based tool API. Remove once the project is on 2.4.
-    implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1") {
+    implementation("com.google.ai.edge.litertlm:litertlm-android:$litertLmVersion") {
         exclude(group = "org.jetbrains.kotlin", module = "kotlin-reflect")
     }
     implementation("org.jetbrains.kotlin:kotlin-reflect:2.2.21")

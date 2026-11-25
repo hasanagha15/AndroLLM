@@ -42,7 +42,13 @@ class ToolPromptBuilder @Inject constructor(
      * header stays and tools are dropped from the end (smallest-value-first
      * alphabetical tail) until it fits.
      */
-    suspend fun advertisement(maxChars: Int = 0, query: String = "", hasAttachments: Boolean = false): String? {
+    suspend fun advertisement(
+        maxChars: Int = 0,
+        query: String = "",
+        hasAttachments: Boolean = false,
+        callInstruction: String? = null,
+        listTools: Boolean = true
+    ): String? {
         // Route the advertisement to the request (spec: never expose every
         // tool simultaneously). Attachment-scoped / math / device / web
         // requests advertise only the relevant subset — an attachment
@@ -54,8 +60,16 @@ class ToolPromptBuilder @Inject constructor(
             }
             return null
         }
-        return render(specs, maxChars)
+        return render(specs, maxChars, callInstruction, listTools)
     }
+
+    /**
+     * Branch P: the routed tools for [query] (same routing as
+     * [advertisement]) — handed to the runtime's native tool API on families
+     * that use it (Gemma 4).
+     */
+    suspend fun routedSpecs(query: String = "", hasAttachments: Boolean = false): List<ToolSpec> =
+        planner.routedTools(query, hasAttachments)
 
     /**
      * Pure renderer (unit-testable): tool list → advertisement text.
@@ -67,17 +81,28 @@ class ToolPromptBuilder @Inject constructor(
      * (the router orders them by the request), so the tail is the least
      * relevant part.
      */
-    fun render(specs: List<ToolSpec>, maxChars: Int = 0): String {
-        val full = renderLines(specs, maxChars, compact = false)
+    fun render(
+        specs: List<ToolSpec>,
+        maxChars: Int = 0,
+        callInstruction: String? = null,
+        listTools: Boolean = true
+    ): String {
+        // Branch P: the family's call format goes right after the header so
+        // the model knows HOW to call (before, nothing told it, and no local
+        // model ever emitted a call). With the native tool API (Gemma 4) the
+        // runtime renders the declarations itself: header + format only.
+        val prefix = HEADER_INTRO + (callInstruction?.takeIf { it.isNotBlank() }?.let { it.trim() + "\n\n" } ?: "")
+        if (!listTools) return prefix.trimEnd()
+        val full = renderLines(specs, maxChars, compact = false, prefix = prefix)
         if (maxChars <= 0 || full.second == specs.size) return full.first
-        val compact = renderLines(specs, maxChars, compact = true)
+        val compact = renderLines(specs, maxChars, compact = true, prefix = prefix)
         return if (compact.second > full.second) compact.first else full.first
     }
 
     /** Renders header + as many lines as fit; returns (text, tools rendered). */
-    private fun renderLines(specs: List<ToolSpec>, maxChars: Int, compact: Boolean): Pair<String, Int> {
+    private fun renderLines(specs: List<ToolSpec>, maxChars: Int, compact: Boolean, prefix: String): Pair<String, Int> {
         val sb = StringBuilder()
-        sb.append(HEADER)
+        sb.append(prefix).append(LIST_HEADER)
         var count = 0
         for (spec in specs) {
             // Budget guard: keep the header + tools until the budget is
@@ -169,14 +194,19 @@ class ToolPromptBuilder @Inject constructor(
         /** Enum values listed per argument before "|…". */
         const val MAX_ENUM_VALUES = 12
 
-        private const val HEADER =
+        private const val HEADER_INTRO =
             "You are the assistant of an on-device AI agent and you HAVE access to tools. " +
                 "The tools below are available RIGHT NOW — never claim you lack access to them.\n" +
                 "When the user's request involves an app, the web, the device, or communication " +
                 "(weather, search, opening apps, sending messages/calls/emails, clipboard, " +
                 "screenshots, music, settings, alarms, notes, files, calculator, translation, " +
                 "GitHub, image generation, …), use the matching tool and summarize its result " +
-                "for the user. Never say \"I can't do that\" when a tool exists for it.\n\n" +
-                "AVAILABLE TOOLS (name — description | arguments: key (type) | example):\n"
+                "for the user. Never say \"I can't do that\" when a tool exists for it.\n\n"
+
+        private const val LIST_HEADER =
+            "AVAILABLE TOOLS (name — description | arguments: key (type) | example):\n"
+
+        /** The full header without a call-format line (pre-branch-P shape). */
+        const val HEADER = HEADER_INTRO + LIST_HEADER
     }
 }

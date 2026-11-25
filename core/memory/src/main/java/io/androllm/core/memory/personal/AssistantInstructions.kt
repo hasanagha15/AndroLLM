@@ -58,6 +58,15 @@ object AssistantInstructions {
             "wrote in; for transliterated Russian reply in Russian (Cyrillic), for transliterated " +
             "Azerbaijani reply in Azerbaijani."
 
+    /**
+     * Branch P: family-agnostic, always present (even on the tightest budget):
+     * Russian typed in Latin letters must be answered in Russian CYRILLIC.
+     * On the phone, "privet, kak dela?" got "privet, how are you?".
+     */
+    internal const val TRANSLIT_RULE =
+        "The user may write Russian in Latin letters (e.g. \"privet, kak dela\" = \"привет, как дела\"). " +
+            "Then reply in Russian written in Cyrillic letters — never in Latin letters and never in English."
+
     internal const val TRANSLIT_HINT =
         "Transliteration examples: \"ti kto\" = \"ты кто\" (who are you), \"privet\" = \"привет\", " +
             "\"spasibo\" = \"спасибо\", \"salam, necesen\" = \"salam, necəsən\" (hi, how are you). " +
@@ -81,7 +90,14 @@ object AssistantInstructions {
         val unlimited = maxChars <= 0
         val sb = StringBuilder()
         sb.append(languageLine(settings.replyLanguage))
-        if (unlimited || maxChars >= MIN_FULL_BUDGET_CHARS) {
+        if (settings.replyLanguage == ReplyLanguage.AUTO || settings.replyLanguage == ReplyLanguage.RUSSIAN) {
+            sb.append('\n').append(TRANSLIT_RULE)
+        }
+        // The examples are optional: only when they fit next to the payments
+        // rule (the always-present TRANSLIT_RULE already covers the case).
+        if (unlimited ||
+            (maxChars >= MIN_FULL_BUDGET_CHARS && sb.length + TRANSLIT_HINT.length + PAYMENTS.length + 2 <= maxChars)
+        ) {
             sb.append('\n').append(TRANSLIT_HINT)
         }
         sb.append('\n').append(PAYMENTS)

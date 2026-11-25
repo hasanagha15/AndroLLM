@@ -36,9 +36,12 @@ object NativeToolCallScanner {
     private val json = Json { ignoreUnknownKeys = true }
 
     // Opening markers, longest first (regex alternation order matters).
-    private val OPEN_MARKERS = listOf("<|tool_call_start|>", "<|tool_call|>", "<|tool_call>")
+    // Branch P: `<tool_call>` / `</tool_call>` = the official Qwen2.5/Qwen3
+    // function-calling tags (`<tool_call>{"name":…,"arguments":{…}}</tool_call>`,
+    // with newlines around the JSON).
+    private val OPEN_MARKERS = listOf("<|tool_call_start|>", "<|tool_call|>", "<|tool_call>", "<tool_call>")
     // Closing markers.
-    private val CLOSE_MARKERS = listOf("<|tool_call_end|>", "<tool_call|>", "<|tool_call|>", "<|tool_call>")
+    private val CLOSE_MARKERS = listOf("<|tool_call_end|>", "<tool_call|>", "</tool_call>", "<|tool_call|>", "<|tool_call>")
 
     /**
      * Extracts every complete native tool-call block from [raw] model output.
@@ -129,11 +132,16 @@ object NativeToolCallScanner {
         val closeBrace = if (body2[openBrace] == '{') body2.lastIndexOf('}') else body2.lastIndexOf(')')
         val argsJson = if (closeBrace > openBrace) {
             body2.substring(openBrace, closeBrace + 1).let { candidate ->
-                // Validate it parses as JSON; otherwise return "{}" (the model
-                // often leaves the object empty or truncated).
-                if (candidate.startsWith("{") &&
-                    runCatching { json.parseToJsonElement(candidate) }.isSuccess
-                ) candidate else "{}"
+                // Validate it parses as JSON; otherwise try the Gemma 4
+                // native argument syntax (`{key:<|"|>value<|"|>,n:5}`), and
+                // fall back to "{}" (the model often leaves the object empty
+                // or truncated).
+                when {
+                    candidate.startsWith("{") &&
+                        runCatching { json.parseToJsonElement(candidate) }.isSuccess -> candidate
+                    candidate.startsWith("{") -> Gemma4Args.toJson(candidate) ?: "{}"
+                    else -> "{}"
+                }
             }
         } else {
             "{}"
@@ -154,4 +162,102 @@ object NativeToolCallScanner {
         return best
     }
 
+    /**
+     * Branch P: Gemma 4's native call arguments — unquoted keys, strings
+     * delimited by `<|"|>`, bare numbers/booleans, nested `{}`/`[]`:
+     * `{page:<|"|>wifi<|"|>,level:5,on:true}` → `{"page":"wifi","level":5,"on":true}`.
+     * Returns null when the text is not parseable.
+     */
+    internal object Gemma4Args {
+        private const val Q = "<|\"|>"
+
+        fun toJson(text: String): String? = runCatching {
+            val p = P(text.trim())
+            val v = p.value()
+            p.ws()
+            if (p.i != p.s.length) null else v.toString()
+        }.getOrNull()
+
+        private class P(val s: String) {
+            var i = 0
+            fun ws() { while (i < s.length && s[i].isWhitespace()) i++ }
+            fun value(): kotlinx.serialization.json.JsonElement {
+                ws()
+                return when {
+                    s.startsWith(Q, i) -> {
+                        val end = s.indexOf(Q, i + Q.length)
+                        require(end >= 0)
+                        val str = s.substring(i + Q.length, end)
+                        i = end + Q.length
+                        kotlinx.serialization.json.JsonPrimitive(str)
+                    }
+                    s[i] == '{' -> obj()
+                    s[i] == '[' -> arr()
+                    s[i] == '"' -> {
+                        val end = s.indexOf('"', i + 1)
+                        require(end >= 0)
+                        val str = s.substring(i + 1, end)
+                        i = end + 1
+                        kotlinx.serialization.json.JsonPrimitive(str)
+                    }
+                    else -> {
+                        val start = i
+                        while (i < s.length && s[i] !in ",}]") i++
+                        val raw = s.substring(start, i).trim()
+                        when {
+                            raw == "true" -> kotlinx.serialization.json.JsonPrimitive(true)
+                            raw == "false" -> kotlinx.serialization.json.JsonPrimitive(false)
+                            raw == "null" -> kotlinx.serialization.json.JsonNull
+                            raw.toLongOrNull() != null -> kotlinx.serialization.json.JsonPrimitive(raw.toLong())
+                            raw.toDoubleOrNull() != null -> kotlinx.serialization.json.JsonPrimitive(raw.toDouble())
+                            else -> kotlinx.serialization.json.JsonPrimitive(raw)
+                        }
+                    }
+                }
+            }
+            fun obj(): kotlinx.serialization.json.JsonObject {
+                i++ // {
+                val map = LinkedHashMap<String, kotlinx.serialization.json.JsonElement>()
+                ws()
+                if (i < s.length && s[i] == '}') { i++; return kotlinx.serialization.json.JsonObject(map) }
+                while (true) {
+                    ws()
+                    val key = if (s.startsWith(Q, i)) {
+                        val end = s.indexOf(Q, i + Q.length); require(end >= 0)
+                        s.substring(i + Q.length, end).also { i = end + Q.length }
+                    } else if (s[i] == '"') {
+                        val end = s.indexOf('"', i + 1); require(end >= 0)
+                        s.substring(i + 1, end).also { i = end + 1 }
+                    } else {
+                        val start = i
+                        while (i < s.length && s[i] != ':') i++
+                        s.substring(start, i).trim()
+                    }
+                    ws(); require(s[i] == ':'); i++
+                    map[key] = value()
+                    ws()
+                    when (s[i]) {
+                        ',' -> i++
+                        '}' -> { i++; return kotlinx.serialization.json.JsonObject(map) }
+                        else -> error("bad object")
+                    }
+                }
+            }
+            fun arr(): kotlinx.serialization.json.JsonArray {
+                i++ // [
+                val list = mutableListOf<kotlinx.serialization.json.JsonElement>()
+                ws()
+                if (i < s.length && s[i] == ']') { i++; return kotlinx.serialization.json.JsonArray(list) }
+                while (true) {
+                    list += value()
+                    ws()
+                    when (s[i]) {
+                        ',' -> i++
+                        ']' -> { i++; return kotlinx.serialization.json.JsonArray(list) }
+                        else -> error("bad array")
+                    }
+                }
+            }
+        }
+    }
 }

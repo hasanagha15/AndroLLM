@@ -244,10 +244,68 @@ class DefaultEngineRepository @Inject constructor(
         engine.initialize(EngineConfig())
     }
 
+    /**
+     * Branch P: the last model + config the USER loaded (benchmark reloads
+     * bypass this), used to restore the backend after a benchmark and to
+     * reload transparently after a memory-pressure unload.
+     */
+    @Volatile
+    private var lastLoadRequest: Pair<Model, ModelLoadConfig>? = null
+
+    /** Branch P: set by [unloadForMemoryPressure]; the next request reloads [lastLoadRequest]. */
+    @Volatile
+    private var reloadAfterMemoryPressure: Boolean = false
+
     override suspend fun loadModel(
         model: Model,
         config: ModelLoadConfig
     ): Result<Unit> = generationMutex.withLock {
+        val result = loadModelLocked(model, config)
+        if (result is Result.Success) {
+            lastLoadRequest = model to config
+            reloadAfterMemoryPressure = false
+        }
+        result
+    }
+
+    override suspend fun unloadForMemoryPressure(): Result<Unit> = generationMutex.withLock {
+        io.androllm.core.common.runCatching {
+            if (!engine.isLoaded()) return@runCatching
+            engine.unloadModel()
+            _engineState.value = EngineState.Unloaded
+            _memoryStats.value = null
+            reloadAfterMemoryPressure = lastLoadRequest != null
+            android.util.Log.w(TAG, "MEMORY PRESSURE: model unloaded — it reloads on the next request")
+        }
+    }
+
+    /**
+     * Branch P: called under [generationMutex] when a request finds no model.
+     * Reloads the model a memory-pressure unload took away (showing a
+     * "Reloading…" status) instead of failing with "Model not loaded".
+     * Returns true when a model is loaded afterwards.
+     */
+    private suspend fun reloadAfterMemoryPressureLocked(): Boolean {
+        if (engine.isLoaded()) return true
+        val request = lastLoadRequest
+        if (!reloadAfterMemoryPressure || request == null) return false
+        android.util.Log.i(TAG, "AUTO-RELOAD: ${request.first.name} was unloaded under memory pressure — reloading")
+        _engineState.value = EngineState.Loading("Reloading ${request.first.name} (freed under memory pressure)…")
+        val result = loadModelLocked(request.first, request.second)
+        return if (result is Result.Success && engine.isLoaded()) {
+            reloadAfterMemoryPressure = false
+            android.util.Log.i(TAG, "AUTO-RELOAD complete")
+            true
+        } else {
+            android.util.Log.w(TAG, "AUTO-RELOAD failed: ${(result as? Result.Error)?.exception?.message}")
+            false
+        }
+    }
+
+    private suspend fun loadModelLocked(
+        model: Model,
+        config: ModelLoadConfig
+    ): Result<Unit> = run {
         io.androllm.core.common.runCatching {
             // Delegate-mode contract: AUTO (config.backend == null) may traverse
             // NPU → GPU → CPU silently. An EXPLICIT backend request (GPU/NPU/
@@ -333,6 +391,7 @@ class DefaultEngineRepository @Inject constructor(
 
     override suspend fun unloadModel(): Result<Unit> = generationMutex.withLock {
         io.androllm.core.common.runCatching {
+            reloadAfterMemoryPressure = false
             engine.unloadModel()
             _engineState.value = EngineState.Unloaded
             _memoryStats.value = null
@@ -415,7 +474,7 @@ class DefaultEngineRepository @Inject constructor(
         // the engine was idle or waiting behind background work).
         cancelRequested.set(false)
 
-        if (!engine.isLoaded()) {
+        if (!engine.isLoaded() && !reloadAfterMemoryPressureLocked()) {
             _generationState.value = GenerationState.Failed("Model not loaded")
             return Result.error("Model not loaded")
         }
@@ -695,7 +754,7 @@ class DefaultEngineRepository @Inject constructor(
         android.util.Log.i(TAG, "Generation Started")
         cancelRequested.set(false)
 
-        if (!engine.isLoaded()) {
+        if (!engine.isLoaded() && !reloadAfterMemoryPressureLocked()) {
             _generationState.value = GenerationState.Failed("Model not loaded")
             return Result.error("Model not loaded")
         }
@@ -1131,7 +1190,10 @@ class DefaultEngineRepository @Inject constructor(
         io.androllm.core.common.runCatching {
             val info = engine.getLoadedModel() ?: return Result.Success(emptyList())
             val caps = backendCapabilities.value
-            val model = Model(
+            // Branch P: benchmark (and restore) the model exactly as the user
+            // loaded it — the full catalog Model and the user's load config.
+            val userRequest = lastLoadRequest?.takeIf { it.first.id == info.id }
+            val model = userRequest?.first ?: Model(
                 id = info.id,
                 name = info.generalName,
                 filePath = info.filePath,
@@ -1144,13 +1206,24 @@ class DefaultEngineRepository @Inject constructor(
             val candidates = BackendSelector.orderedCandidates(BackendType.AUTO, caps, model)
                 .map { it.type }
                 .distinct()
-            val original = caps.selectedBackend
+            // Branch P: restore what the user had. caps.selectedBackend was
+            // never updated on load (the engine writes the choice only into
+            // its own capabilities), so the benchmark used to "restore" CPU.
+            // The user's own load request (e.g. GPU only / Auto) wins; else
+            // the backend the model was actually running on.
+            val restoreConfig = userRequest?.second ?: ModelLoadConfig(backend = info.backend)
+            android.util.Log.i(TAG, "Backend benchmark: will restore ${restoreConfig.backend ?: "AUTO"} (was running on ${info.backend})")
             val results = mutableListOf<BackendBenchmarkResult>()
             for (type in candidates) {
                 results += benchmarkSingleBackend(model, type, prompt)
             }
             // Restore the backend the user had selected before benchmarking.
-            runCatching { engine.loadModel(model, ModelLoadConfig(backend = original)) }
+            val restored = loadModelLocked(model, restoreConfig)
+            android.util.Log.i(
+                TAG,
+                "Backend benchmark: restore ${if (restored is Result.Success) "ok" else "FAILED"} — " +
+                    "now on ${engine.getLoadedModel()?.backend}"
+            )
             results
         }
     }
@@ -1205,16 +1278,31 @@ class DefaultEngineRepository @Inject constructor(
         }
         val elapsedMs = (System.currentTimeMillis() - startedAt).coerceAtLeast(1L)
         val stats = engine.stats.firstOrNull()
-        val tps = if (tokenCount > 0) tokenCount * 1000f / elapsedMs else 0f
+        // Branch P: prefill and decode are reported SEPARATELY, from the
+        // runtime's own BenchmarkInfo (EngineStats); the wall-clock rate is
+        // only a fallback for decode.
+        val wallTps = if (tokenCount > 0) tokenCount * 1000f / elapsedMs else 0f
+        val decodeTps = stats?.decodeTokensPerSecond?.takeIf { it > 0f } ?: wallTps
+        val prefillTps = stats?.promptTokensPerSecond ?: 0f
+        val ttftMs = stats?.firstTokenMs?.takeIf { it > 0L } ?: firstTokenMs
+        android.util.Log.i(
+            TAG,
+            "Backend benchmark ${type.name}: prefill=${"%.1f".format(prefillTps)} tok/s (${stats?.promptTokens ?: 0} tok) " +
+                "decode=${"%.1f".format(decodeTps)} tok/s (${stats?.generatedTokens ?: tokenCount} tok) ttft=${ttftMs}ms"
+        )
         return BackendBenchmarkResult(
             backend = type,
             backendLabel = type.name,
             vendor = loadedInfo?.vendor.orEmpty(),
             accelerator = loadedInfo?.accelerator.orEmpty(),
-            averageTokensPerSecond = tps,
-            peakTokensPerSecond = tps,
+            averageTokensPerSecond = decodeTps,
+            peakTokensPerSecond = decodeTps,
             promptLatencyMs = stats?.promptTimeMs ?: 0L,
-            firstTokenMs = firstTokenMs,
+            prefillTokensPerSecond = prefillTps,
+            decodeTokensPerSecond = decodeTps,
+            prefillTokens = stats?.promptTokens ?: 0L,
+            decodeTokens = stats?.generatedTokens ?: tokenCount,
+            firstTokenMs = ttftMs,
             generationTimeMs = elapsedMs,
             initTimeMs = initTimeMs,
             peakRamBytes = stats?.memoryPeakBytes ?: 0L,

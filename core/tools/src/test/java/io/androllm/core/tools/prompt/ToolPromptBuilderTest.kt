@@ -47,6 +47,33 @@ class ToolPromptBuilderTest {
     )
 
     @Test
+    fun `branch P call instruction follows the header and precedes the tool list`() {
+        val builder = ToolPromptBuilder(mockk(relaxed = true))
+        val instruction = "HOW TO CALL A TOOL: <tool_call>\n{\"name\": \"x\", \"arguments\": {}}\n</tool_call>"
+        val text = builder.render(listOf(weather), callInstruction = instruction)
+        val iHow = text.indexOf("HOW TO CALL A TOOL")
+        val iList = text.indexOf("AVAILABLE TOOLS")
+        assertThat(iHow).isGreaterThan(0)
+        assertThat(iList).isGreaterThan(iHow)
+        assertThat(text).contains("- get_weather")
+    }
+
+    @Test
+    fun `branch P native tool API keeps header and instruction only`() {
+        val builder = ToolPromptBuilder(mockk(relaxed = true))
+        val text = builder.render(listOf(weather, flashlight), callInstruction = "HOW TO CALL A TOOL: native", listTools = false)
+        assertThat(text).contains("HOW TO CALL A TOOL: native")
+        assertThat(text).doesNotContain("AVAILABLE TOOLS")
+        assertThat(text).doesNotContain("get_weather")
+    }
+
+    @Test
+    fun `without an instruction the rendering keeps the original header`() {
+        val builder = ToolPromptBuilder(mockk(relaxed = true))
+        assertThat(builder.render(emptyList())).isEqualTo(ToolPromptBuilder.HEADER)
+    }
+
+    @Test
     fun `advertisement returns null when the pipeline reports no tools`() = runTest {
         val planner = mockk<ToolPlanner>()
         coEvery { planner.routedTools(any(), any()) } returns emptyList()

@@ -251,18 +251,42 @@ class ModelResourceGuard internal constructor(
     }
 
     /**
-     * System RAM currently available to this process's native allocations:
-     * device-wide `availMem` minus the native heap this process already
-     * committed. Floor at 0.
+     * System RAM available for the model about to be loaded.
+     *
+     * Branch P fix: `availMem` is the DEVICE-WIDE free memory and already
+     * excludes everything this process has allocated — subtracting this
+     * process's native heap again counted it twice (step 4: "avail=0MB" with
+     * ~3.5 GB really free, because the still-resident Qwen sat in that heap).
+     * When [replacingResidentModel] is true (a model is loaded and will be
+     * released before the new one is mapped), the native heap it holds is
+     * reclaimable and is added back instead.
      */
-    fun availableRamBytes(): Long {
+    fun availableRamBytes(replacingResidentModel: Boolean = false): Long {
         val ctx = context ?: return 0L
         val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
         val memInfo = ActivityManager.MemoryInfo()
         am?.getMemoryInfo(memInfo)
-        val avail = if (memInfo.availMem > 0) memInfo.availMem else 0L
-        val nativeHeapUsed = Debug.getNativeHeapAllocatedSize().coerceAtLeast(0L)
-        return (avail - nativeHeapUsed).coerceAtLeast(0L)
+        return computeAvailableBytes(
+            availMem = memInfo.availMem,
+            processNativeHeapBytes = Debug.getNativeHeapAllocatedSize(),
+            replacingResidentModel = replacingResidentModel
+        )
+    }
+
+    /**
+     * Branch P: pure form of [availableRamBytes] (unit-tested). `availMem`
+     * never includes this process's own allocations, so the process native
+     * heap is NEVER subtracted; it is added back only when it belongs to a
+     * resident model that will be released before the new load.
+     */
+    fun computeAvailableBytes(
+        availMem: Long,
+        processNativeHeapBytes: Long,
+        replacingResidentModel: Boolean
+    ): Long {
+        val avail = availMem.coerceAtLeast(0L)
+        val reclaimable = if (replacingResidentModel) processNativeHeapBytes.coerceAtLeast(0L) else 0L
+        return avail + reclaimable
     }
 
     /** True when the OS is under memory pressure (low-memory killer active). */

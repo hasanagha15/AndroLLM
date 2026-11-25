@@ -149,6 +149,25 @@ class LiteRtLmEngine @Inject constructor(
     private var familyConfig: ModelFamilyConfig? = null
 
     /**
+     * Branch P: the template decision for the loaded model
+     * ([io.androllm.engine.compat.TemplateSelector]). `override == null` means
+     * LiteRT-LM renders the container's own embedded template.
+     */
+    @Volatile
+    private var templateSelection: io.androllm.engine.compat.TemplateSelector.Selection? = null
+
+    /** Branch P: true when tools go through LiteRT-LM's native tool API (Gemma 4). */
+    @Volatile
+    private var nativeToolApi: Boolean = false
+
+    /** Branch P: debug builds log the rendered prompt (length-capped). */
+    private val isDebugBuild: Boolean by lazy {
+        runCatching {
+            (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        }.getOrDefault(false)
+    }
+
+    /**
      * Decoder enforcing the family's decode rules on every generated text
      * (stop sequences + special-token stripping). Recreated per model load.
      */
@@ -357,6 +376,17 @@ class LiteRtLmEngine @Inject constructor(
                     runCatching { conversation?.close() }
                     conversation = null
                 }
+                // Branch P: release the resident model's interpreter BEFORE the
+                // RAM gate and before building the new one. Previously the old
+                // engine was closed only after the new one initialized, so both
+                // models were resident at once (and the gate counted the old
+                // one as used memory). Freed memory now shows up in availMem.
+                engine?.let { old ->
+                    logger.i("PRE-LOAD CLEANUP: releasing the resident interpreter (${activeBackendInfo?.displayName ?: "?"}) before the new load")
+                    runCatching { old.close() }
+                    engine = null
+                    loadedModel = null
+                }
                 // Evict stale container metadata cache entry for this path if present
                 runCatching { ContainerMetadataReader.evictCache(file) }
 
@@ -393,6 +423,8 @@ class LiteRtLmEngine @Inject constructor(
                     BackendType.AUTO -> BackendType.GPU
                     else -> BackendType.CPU
                 }
+                // Branch P: no double count — availMem already excludes this
+                // process; the previous interpreter was released just above.
                 val availableBefore = resourceGuard.availableRamBytes()
                 val lowMemBefore = resourceGuard.isSystemLowMemory()
                 val fitResult = resourceGuard.attemptAggressiveFit(
@@ -522,7 +554,17 @@ class LiteRtLmEngine @Inject constructor(
                 logger.i("CONTEXT CLAMPED by aggressive-fit: container=${metadataMaxContext ?: "n/a"}→${clampedMaxNumTokens}")
             }
 
-            val cacheDir = runCatching { context.cacheDir.absolutePath }.getOrNull()
+            // Branch P (step-4 issue 5): the runtime serializes compiled GPU
+            // programs / XNNPACK weights into cacheDir keyed by the MODEL FILE
+            // only, while the graph shapes depend on maxNumTokens (the
+            // "magic number" target). Gemma 4 passed its self-test on the first
+            // GPU load (ctx 3072) and failed on every later one (ctx 512, 4096 —
+            // "Initializing OpenCL-based API from serialized data"). One cache
+            // subdirectory per context size keeps a cache from one shape away
+            // from another.
+            val cacheDir = runCatching {
+                File(context.cacheDir, "litertlm/ctx${clampedMaxNumTokens ?: 0}").apply { mkdirs() }.absolutePath
+            }.getOrNull()
             // The directory that must hold the vendor NPU dispatch libraries
             // (`libLiteRtDispatch_*.so`); passed to Backend.NPU(nativeLibraryDir).
             // With uncompressed (16 KB-aligned) jniLibs nativeLibraryDir is empty,
@@ -639,11 +681,23 @@ class LiteRtLmEngine @Inject constructor(
             // App-defined templates are rewritten to accept LiteRT-LM >= 0.18's
             // list-of-parts message content (ChatTemplateCompat); the
             // container's own embedded template is passed through untouched.
-            val appTemplateConfig = family.config.copy(
-                chatTemplate = ChatTemplateCompat.partsAware(family.config.chatTemplate)
+            // Branch P: the container's own template wins when it is
+            // parts-aware (Gemma 4); otherwise the official family template
+            // (made parts-aware) overrides it — see TemplateSelector.
+            val embeddedTemplate = container?.metadata?.jinjaPromptTemplate
+            val selection = io.androllm.engine.compat.TemplateSelector.select(
+                family.family, embeddedTemplate, model.name
             )
-            familyConfig = if (family.family == ModelFamily.GENERIC) {
-                val embedded = container?.metadata?.jinjaPromptTemplate
+            templateSelection = selection
+            nativeToolApi = io.androllm.engine.compat.ToolCallSyntax.usesNativeToolApi(family.family, selection.effective)
+            logger.i(
+                "TEMPLATE SELECTED: ${selection.source.label} (override=${selection.override != null}, " +
+                    "embedded=${embeddedTemplate?.length ?: 0} chars, nativeToolApi=$nativeToolApi)"
+            )
+            familyConfig = if (family.family != ModelFamily.GENERIC) {
+                family.config.copy(chatTemplate = selection.effective)
+            } else {
+                val embedded = embeddedTemplate
                 if (ChatTemplateCompat.looksStringOnlyContent(embedded)) {
                     // e.g. a hand-imported file with the old HF Qwen3 template
                     // whose family was not detected: LiteRT-LM >= 0.18 passes
@@ -655,9 +709,7 @@ class LiteRtLmEngine @Inject constructor(
                             "replies may ignore the prompt. Re-export with a parts-aware template."
                     )
                 }
-                if (embedded.isNullOrBlank()) appTemplateConfig else family.config.copy(chatTemplate = embedded)
-            } else {
-                appTemplateConfig
+                family.config.copy(chatTemplate = selection.effective)
             }
             // Stop-sequence metadata merge: the family's official stop tokens,
             // the container's declared stop tokens (LlmMetadata.stop_tokens)
@@ -736,11 +788,11 @@ class LiteRtLmEngine @Inject constructor(
                 family = family.family.displayName,
                 nativeToolMarkers = family.family.nativeToolMarkers,
                 toolAdvertisementCapChars = family.family.toolAdvertisementCapChars,
-                templateSource = when {
-                    family.family == ModelFamily.GENERIC -> "container (generic mode)"
-                    container?.metadata?.hasEmbeddedTemplate == true -> "container + official override"
-                    else -> "official (family registry)"
-                },
+                toolCallInstruction = io.androllm.engine.compat.ToolCallSyntax.instructionFor(
+                    family.family, selection.effective
+                ),
+                nativeToolApi = nativeToolApi,
+                templateSource = selection.source.label,
                 templateReady = true,
                 nThreads = effectiveThreads
             )
@@ -834,6 +886,8 @@ class LiteRtLmEngine @Inject constructor(
             loadedModel = null
             loadedFilePath = null
             familyConfig = null
+            templateSelection = null
+            nativeToolApi = false
             outputDecoder = null
             generationActive.set(false)
             stopRuntimeMetricsRefresh()
@@ -885,6 +939,8 @@ class LiteRtLmEngine @Inject constructor(
         loadedModel = null
         loadedFilePath = null
         familyConfig = null
+        templateSelection = null
+        nativeToolApi = false
         outputDecoder = null
         generationActive.set(false)
         _memoryStats.value = null
@@ -1154,7 +1210,14 @@ class LiteRtLmEngine @Inject constructor(
                     "PREFILL START: isolated session, promptChars=${prompt.length} (~${prompt.length / 4} tokens) — " +
                         "delegate=${activeBackendInfo?.displayName ?: "?"} already warm"
                 )
-                activeConv.sendMessageAsync(prompt, callback, maxOutputToken = streamingMaxOutputTokens(config))
+                // Branch P: thinking explicitly OFF — the benchmark's 64-token
+                // budget used to vanish into Qwen3's hidden thinking channel.
+                activeConv.sendMessageAsync(
+                    prompt,
+                    callback,
+                    maxOutputToken = streamingMaxOutputTokens(config),
+                    thinkingConfig = thinkingConfig()
+                )
             } catch (e: Throwable) {
                 // The send never started: reset the slot + state HERE (the code
                 // after awaitClose is skipped by this early return) so the next
@@ -1366,24 +1429,27 @@ class LiteRtLmEngine @Inject constructor(
                     "maxTokens=${config.maxTokens} temp=${config.temperature} " +
                     "topK=${config.topK} topP=${config.topP} reuseKv=${config.reuseKvCache}"
             )
-            if (config.debugTokenLogging) {
-                val fc = familyConfig
-                if (fc != null) {
-                    val rendered = ChatTemplateRenderer().render(
-                        template = fc.chatTemplate,
-                        // Branch M (N2): mirror what LiteRT actually gets — the
-                        // plan (system instruction + seed + framed prompt), not
-                        // the raw chat-layer messages.
-                        messages = ChatTurnPlanner.mirrorMessages(plan)
-                            .map { ChatTemplateRenderer.RenderMessage(it.role, it.content) },
-                        bosToken = fc.specialTokens.bos,
-                        eosToken = fc.specialTokens.eos,
-                        addGenerationPrompt = addAssistant,
-                        extraContext = mapOf("enable_thinking" to config.enableThinking)
+            // Branch P: debug builds always log the exact prompt shape —
+            // length-capped head+tail of the rendered mirror, whether it ends
+            // with the assistant header, and (after the turn) the runtime's
+            // real prefill token count. The full dump stays behind
+            // config.debugTokenLogging.
+            if (config.debugTokenLogging || isDebugBuild) {
+                val rendered = renderPromptMirror(plan, addAssistant)
+                if (rendered != null) {
+                    val shape = io.androllm.engine.compat.PromptShapeCheck.check(rendered)
+                    logger.i(
+                        "PROMPT MIRROR (${templateSelection?.source?.label}): ${rendered.length} chars, " +
+                            "~${rendered.length / 4} tokens est, ${shape.describe()}"
                     )
-                    val parts = (rendered.length + 2999) / 3000
-                    rendered.chunked(3000).forEachIndexed { i, chunk ->
-                        logger.i("rendered prompt part ${i + 1}/$parts (${rendered.length} chars):\n$chunk")
+                    if (!shape.ok) logger.w("PROMPT SHAPE WARNING: ${shape.describe()}")
+                    if (config.debugTokenLogging) {
+                        val parts = (rendered.length + 2999) / 3000
+                        rendered.chunked(3000).forEachIndexed { i, chunk ->
+                            logger.i("rendered prompt part ${i + 1}/$parts (${rendered.length} chars):\n$chunk")
+                        }
+                    } else {
+                        logger.i("PROMPT EXCERPT:\n${io.androllm.engine.compat.PromptShapeCheck.excerpt(rendered)}")
                     }
                 }
             }
@@ -1438,6 +1504,9 @@ class LiteRtLmEngine @Inject constructor(
         // Loop protection: terminate pathological repetition safely while
         // keeping everything produced so far (and the conversation history).
         val loopGuard = GenerationLoopGuard()
+        // Branch P: tool calls the runtime parsed itself (native tool API,
+        // Gemma 4) arrive as Message.toolCalls, not as text.
+        val runtimeToolCalls = java.util.Collections.synchronizedList(mutableListOf<NativeToolCall>())
 
         // Same callback-bridge reasoning as [tokenStream]: the Flow overload
         // crashes on kotlinx-coroutines 1.8+/1.9 (SendChannel.close$default no
@@ -1478,7 +1547,12 @@ class LiteRtLmEngine @Inject constructor(
             } else {
                 rawTextBuilder.toString()
             }
-            lastNativeToolCalls = NativeToolCallScanner.scan(scanRaw)
+            lastNativeToolCalls = (synchronized(runtimeToolCalls) { runtimeToolCalls.toList() } +
+                NativeToolCallScanner.scan(scanRaw)).distinct()
+            if (lastNativeToolCalls.isNotEmpty()) {
+                logger.i("NATIVE TOOL CALLS: ${lastNativeToolCalls.joinToString { it.name }} (runtime=${runtimeToolCalls.size})")
+            }
+            logPrefillTokenCount(conv)
             logger.i(
                 "chat generation done: ${tokenCount} chunks in ${elapsedMs}ms, stop=$stopReason, " +
                     "firstTokenMs=$firstMs, text='${stripControlTokens(fullClean).take(120)}' nativeCalls=${lastNativeToolCalls.size}"
@@ -1570,6 +1644,12 @@ class LiteRtLmEngine @Inject constructor(
                     // the structured contents — extracted with [MessageText] so a
                     // serialized contents payload ([{"type":"text",…}]) can never
                     // leak into the chat.
+                    if (partial.toolCalls.isNotEmpty()) {
+                        partial.toolCalls.forEach { call ->
+                            runtimeToolCalls.add(NativeToolDeclarations.toNativeToolCall(call.name, call.arguments))
+                        }
+                        if (firstTokenSeenAt.get() == 0L) firstTokenSeenAt.set(System.currentTimeMillis())
+                    }
                     val thinking = partial.channels.values.joinToString("")
                     if (thinking.isNotEmpty()) {
                         tokenCount++
@@ -1784,13 +1864,42 @@ class LiteRtLmEngine @Inject constructor(
             channels = fam?.thinkingChannel?.let {
                 listOf(LiteRtChannel(it.channelName, it.start, it.end))
             },
-            // Family's official chat template (null = container's own).
-            // LiteRT-LM >= 0.17 takes it per conversation here; the global
-            // ExperimentalFlags.overwritePromptTemplate is deprecated and is
-            // only consulted when this is null.
-            chatTemplate = fam?.chatTemplate
+            // Branch P: the override chosen by TemplateSelector — null means
+            // LiteRT-LM renders the container's OWN embedded template (Gemma 4).
+            // Before branch P every family forced its app template here, which
+            // gave Gemma 4 the Gemma 3 `<start_of_turn>` turns.
+            chatTemplate = if (fam == null) null else templateSelection?.override,
+            // Branch P: thinking OFF for every conversation by default (the
+            // per-send ThinkingConfig still applies). Without it the Qwen3
+            // template defaults to thinking mode — the benchmark's 64 tokens
+            // were all spent in the hidden thinking channel (text='').
+            thinkingConfig = com.google.ai.edge.litertlm.ThinkingConfig(enableThinking = false),
+            // Branch P: native tool declarations (Gemma 4). The app executes
+            // calls itself through the gated executor, never the runtime.
+            tools = nativeToolProviders(config),
+            automaticToolCalling = false
         )
     }
+
+    /** Branch P: LiteRT-LM tool providers for [GenerationConfig.nativeTools] (native-tool families only). */
+    private fun nativeToolProviders(config: GenerationConfig): List<com.google.ai.edge.litertlm.ToolProvider> {
+        if (!nativeToolApi || config.nativeTools.isEmpty()) return emptyList()
+        return config.nativeTools.map { spec ->
+            com.google.ai.edge.litertlm.tool(object : com.google.ai.edge.litertlm.OpenApiTool {
+                override fun getToolDescriptionJsonString(): String =
+                    NativeToolDeclarations.descriptionJson(spec)
+
+                // automaticToolCalling = false: the runtime never executes a
+                // tool; the chat layer runs it through the gated executor.
+                override fun execute(paramsJsonString: String): String =
+                    """{"error":"executed by the app, not the runtime"}"""
+            })
+        }
+    }
+
+    /** Branch P: reuse key for the native tool set the resident conversation was created with. */
+    private fun nativeToolsSignature(config: GenerationConfig): String =
+        if (!nativeToolApi) "" else config.nativeTools.joinToString("|") { it.name + ":" + it.parametersJson.hashCode() }
 
     /**
      * Applies the loaded family's experimental flags (the official chat
@@ -1952,6 +2061,7 @@ class LiteRtLmEngine @Inject constructor(
             conversation = createConversationWithFamilyFlags(eng, conversationConfig)
             conversationSystemPrompt = system
             conversationSessionKey = config.sessionKey
+            conversationToolsSignature = nativeToolsSignature(config)
             consumedTurns = reseed
             // Bookkeeping must describe what the session REALLY holds: the
             // trimmed seed and the capped prompt, not the full plan.
@@ -1997,6 +2107,58 @@ class LiteRtLmEngine @Inject constructor(
      * [generateChatStream] covers any model that does support reuse.
      */
     private fun thinkingConfig() = com.google.ai.edge.litertlm.ThinkingConfig(enableThinking = false)
+
+    /**
+     * Branch P: app-side mirror of the prompt LiteRT-LM renders for [plan]
+     * (bos_token = "" and thinking off, exactly like the runtime). The
+     * container's Gemma 4 template uses macros the Kotlin renderer does not
+     * implement, so it is mirrored by [io.androllm.engine.compat.Gemma4PromptMirror].
+     * Null when no model is loaded or the template cannot be mirrored.
+     */
+    private fun renderPromptMirror(plan: ChatTurnPlan, addAssistant: Boolean): String? {
+        val sel = templateSelection ?: return null
+        val fc = familyConfig ?: return null
+        val msgs = ChatTurnPlanner.mirrorMessages(plan)
+        return runCatching {
+            if (sel.override == null && io.androllm.engine.compat.ToolCallSyntax.isGemma4Template(sel.effective)) {
+                io.androllm.engine.compat.Gemma4PromptMirror.render(
+                    msgs.map { it.role to it.content },
+                    addGenerationPrompt = addAssistant
+                )
+            } else {
+                ChatTemplateRenderer().render(
+                    template = sel.effective,
+                    messages = msgs.map { ChatTemplateRenderer.RenderMessage(it.role, it.content) },
+                    bosToken = "",
+                    eosToken = fc.specialTokens.eos,
+                    addGenerationPrompt = addAssistant,
+                    extraContext = mapOf("enable_thinking" to false)
+                )
+            }
+        }.getOrElse {
+            logger.w("PROMPT MIRROR unavailable for ${sel.source.label}: ${it.message}")
+            null
+        }
+    }
+
+    /**
+     * Branch P (debug builds): the runtime's own count of the tokens it just
+     * prefilled and the conversation's total — the ground truth to compare
+     * with the mirror's estimate (an empty user turn shows up as a too-small
+     * prefill).
+     */
+    @OptIn(ExperimentalApi::class)
+    private fun logPrefillTokenCount(conv: Conversation) {
+        if (!isDebugBuild) return
+        runCatching {
+            val b = conv.getBenchmarkInfo()
+            logger.i(
+                "PROMPT TOKENS: prefill=${b.lastPrefillTokenCount} decode=${b.lastDecodeTokenCount} " +
+                    "conversationTotal=${conv.getTokenCount()} prefillTps=${"%.1f".format(b.lastPrefillTokensPerSecond)} " +
+                    "decodeTps=${"%.1f".format(b.lastDecodeTokensPerSecond)} ttft=${"%.0f".format(b.timeToFirstTokenInSecond * 1000)}ms"
+            )
+        }
+    }
 
     /**
      * Bounded streaming output cap. The caller's [GenerationConfig.maxTokens]
@@ -2295,7 +2457,9 @@ class LiteRtLmEngine @Inject constructor(
         // during the native tool loop.
         val seed = plan.seed
         val live = conversation
+        val toolsSig = nativeToolsSignature(config)
         val canReuse = !reuseBroken.get() && live != null &&
+            conversationToolsSignature == toolsSig &&
             ChatTurnPlanner.canReuse(
                 live = ResidentSession(conversationSystemPrompt, conversationSessionKey, consumedTurns),
                 plan = plan,
@@ -2323,6 +2487,7 @@ class LiteRtLmEngine @Inject constructor(
             reuseBroken.get() -> "template-drift latch"
             live == null -> "no resident session"
             conversationSystemPrompt != system -> "system prompt changed"
+            conversationToolsSignature != toolsSig -> "native tool set changed"
             conversationSessionKey != config.sessionKey -> "different session (chat/origin)"
             else -> "history changed"
         }
@@ -2348,6 +2513,7 @@ class LiteRtLmEngine @Inject constructor(
             conversation = it
             conversationSystemPrompt = system
             conversationSessionKey = config.sessionKey
+            conversationToolsSignature = toolsSig
             consumedTurns = seed
         }
         lastSessionReused = false
@@ -2360,6 +2526,10 @@ class LiteRtLmEngine @Inject constructor(
 
     @Volatile
     private var conversationSystemPrompt: String? = null
+
+    /** Branch P: [nativeToolsSignature] of the resident conversation (part of the reuse key). */
+    @Volatile
+    private var conversationToolsSignature: String = ""
 
     /**
      * [GenerationConfig.sessionKey] the resident conversation was seeded for.
@@ -2565,6 +2735,8 @@ class LiteRtLmEngine @Inject constructor(
         loadedModel = null
         loadedFilePath = null
         familyConfig = null
+        templateSelection = null
+        nativeToolApi = false
         outputDecoder = null
         generationActive.set(false)
         // Clear all caches to free memory when the engine is fully released.
@@ -2732,7 +2904,7 @@ peakProcessPssBytes = maxOf(peakProcessPssBytes, processPss)
          * The pinned LiteRT-LM Android runtime version (see
          * documentation/LOCAL_LLM_ARCHITECTURE.md).
          */
-        const val LITERTLM_VERSION = "0.16.0"
+        val LITERTLM_VERSION: String = io.androllm.engine.BuildConfig.LITERTLM_VERSION
 
         const val DEFAULT_MAX_CONTEXT = 8192
 

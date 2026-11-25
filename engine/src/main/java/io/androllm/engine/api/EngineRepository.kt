@@ -138,6 +138,14 @@ interface EngineRepository {
     suspend fun cancelGeneration(): Result<Unit>
 
     /**
+     * Branch P: unloads the model because the OS reported memory pressure
+     * (onTrimMemory / onLowMemory). Unlike [unloadModel], the repository
+     * remembers the model and reloads it transparently on the next request,
+     * showing a "reloading" status instead of "Model not loaded".
+     */
+    suspend fun unloadForMemoryPressure(): Result<Unit> = unloadModel()
+
+    /**
      * Resets the native engine's conversational state (messages + KV cache).
      * Must be called when switching to a different conversation so the next
      * turn never continues from a stale KV prefix (upstream ai_chat.cpp calls

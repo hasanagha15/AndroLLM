@@ -103,6 +103,24 @@ object ChatTemplates {
             "{% endif %}" +
             "{% endif %}"
 
+    /**
+     * Qwen3 Instruct-2507 (Qwen/Qwen3-4B-Instruct-2507) — branch P. The 2507
+     * Instruct models have NO thinking mode: the official template ends with
+     * a bare `<|im_start|>assistant\n` (no `<think>` block, no
+     * `enable_thinking` switch). Same ChatML turns as [qwen3] otherwise.
+     */
+    val qwen3Instruct: String =
+        "{% for message in messages %}" +
+            "{% if message['role'] == 'system' %}" +
+            "{{ '<|im_start|>system\\n' + message['content'] + '<|im_end|>\\n' }}" +
+            "{% elif message['role'] == 'user' %}" +
+            "{{ '<|im_start|>user\\n' + message['content'] + '<|im_end|>\\n' }}" +
+            "{% elif message['role'] == 'assistant' or message['role'] == 'model' %}" +
+            "{{ '<|im_start|>assistant\\n' + message['content'] + '<|im_end|>\\n' }}" +
+            "{% endif %}" +
+            "{% endfor %}" +
+            "{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
+
     /** Llama 3 / 3.1 / 3.2 / 3.3 (meta-llama/Meta-Llama-3-*-Instruct). */
     val llama3: String =
         "{{- bos_token }}" +

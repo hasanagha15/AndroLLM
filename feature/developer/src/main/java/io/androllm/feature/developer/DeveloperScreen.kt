@@ -733,22 +733,25 @@ private fun BenchmarkBackendsCard(
                                 Text(
                                     text = if (r.succeeded) {
                                         buildString {
-                                            append("init ${r.initTimeMs} ms")
-                                            if (r.firstTokenMs > 0) append(" · first token ${r.firstTokenMs} ms")
+                                            // Branch P: prefill and decode separately, plus TTFT.
+                                            append(String.format("prefill %.1f tok/s", r.prefillTokensPerSecond))
+                                            append(String.format(" · decode %.1f tok/s", r.decodeTokensPerSecond))
+                                            append(" · TTFT ${r.firstTokenMs} ms")
+                                            append(" · init ${r.initTimeMs} ms")
                                             if (r.peakRamMb > 0f) append(" · peak ${String.format("%.0f", r.peakRamMb)} MB")
                                         }
                                     } else {
                                         "failed: ${r.error}"
                                     },
                                     style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.ledger.deskInk),
-                                    maxLines = 2,
+                                    maxLines = 3,
                                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
                                 )
                             }
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
                                 text = if (r.succeeded) {
-                                    String.format("%.1f tok/s", r.averageTokensPerSecond)
+                                    String.format("%.1f / %.1f", r.prefillTokensPerSecond, r.decodeTokensPerSecond)
                                 } else {
                                     "—"
                                 },

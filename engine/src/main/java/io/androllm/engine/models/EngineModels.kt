@@ -157,7 +157,27 @@ data class GenerationConfig(
      * to the native bridge.
      */
     @kotlinx.serialization.Transient
-    val sessionKey: String = ""
+    val sessionKey: String = "",
+    /**
+     * Branch P: tools handed to the runtime's NATIVE function-calling API
+     * (LiteRT-LM `ConversationConfig.tools`) for families whose container
+     * template renders tool declarations itself (Gemma 4). Ignored for other
+     * families — they get the text advertisement in the system prompt. The
+     * engine never executes these (automatic tool calling is off); parsed
+     * calls come back through `takeLastNativeToolCalls()`.
+     */
+    @kotlinx.serialization.Transient
+    val nativeTools: List<NativeToolSpec> = emptyList()
+)
+
+/**
+ * One tool for the runtime's native function-calling API (branch P).
+ * [parametersJson] is a JSON-schema object (`{"type":"object","properties":…}`).
+ */
+data class NativeToolSpec(
+    val name: String,
+    val description: String,
+    val parametersJson: String
 )
 
 /**
@@ -226,6 +246,17 @@ data class EngineModelInfo(
      * degrade to empty/garbage output with a long tool list.
      */
     val toolAdvertisementCapChars: Int = Int.MAX_VALUE,
+    /**
+     * Branch P: how this model must emit a tool call, as one instruction line
+     * the chat layer puts into the tool advertisement (null = no format known).
+     */
+    val toolCallInstruction: String? = null,
+    /**
+     * Branch P: true when tools go through the runtime's native API
+     * ([GenerationConfig.nativeTools]) — the container template renders the
+     * declarations, so the text advertisement needs only the header.
+     */
+    val nativeToolApi: Boolean = false,
     val templateSource: String = "",
     val tokenizerModel: String = "",
     val generalName: String = "",
@@ -413,6 +444,13 @@ data class BackendBenchmarkResult(
     val averageTokensPerSecond: Float = 0f,
     val peakTokensPerSecond: Float = 0f,
     val promptLatencyMs: Long = 0,
+    /** Branch P: prefill (prompt evaluation) throughput reported by LiteRT. */
+    val prefillTokensPerSecond: Float = 0f,
+    /** Branch P: decode throughput reported by LiteRT (generated tokens/s). */
+    val decodeTokensPerSecond: Float = 0f,
+    val prefillTokens: Long = 0,
+    val decodeTokens: Long = 0,
+    /** Time to first token (ms), from the runtime's benchmark info when available. */
     val firstTokenMs: Long = 0,
     val generationTimeMs: Long = 0,
     val initTimeMs: Long = 0,

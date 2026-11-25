@@ -8,6 +8,22 @@ import org.junit.Test
 class AssistantInstructionsTest {
 
     @Test
+    fun `branch P translit rule demands Cyrillic Russian and survives a tiny budget`() {
+        for (budget in listOf(0, 300, 5000)) {
+            val text = AssistantInstructions.build(PersonalContextSettings(), budget)
+            assertTrue(text.contains(AssistantInstructions.TRANSLIT_RULE))
+            assertTrue(text.contains("Russian in Latin letters"))
+            assertTrue(text.contains("Cyrillic"))
+        }
+    }
+
+    @Test
+    fun `branch P translit rule is not added when replies are fixed to English`() {
+        val text = AssistantInstructions.build(PersonalContextSettings(replyLanguage = ReplyLanguage.ENGLISH))
+        assertFalse(text.contains(AssistantInstructions.TRANSLIT_RULE))
+    }
+
+    @Test
     fun defaultMentionsAllLanguagesTranslitAndReplyInUserLanguage() {
         val text = AssistantInstructions.build(PersonalContextSettings())
         assertTrue(text.contains("Russian"))

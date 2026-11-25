@@ -98,11 +98,11 @@ class AndroLLMApplication : Application(), WorkConfiguration.Provider {
                     }
                     ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> {
                         Timber.w("[Engine] Memory pressure: RUNNING_CRITICAL — unloading model")
-                        appScope.launch { engineRepository.unloadModel() }
+                        appScope.launch { engineRepository.unloadForMemoryPressure() }
                     }
                     ComponentCallbacks2.TRIM_MEMORY_COMPLETE -> {
                         Timber.w("[Engine] Memory pressure: COMPLETE — unloading model")
-                        appScope.launch { engineRepository.unloadModel() }
+                        appScope.launch { engineRepository.unloadForMemoryPressure() }
                     }
                     else -> {
                         Timber.d("[Engine] Memory trim level: $level — keeping model loaded")
@@ -113,7 +113,7 @@ class AndroLLMApplication : Application(), WorkConfiguration.Provider {
             @Deprecated("Deprecated in API level 1")
             override fun onLowMemory() {
                 Timber.w("[Engine] onLowMemory — unloading model")
-                appScope.launch { engineRepository.unloadModel() }
+                appScope.launch { engineRepository.unloadForMemoryPressure() }
             }
 
             override fun onConfigurationChanged(newConfig: Configuration) { /* no-op */ }
