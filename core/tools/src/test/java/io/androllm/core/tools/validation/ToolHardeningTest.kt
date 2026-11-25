@@ -283,6 +283,9 @@ class ToolHardeningTest {
         val result = validator.validate(call)
         assertThat(result.isValid).isFalse()
         assertThat((result as ValidationResult.Invalid).firstError).contains("Unknown enum")
+        // Branch Q: the field and the allowed values are named, the argument value is not quoted.
+        assertThat(result.firstError).contains("'stream'")
+        assertThat(result.firstError).doesNotContain("invalid_enum_value")
     }
 
     @Test

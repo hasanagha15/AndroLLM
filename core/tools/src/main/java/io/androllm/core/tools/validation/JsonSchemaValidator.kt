@@ -142,7 +142,9 @@ object JsonSchemaValidator {
                 val allowed = enumValues.mapNotNull { it.jsonPrimitive.contentOrNull }
                 val actual = value.contentOrNull
                 if (actual != null && actual !in allowed) {
-                    errors += "Unknown enum value '$actual' for parameter '$key' — allowed: ${allowed.joinToString(", ")}"
+                    // Branch Q: never quote the argument value (it can be the owner's words) —
+                    // the field name and the allowed values are enough for the model to retry.
+                    errors += "Unknown enum value for parameter '$key' — allowed: ${allowed.joinToString(", ")}"
                 }
             }
         }

@@ -124,10 +124,10 @@ class GeminiVoiceClient @Inject constructor() {
         httpClient.newCall(request).execute().use { response ->
             val responseBody = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                Timber.tag("GeminiVoice").w(
-                    "STT %d: %s", response.code, responseBody.take(400)
-                )
-                throw GeminiVoiceException("STT HTTP ${response.code}: ${responseBody.take(200)}")
+                // Branch Q: HTTP code + short reason only — the error body can echo request content.
+                val reason = errorReason(responseBody, response.message)
+                Timber.tag("GeminiVoice").w("STT %d: %s", response.code, reason)
+                throw GeminiVoiceException("STT HTTP ${response.code}: $reason")
             }
             val text = extractText(responseBody) ?: ""
             TranscriptResult(text = text.trim())
@@ -185,10 +185,10 @@ class GeminiVoiceClient @Inject constructor() {
         httpClient.newCall(request).execute().use { response ->
             val responseBody = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                Timber.tag("GeminiVoice").w(
-                    "TTS %d: %s", response.code, responseBody.take(400)
-                )
-                throw GeminiVoiceException("TTS HTTP ${response.code}: ${responseBody.take(200)}")
+                // Branch Q: HTTP code + short reason only — the error body can echo the spoken text.
+                val reason = errorReason(responseBody, response.message)
+                Timber.tag("GeminiVoice").w("TTS %d: %s", response.code, reason)
+                throw GeminiVoiceException("TTS HTTP ${response.code}: $reason")
             }
             val (base64Pcm, sampleRate) = extractAudio(responseBody)
                 ?: throw GeminiVoiceException("TTS response had no audio data")
@@ -281,6 +281,24 @@ class GeminiVoiceClient @Inject constructor() {
                 "exactly as spoken. Do not translate, summarize, or answer — " +
                 "return only the literal transcript text."
         private val JSON = "application/json; charset=utf-8".toMediaType()
+
+        private val STATUS_PATTERN = Regex("[A-Z_]{1,40}")
+        private val PHRASE_PATTERN = Regex("[A-Za-z ]{1,40}")
+
+        /**
+         * Branch Q: a short, content-free reason for a failed call — the API's
+         * machine status (`error.status`, e.g. INVALID_ARGUMENT) or the HTTP
+         * reason phrase. Never the error message or any other part of the body.
+         */
+        internal fun errorReason(body: String, httpMessage: String?): String {
+            val status = runCatching {
+                val err = Json.parseToJsonElement(body) as? JsonObject
+                ((err?.get("error") as? JsonObject)?.get("status") as? JsonPrimitive)?.content
+            }.getOrNull()
+            if (status != null && status.matches(STATUS_PATTERN)) return status
+            val phrase = httpMessage?.trim().orEmpty()
+            return if (phrase.matches(PHRASE_PATTERN)) phrase else "error"
+        }
     }
 }
 
