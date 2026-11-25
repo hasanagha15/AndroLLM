@@ -1,5 +1,6 @@
 package io.androllm.feature.voice.chat
 
+import io.androllm.core.common.log.ContentLog
 import io.androllm.core.cloud.CloudGateway
 import io.androllm.core.cloud.model.CloudChatMessage
 import io.androllm.core.cloud.model.CloudGenerationConfig
@@ -154,14 +155,18 @@ class ChatManager @Inject constructor(
         }
         // Branch N: zero-LLM playbook command for the owner's own voice turn
         // (non-risky playbooks, setting "Fast playbook commands"); null = the model answers.
+        // Branch Q: a replay that stopped part-way leaves a note for the model.
+        var fastPathNote: String? = null
         if (conversationId == null && currentRemoteOrigin() == null && !remoteTurnActive.get()) {
-            val fast = io.androllm.core.tools.remote.UtteranceFastPaths.tryHandle(trimmed)
-            if (fast != null) {
-                runCatching { persistRefusedTurn(trimmed, origin, fast) }
+            val fast = io.androllm.core.tools.remote.UtteranceFastPaths.handle(trimmed)
+            val reply = fast.reply
+            if (reply != null) {
+                runCatching { persistRefusedTurn(trimmed, origin, reply) }
                     .onFailure { Timber.w(it, "ChatManager: could not save the playbook turn") }
-                send(fast)
+                send(reply)
                 return@channelFlow
             }
+            fastPathNote = fast.modelNote
         }
         turnLock.withLock {
         // Remote (Jarvis) turns never touch the owner's shared turn state:
@@ -176,8 +181,8 @@ class ChatManager @Inject constructor(
         // it must only ever strip surrounding whitespace, never edit words.
         if (origin == MessageOrigin.VOICE) {
             Timber.tag("CHAT").i(
-                "STEP9: ChatManager received EXACT transcript: '%s' (%d chars) [unchanged from STT? %s]",
-                trimmed, trimmed.length,
+                "STEP9: ChatManager received EXACT transcript: %s (%d chars) [unchanged from STT? %s]",
+                ContentLog.text(trimmed, 200), trimmed.length,
                 if (content.trim() == content) "yes" else "no (whitespace trimmed)"
             )
         }
@@ -294,6 +299,12 @@ class ChatManager @Inject constructor(
             }
             historyMessages.forEach { msg ->
                 add(ChatPromptMessage(role = msg.role.name.lowercase(), content = msg.content))
+            }
+            // Branch Q (N rec 2): what the stopped fast-path replay already did
+            // (trusted app note for the local engine; system for cloud providers).
+            fastPathNote?.let { note ->
+                val cloud = runCatching { cloudGateway.isConfigured() }.getOrDefault(false)
+                add(ChatPromptMessage(role = if (cloud) "system" else ChatPromptMessage.ROLE_APP_NOTE, content = note))
             }
         }
 

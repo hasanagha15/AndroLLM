@@ -1,5 +1,6 @@
 package io.androllm.core.tools.agent
 
+import io.androllm.core.common.log.ContentLog
 import io.androllm.core.tools.api.ToolSpec
 import io.androllm.core.tools.validation.ToolExecutionLogger
 import javax.inject.Inject
@@ -196,11 +197,11 @@ class AgentPlanner @Inject constructor(
         )
 
         if (developerMode) {
-            Timber.i("AgentPlanner: PLAN CREATED goal='${goal.take(60)}' steps=${steps.map { it.toolName }} parallel=$hasParallel conditional=$hasConditionalFinal sequential=$isSequential")
+            Timber.i("AgentPlanner: PLAN CREATED goal=${ContentLog.text(goal, 60)} steps=${steps.map { it.toolName }} parallel=$hasParallel conditional=$hasConditionalFinal sequential=$isSequential")
             logger.logSelection(requiredTools.toList(), "[PLAN] $request")
         } else {
             // Internal only — no user-visible output
-            Timber.d("AgentPlanner: internal plan for '${request.take(40)}' -> ${steps.map { it.toolName }}")
+            Timber.d("AgentPlanner: internal plan for ${ContentLog.text(request, 40)} -> ${steps.map { it.toolName }}")
         }
         return plan
     }

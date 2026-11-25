@@ -1,5 +1,6 @@
 package io.androllm.core.tools.validation
 
+import io.androllm.core.common.log.ContentLog
 import io.androllm.core.tools.api.ToolCall
 import io.androllm.core.tools.registry.ToolRegistry
 import kotlinx.serialization.json.JsonObject
@@ -141,7 +142,7 @@ class ToolExecutionPipeline @Inject constructor(
             logger.logExecution(call.name, duration, result.isSuccess, if (result is io.androllm.core.tools.api.ToolResult.Failure) result.summary else null)
             results += call to result
             if (result is io.androllm.core.tools.api.ToolResult.Failure) {
-                Timber.w("ToolExecutionPipeline: stopping sequential execution — tool '${call.name}' failed: ${result.summary}")
+                Timber.w("ToolExecutionPipeline: stopping sequential execution — tool '${call.name}' failed: ${ContentLog.text(result.summary)}")
                 return SequentialResult.StoppedOnFailure(results, call, result)
             }
             // Pass validated output to next tool implicitly via results list

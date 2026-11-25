@@ -55,6 +55,7 @@ import io.androllm.engine.models.ChatPromptMessage
 import io.androllm.engine.models.EngineDebugInfo
 import io.androllm.engine.models.EngineStats
 import io.androllm.engine.models.GenerationConfig
+import io.androllm.core.common.log.ContentLog
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -230,6 +231,7 @@ class ChatViewModel @Inject constructor(
 
     fun updateGenConfig(config: GenerationConfig) {
         _genConfig.value = config
+        ContentLog.enabled = config.debugTokenLogging
     }
 
     val uiState: StateFlow<ChatUiState> = combine(
@@ -663,7 +665,7 @@ class ChatViewModel @Inject constructor(
      * caught and surfaced as a visible error message; the user's own message
      * was already committed to [_messages] by the caller.
      */
-    private suspend fun generateFromHistory(history: List<ChatMessage>) {
+    private suspend fun generateFromHistory(history: List<ChatMessage>, fastPathNote: String? = null) {
         _preparing.value = true
         // A new turn starts a clean tool-card list; the coordinator re-populates
         // it as it plans and executes (recomposition must never append twice).
@@ -826,9 +828,18 @@ class ChatViewModel @Inject constructor(
                         content = it.content.trim()
                     )
                 }
+                // Branch Q (N rec 2): a fast-path replay stopped part-way — tell the
+                // model what already happened on screen (app-authored note after the
+                // owner's message; cloud providers only know system/user/assistant).
+                fastPathNote?.let {
+                    add(fastPathNoteMessage(it, cloud = _cloudMode.value))
+                }
             }
+            // Branch Q: roles and lengths only. Message text (including tool
+            // data folded into system/user turns) is logged only when the
+            // owner explicitly turned on debugTokenLogging.
             android.util.Log.i(TAG, "PROMPT BUILT nMessages=${messages.size} nCtx=$contextLength: ${
-                messages.joinToString(" | ") { "${it.role}:${it.content.take(30)}" }
+                describePromptForLog(messages, _genConfig.value.debugTokenLogging)
             }")
 
             // Explicit addAssistant=true: the rendered prompt ends with the
@@ -1024,12 +1035,17 @@ class ChatViewModel @Inject constructor(
                 variableStore.beginTurn(id)
                 // Branch N: zero-LLM playbook command (non-risky, owner only, setting
                 // "Fast playbook commands"); null = the model answers as before.
-                val fast = if (turnAttachments.isEmpty()) io.androllm.core.tools.remote.UtteranceFastPaths.tryHandle(trimmed) else null
-                if (fast != null) {
-                    appendAssistantMessage(fast)
+                val fast = if (turnAttachments.isEmpty()) {
+                    io.androllm.core.tools.remote.UtteranceFastPaths.handle(trimmed)
+                } else {
+                    io.androllm.core.tools.remote.UtteranceFastPaths.Outcome.NONE
+                }
+                fast.reply?.let {
+                    appendAssistantMessage(it)
                     return@launch
                 }
-                generateFromHistory(currentHistory)
+                // Branch Q: a partial replay leaves a note so the model knows the screen state.
+                generateFromHistory(currentHistory, fastPathNote = fast.modelNote)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -2239,3 +2255,21 @@ private fun ChatMessage.toCoreMessage(): Message = Message(
     origin = origin,
     attachmentsJson = attachmentsJson
 )
+
+/**
+ * Branch Q: content-free description of a built prompt for logcat —
+ * `role:Nch` per message. Text (head of each message) is included only when
+ * [includeContent] (debugTokenLogging) is explicitly on.
+ */
+internal fun describePromptForLog(messages: List<ChatPromptMessage>, includeContent: Boolean): String =
+    messages.joinToString(" | ") { m ->
+        if (includeContent) "${m.role}:${m.content.length}ch:${m.content.take(30)}"
+        else "${m.role}:${m.content.length}ch"
+    }
+
+/**
+ * Branch Q: the fast-path note as a prompt message — a trusted app note for
+ * the local engine, a system message for cloud providers.
+ */
+internal fun fastPathNoteMessage(note: String, cloud: Boolean): ChatPromptMessage =
+    ChatPromptMessage(role = if (cloud) "system" else ChatPromptMessage.ROLE_APP_NOTE, content = note)

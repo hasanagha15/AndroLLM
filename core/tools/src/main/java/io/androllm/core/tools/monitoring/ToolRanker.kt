@@ -1,5 +1,6 @@
 package io.androllm.core.tools.monitoring
 
+import io.androllm.core.common.log.ContentLog
 import io.androllm.core.tools.api.ToolSpec
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -92,7 +93,7 @@ class ToolRanker @Inject constructor(
 
             RankedTool(spec, score, reasons)
         }.sortedByDescending { it.score }.also { ranked ->
-            Timber.i("ToolRanker: ranked ${candidates.size} candidates for '${query.take(40)}' -> ${ranked.joinToString(", ") { "${it.spec.name}:${"%.1f".format(it.score)}" }}")
+            Timber.i("ToolRanker: ranked ${candidates.size} candidates for ${ContentLog.text(query, 40)} -> ${ranked.joinToString(", ") { "${it.spec.name}:${"%.1f".format(it.score)}" }}")
         }
     }
 

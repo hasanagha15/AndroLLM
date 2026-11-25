@@ -57,6 +57,8 @@ abstract class AppAtlasModule {
             )
                 // Branch N: v2 → v3 keeps the atlas and learned paths; older versions are rebuilt.
                 .addMigrations(AtlasMigrations.MIGRATION_2_3)
+                // Branch Q: v3 → v4 adds playbooks.verifiedCount (fast-path trust).
+                .addMigrations(AtlasMigrations.MIGRATION_3_4)
                 .fallbackToDestructiveMigration(dropAllTables = true)
                 .build()
 

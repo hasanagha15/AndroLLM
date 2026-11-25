@@ -1,5 +1,6 @@
 package io.androllm.core.voice.stt
 
+import io.androllm.core.common.log.ContentLog
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.androllm.core.voice.VoiceSettingsStore
@@ -241,9 +242,9 @@ class WhisperSpeechRecognizer @Inject constructor(
             val inferenceMs = (System.nanoTime() - t0) / 1_000_000
             val durationMs = (trimmed.size * 1000L) / SAMPLE_RATE
             Timber.i(
-                "$TAG: transcribed %.1fs (%d trimmed from %.1fs) in %dms -> '%s'",
+                "$TAG: transcribed %.1fs (%d trimmed from %.1fs) in %dms -> %s",
                 durationMs / 1000f, full.size - trimmed.size, full.size / 16000f,
-                inferenceMs, transcription.text.take(80)
+                inferenceMs, ContentLog.text(transcription.text)
             )
             return object : SpeechRecognitionResult {
                 override val text = transcription.text

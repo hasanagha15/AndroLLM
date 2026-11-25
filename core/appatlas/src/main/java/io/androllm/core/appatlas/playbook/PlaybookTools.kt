@@ -87,12 +87,19 @@ class PlaybookCatalog @Inject constructor(
         return result
     }
 
-    /** Playbooks the zero-LLM router may pick: installed, not protected, status OK, NOT risky. */
+    /** Playbooks the zero-LLM router may pick: installed, not protected, status OK, NOT risky, fast-path trusted. */
     suspend fun routable(): List<StoredPlaybook> {
         val extras = repository.extras()
-        return repository.all().filter { sp ->
-            val e = atlas.cachedEntry(sp.playbook.packageName) ?: return@filter false
-            !e.sensitive && sp.playbook.triggers.isNotEmpty() && !sp.playbook.isRisky &&
+        return repository.all().filter { sp -> isRoutable(sp, atlas.cachedEntry(sp.playbook.packageName), extras) }
+    }
+
+    companion object {
+        /** Pure filter behind [routable] (unit-tested without an atlas). */
+        fun isRoutable(sp: StoredPlaybook, e: io.androllm.core.appatlas.model.AppAtlasEntry?, extras: Set<String>): Boolean {
+            if (e == null) return false
+            return !e.sensitive && sp.playbook.triggers.isNotEmpty() && !sp.playbook.isRisky &&
+                // Branch Q (N rec 1): Jarvis-synced playbooks only after a verified run on this device.
+                PlaybookPolicy.fastPathTrusted(sp) &&
                 io.androllm.core.appatlas.index.SensitiveClassifier.reason(e.packageName, e.label, extras) == null &&
                 PlaybookPolicy.effectiveStatus(sp, e.versionCode) == PlaybookStatus.OK
         }
@@ -287,45 +294,114 @@ class PlaybookFileImporter @Inject constructor(
 /**
  * Branch N: zero-LLM fast path. [match] is pure routing over the routable
  * playbooks; [run] executes through the same runner (confirmation cards,
- * guards). Not yet wired into the chat / voice pipeline (see N-result.md).
+ * guards). Registered with the chat / voice entry points (AppAtlasStarter).
+ *
+ * Branch Q:
+ * - only fast-path-trusted playbooks are routed (file import, or verified on
+ *   this device — [PlaybookPolicy.fastPathTrusted]);
+ * - a replay that stops part-way hands the utterance to the model WITH a
+ *   short structured note (playbook id, steps done + op types, reason), so
+ *   the model knows what already happened on screen.
  */
 @Singleton
-class PlaybookFastPath @Inject constructor(
-    private val catalog: PlaybookCatalog,
-    private val runner: PlaybookRunner,
-    private val repository: PlaybookRepository,
-    private val atlas: AppAtlasRepository,
-    private val settings: io.androllm.core.appatlas.settings.AppAtlasSettingsStore
+class PlaybookFastPath(
+    private val routable: suspend () -> List<StoredPlaybook>,
+    private val runPlaybook: suspend (StoredPlaybook, SlotValues) -> ToolResult,
+    private val lookup: suspend (String) -> StoredPlaybook?,
+    private val atlasEnabled: () -> Boolean,
+    private val fastCommandsEnabled: () -> Boolean
 ) : io.androllm.core.tools.remote.UtteranceFastPaths.Handler {
+
+    @Inject constructor(
+        catalog: PlaybookCatalog,
+        runner: PlaybookRunner,
+        repository: PlaybookRepository,
+        atlas: AppAtlasRepository,
+        settings: io.androllm.core.appatlas.settings.AppAtlasSettingsStore
+    ) : this(
+        routable = { catalog.routable() },
+        // No ui_run fallback here: on failure the caller hands the utterance to the model.
+        runPlaybook = { sp, slots -> runner.runResolved(sp, slots, allowFallback = false) },
+        lookup = { id -> repository.get(id) },
+        atlasEnabled = { atlas.isEnabled },
+        fastCommandsEnabled = { settings.current().fastPlaybookCommands }
+    )
 
     /** Registers with the chat / voice entry points (called from AppAtlasStarter). */
     fun attach() = io.androllm.core.tools.remote.UtteranceFastPaths.register(this)
 
-    suspend fun match(utterance: String): RouteMatch? = PlaybookRouter.match(utterance, catalog.routable().map { it.playbook })
+    suspend fun match(utterance: String): RouteMatch? =
+        PlaybookRouter.match(utterance, routable().filter { PlaybookPolicy.fastPathTrusted(it) }.map { it.playbook })
+
+    override suspend fun tryHandle(utterance: String): String? = handle(utterance).reply
 
     /**
      * Owner decision: chat + voice, ONLY non-risky playbooks, never for remote
-     * turns, behind "Fast playbook commands" (default on). No match / tie /
-     * a failed replay → null, the model answers as before.
+     * turns, behind "Fast playbook commands" (default on). No match / tie →
+     * not handled, the model answers as before. A failed replay → the model
+     * answers with a note about the partial execution.
      */
-    override suspend fun tryHandle(utterance: String): String? {
-        if (io.androllm.core.tools.origin.currentRemoteOrigin() != null) return null
-        if (!atlas.isEnabled || !settings.current().fastPlaybookCommands) return null
-        val m = match(utterance) ?: return null
-        if (m.playbook.isRisky) return null
+    override suspend fun handle(utterance: String): io.androllm.core.tools.remote.UtteranceFastPaths.Outcome {
+        val none = io.androllm.core.tools.remote.UtteranceFastPaths.Outcome.NONE
+        if (io.androllm.core.tools.origin.currentRemoteOrigin() != null) return none
+        if (!atlasEnabled() || !fastCommandsEnabled()) return none
+        val m = match(utterance) ?: return none
+        if (m.playbook.isRisky) return none
         return when (val r = run(m)) {
             is ToolResult.Success -> {
                 val verified = r.data["verified"]?.let { (it as? JsonPrimitive)?.contentOrNull } == "true"
-                "✓ ${io.androllm.core.appatlas.index.AtlasText.clean(m.playbook.description, 80) ?: m.playbook.name}" +
-                    if (verified) "" else " (not confirmed on screen)"
+                io.androllm.core.tools.remote.UtteranceFastPaths.Outcome(
+                    reply = "✓ ${io.androllm.core.appatlas.index.AtlasText.clean(m.playbook.description, 80) ?: m.playbook.name}" +
+                        if (verified) "" else " (not confirmed on screen)"
+                )
             }
-            is ToolResult.Failure -> if (r.summary.startsWith("The user declined")) "Cancelled." else null
+            is ToolResult.Failure ->
+                if (r.summary.startsWith("The user declined")) {
+                    io.androllm.core.tools.remote.UtteranceFastPaths.Outcome(reply = "Cancelled.")
+                } else {
+                    io.androllm.core.tools.remote.UtteranceFastPaths.Outcome(modelNote = partialNote(m.playbook, r.data))
+                }
         }
     }
 
-    /** No ui_run fallback here: on failure the caller hands the utterance to the model as usual. */
     suspend fun run(m: RouteMatch): ToolResult {
-        val sp = repository.get(m.playbook.id) ?: return ToolResult.Failure("playbook gone", retryable = false)
-        return runner.runResolved(sp, m.slots, allowFallback = false)
+        val sp = lookup(m.playbook.id) ?: return ToolResult.Failure("playbook gone", retryable = false)
+        // Branch Q: re-check at run time (the library may have changed since routing).
+        if (!PlaybookPolicy.fastPathTrusted(sp) || sp.playbook.isRisky) {
+            return ToolResult.Failure("playbook not eligible for the fast path", retryable = false)
+        }
+        return runPlaybook(sp, m.slots)
+    }
+
+    companion object {
+        /**
+         * Branch Q (N rec 2): app-authored note for the model after a fast-path
+         * replay stopped. Ids, counts, op types and the machine reason only —
+         * never slot values (the owner's words) or screen text.
+         */
+        fun partialNote(p: Playbook, data: JsonObject): String {
+            fun str(key: String) = (data[key] as? JsonPrimitive)?.contentOrNull
+            val done = str("steps_done")?.toIntOrNull() ?: 0
+            val total = str("steps_total")?.toIntOrNull() ?: p.steps.size
+            val ops = (data["done_ops"] as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                ?.filter { it.matches(OP_PATTERN) }
+                .orEmpty()
+            val reason = str("reason")?.takeIf { it.matches(OP_PATTERN) } ?: "not_started"
+            return buildString {
+                append("Fast path: playbook ").append(p.id).append(" was started for this request and stopped. ")
+                append("Steps completed: ").append(done).append(" of ").append(total)
+                if (ops.isNotEmpty()) append(" (").append(ops.joinToString(", ")).append(')')
+                append(". Reason: ").append(reason).append(". ")
+                if (done > 0) {
+                    append("The app may already be partly changed (e.g. a screen opened or text typed); ")
+                    append("check the current screen before repeating those steps.")
+                } else {
+                    append("Nothing was done on screen.")
+                }
+            }
+        }
+
+        private val OP_PATTERN = Regex("[a-z_]{1,32}")
     }
 }

@@ -1,5 +1,6 @@
 package io.androllm.core.voice.tts.normalize
 
+import io.androllm.core.common.log.ContentLog
 import io.androllm.core.voice.model.VoiceSettings
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -38,9 +39,9 @@ class TextNormalizationEngine @Inject constructor() {
         val elapsedMs = (System.nanoTime() - start) / 1_000_000L
         if (snapshot.debug) {
             for (trace in result.traces) {
-                Timber.i("TN [${trace.stageId}]: '${trace.input}' → '${trace.output}'")
+                Timber.i("TN [${trace.stageId}]: ${ContentLog.text(trace.input, 200)} → ${ContentLog.text(trace.output, 200)}")
             }
-            Timber.i("TN done in ${elapsedMs}ms: '${result.text}'")
+            Timber.i("TN done in ${elapsedMs}ms: ${ContentLog.text(result.text, 200)}")
         }
         return result
     }

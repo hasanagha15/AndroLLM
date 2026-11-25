@@ -1,5 +1,6 @@
 ﻿package io.androllm.feature.voice.service
 
+import io.androllm.core.common.log.ContentLog
 import android.app.Service
 import android.content.Intent
 import android.content.IntentFilter
@@ -486,7 +487,7 @@ class VoiceAssistantService : Service() {
             // the provider as a "question". Always acknowledge the turn so the
             // user isn't left staring at "receiving audio".
             if (trimmed.length < 2) {
-                Timber.i("STT: no usable transcript='%s'", trimmed.take(40))
+                Timber.i("STT: no usable transcript=%s", ContentLog.text(trimmed, 40))
                 stopElapsedTicker()
                 controller.setTurnActive(false)
                 controller.setTranscript("")
@@ -510,7 +511,7 @@ class VoiceAssistantService : Service() {
             // responding and speaking — and closes on its own when the turn
             // ends (turnActive drops; the window owner hides it).
             controller.setPhase(VoicePhase.STARTING_STT)
-            Timber.i("STT: transcript='%s'", trimmed.take(80))
+            Timber.i("STT: transcript=%s", ContentLog.text(trimmed))
             kotlinx.coroutines.delay(TRANSCRIBE_HOLD_MS)
 
             // ── THINK + SPEAK (ChatManager & Piper TTS) ──
@@ -703,7 +704,7 @@ class VoiceAssistantService : Service() {
                     if (text.isNotBlank() && text != lastPartialRef.get()) {
                         lastPartialRef.set(text)
                         controller.setPartialTranscript(text)
-                        Timber.tag("STT").i("partial: '%s' (inference %dms)", text.take(60), res.inferenceMs)
+                        Timber.tag("STT").i("partial: %s (inference %dms)", ContentLog.text(text, 60), res.inferenceMs)
                     }
                 }
             }
@@ -772,8 +773,8 @@ class VoiceAssistantService : Service() {
         session.release()
         val text = stripWakePrefix(result?.text?.trim() ?: "")
         Timber.tag("STT").i(
-            "RAW TRANSCRIPT: '%s' | inference=%dms | duration=%dms",
-            text.take(100), result?.inferenceMs ?: 0L, durationMs
+            "RAW TRANSCRIPT: %s | inference=%dms | duration=%dms",
+            ContentLog.text(text, 100), result?.inferenceMs ?: 0L, durationMs
         )
         if (text.isBlank()) {
             Timber.tag("STT").w("STT: no speech recognized")
@@ -825,8 +826,8 @@ class VoiceAssistantService : Service() {
                 // Step 9: prove the exact transcript reaches the chat pipeline.
                 // Whatever the recognizer produced is what the model must see.
                 Timber.tag("STT").i(
-                    "STEP9: sending EXACT transcript to ChatManager (origin=VOICE): '%s' (%d chars)",
-                    transcript, transcript.length
+                    "STEP9: sending EXACT transcript to ChatManager (origin=VOICE): %s (%d chars)",
+                    ContentLog.text(transcript, 200), transcript.length
                 )
                 chatManager.sendMessageStream(
                     content = transcript,
@@ -870,7 +871,7 @@ class VoiceAssistantService : Service() {
                         if (cancelRequested || !currentCoroutineContext().isActive) break
                         val samples = ttsEngine.synthesize(chunk.text, settings.speakingSpeed)
                         if (samples == null || samples.isEmpty()) {
-                            Timber.w("TTS: synthesize returned null/empty for '%s' — text still shown in overlay", chunk.text.take(40))
+                            Timber.w("TTS: synthesize returned null/empty for %s — text still shown in overlay", ContentLog.text(chunk.text, 40))
                             continue
                         }
                         controller.setPhase(VoicePhase.SPEAK)
@@ -885,7 +886,7 @@ class VoiceAssistantService : Service() {
                         // audio duration — the Piper engine gives no timestamps).
                         val durationMs = (samples.size.toLong() * 1000L) / ttsEngine.sampleRate
                         controller.setSpokenRange(chunk.startOffset, chunk.startOffset + chunk.text.length)
-                        Timber.i("TTS: speaking %d samples @ %d Hz for '%s'", samples.size, ttsEngine.sampleRate, chunk.text.take(40))
+                        Timber.i("TTS: speaking %d samples @ %d Hz for %s", samples.size, ttsEngine.sampleRate, ContentLog.text(chunk.text, 40))
                         val playJob = scope.launch { audioPlayer.play(samples, ttsEngine.sampleRate) }
                         val progressJob = scope.launch { driveWordProgress(chunk, durationMs) }
                         while (playJob.isActive) {
@@ -1141,14 +1142,14 @@ class VoiceAssistantService : Service() {
             if (!currentCoroutineContext().isActive) return true
             val samples = ttsEngine.synthesize(sentence, settings.speakingSpeed)
             if (samples == null || samples.isEmpty()) {
-                Timber.w("TTS: synthesize returned null/empty for '%s' — text still shown in overlay", sentence.take(40))
+                Timber.w("TTS: synthesize returned null/empty for %s — text still shown in overlay", ContentLog.text(sentence, 40))
                 offset += sentence.length
                 continue
             }
             // Karaoke highlight for the non-streaming fallback path too.
             val durationMs = (samples.size.toLong() * 1000L) / ttsEngine.sampleRate
             controller.setSpokenRange(offset, offset + sentence.length)
-            Timber.i("TTS: speaking %d samples @ %d Hz for '%s'", samples.size, ttsEngine.sampleRate, sentence.take(40))
+            Timber.i("TTS: speaking %d samples @ %d Hz for %s", samples.size, ttsEngine.sampleRate, ContentLog.text(sentence, 40))
             val playJob = scope.launch { audioPlayer.play(samples, ttsEngine.sampleRate) }
             val progressJob = scope.launch { driveWordProgress(SpokenChunk(sentence, offset), durationMs) }
             offset += sentence.length
@@ -1208,7 +1209,7 @@ class VoiceAssistantService : Service() {
             // requireSpeech: a reply with no detected speech is never decoded
             // (whisper noise words like "Okay." must not approve an action).
             val reply = awaitUtterance(rec, settings, requireSpeech = true) { _, _ -> }
-            Timber.i("Confirmation reply: '%s' for %s", reply?.take(40), conf.toolName)
+            Timber.i("Confirmation reply: %s for %s", ContentLog.text(reply, 40), conf.toolName)
             if (cancelRequested) return null
             // A silent/no-speech reply abstains too — the card can still
             // decide instead of the action being auto-declined.

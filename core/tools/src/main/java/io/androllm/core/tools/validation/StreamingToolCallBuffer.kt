@@ -1,5 +1,6 @@
 package io.androllm.core.tools.validation
 
+import io.androllm.core.common.log.ContentLog
 import io.androllm.core.cloud.model.CloudStreamEvent
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -105,7 +106,7 @@ class StreamingToolCallBuffer(
             }
             // Validate JSON is complete — partial JSON must never be executed
             if (!isCompleteJsonObject(argsString)) {
-                Timber.w("StreamingToolCallBuffer: discarding incomplete JSON for '$name' at index $index: $argsString")
+                Timber.w("StreamingToolCallBuffer: discarding incomplete JSON for '$name' at index $index: ${ContentLog.text(argsString)}")
                 continue
             }
             // Validate syntax — malformed JSON never reaches execution

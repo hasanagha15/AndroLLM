@@ -1,5 +1,6 @@
 package io.androllm.core.tools.validation
 
+import io.androllm.core.common.log.ContentLog
 import timber.log.Timber
 
 /**
@@ -98,7 +99,7 @@ object PromptInjectionDetector {
      */
     fun validateUserPrompt(prompt: String): String? {
         if (isInjectionAttempt(prompt)) {
-            Timber.w("PromptInjectionDetector: injection attempt detected in prompt: ${prompt.take(100)}")
+            Timber.w("PromptInjectionDetector: injection attempt detected in prompt: ${ContentLog.text(prompt, 100)}")
             return "Prompt contains potential injection — ignoring tool-related instructions"
         }
         return null

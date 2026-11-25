@@ -1,5 +1,6 @@
 package io.androllm.core.tools.tool.impl
 
+import io.androllm.core.common.log.ContentLog
 import io.androllm.core.tools.api.Tool
 import io.androllm.core.tools.api.ToolCategory
 import io.androllm.core.tools.api.ToolPermission
@@ -113,8 +114,8 @@ class WebSearchTool @Inject constructor(
 
         val durationMs = System.currentTimeMillis() - startedAt
         Timber.i(
-            "WebSearchTool: provider=%s query='%s' results=%d in %dms",
-            provider, query, results.size, durationMs
+            "WebSearchTool: provider=%s query=%s results=%d in %dms",
+            provider, ContentLog.text(query), results.size, durationMs
         )
 
         if (results.isEmpty()) {

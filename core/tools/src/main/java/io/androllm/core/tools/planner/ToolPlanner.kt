@@ -1,5 +1,6 @@
 package io.androllm.core.tools.planner
 
+import io.androllm.core.common.log.ContentLog
 import io.androllm.core.tools.agent.AgentContextBuilder
 import io.androllm.core.tools.api.ToolCall
 import io.androllm.core.tools.api.ToolCallParser
@@ -271,7 +272,7 @@ class ToolPlanner @Inject constructor(
                 val syntaxResult = JsonSchemaValidator.validateJsonSyntax(output)
                 if (syntaxResult is ValidationResult.Invalid) {
                     logger.logValidation("<malformed>", syntaxResult)
-                    Timber.w("ToolPlanner: malformed JSON detected: ${syntaxResult.firstError}")
+                    Timber.w("ToolPlanner: malformed JSON detected: ${ContentLog.text(syntaxResult.firstError)}")
                     if (attempt == 0) {
                         logger.logRetry("<malformed>", 1, syntaxResult.firstError)
                         retryReason = syntaxResult.firstError

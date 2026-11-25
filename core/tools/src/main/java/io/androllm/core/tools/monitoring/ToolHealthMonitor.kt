@@ -1,5 +1,6 @@
 package io.androllm.core.tools.monitoring
 
+import io.androllm.core.common.log.ContentLog
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.max
@@ -73,7 +74,7 @@ class ToolHealthMonitor @Inject constructor() {
                 lastError = error.take(200)
             )
         }
-        Timber.w("ToolHealthMonitor: $toolName failure timeout=$isTimeout latency=${latencyMs}ms err=${error.take(80)}")
+        Timber.w("ToolHealthMonitor: $toolName failure timeout=$isTimeout latency=${latencyMs}ms err=${ContentLog.text(error)}")
     }
 
     fun getStats(toolName: String): HealthStats = synchronized(lock) {

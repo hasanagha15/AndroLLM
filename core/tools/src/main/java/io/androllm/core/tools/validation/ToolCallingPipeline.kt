@@ -1,5 +1,6 @@
 package io.androllm.core.tools.validation
 
+import io.androllm.core.common.log.ContentLog
 import io.androllm.core.tools.api.ToolBackend
 import io.androllm.core.tools.api.ToolCall
 import io.androllm.core.tools.api.ToolCallParser
@@ -94,12 +95,12 @@ class ToolCallingPipeline @Inject constructor(
     ): PipelineRunResult {
         val stages = mutableListOf<String>()
         Timber.i("ToolCallingPipeline: === PIPELINE START (local=$isLocal, attachments=$hasAttachments) ===")
-        Timber.i("ToolCallingPipeline: stage 1 — user message: '${userMessage.take(80)}'")
+        Timber.i("ToolCallingPipeline: stage 1 — user message: ${ContentLog.text(userMessage)}")
         stages += "1:user_message"
         logger.logSelection(emptyList(), userMessage) // stage 1 logging
 
         // Stage 2: model generation (already provided as modelOutput, but we log it)
-        Timber.i("ToolCallingPipeline: stage 2 — model generation (${modelOutput.length} chars, preview='${modelOutput.take(80)}')")
+        Timber.i("ToolCallingPipeline: stage 2 — model generation (${modelOutput.length} chars, preview=${ContentLog.text(modelOutput)})")
         stages += "2:model_generation"
 
         // Stage 3: tool intent detection (via router + heuristic)
@@ -241,14 +242,14 @@ class ToolCallingPipeline @Inject constructor(
         val summaries = mutableListOf<String>()
         val results = mutableListOf<ToolResult>()
         for (call in confirmedCalls) {
-            Timber.i("ToolCallingPipeline: stage 8 — executing '${call.name}' with args ${call.arguments}")
+            Timber.i("ToolCallingPipeline: stage 8 — executing '${call.name}' with args ${ContentLog.text(call.arguments.toString())}")
             val result = executor.execute(call) // includes permission + confirmation + timeout gates
             executed += call
             results += result
             val summary = result.summary
             val sanitizedSummary = OutputSanitizer.sanitize(summary)
             summaries += sanitizedSummary
-            Timber.i("ToolCallingPipeline: stage 8 — result for '${call.name}': ${result::class.simpleName} — '${sanitizedSummary.take(80)}'")
+            Timber.i("ToolCallingPipeline: stage 8 — result for '${call.name}': ${result::class.simpleName} — ${ContentLog.text(sanitizedSummary)}")
             logger.logExecution(call.name, 0, result.isSuccess, if (result is ToolResult.Failure) result.summary else null)
             if (result is ToolResult.Failure && !result.retryable) {
                 Timber.w("ToolCallingPipeline: stage 8 — '${call.name}' failed non-retryably — stopping sequential execution")
@@ -278,7 +279,7 @@ class ToolCallingPipeline @Inject constructor(
         // The final response is the sanitized model output plus tool summaries — but we must strip any tool markup that the model may have included
         val rawFinal = combinedToolOutput + OutputSanitizer.sanitize(modelOutput)
         val finalResponse = sanitizeFinalResponse(rawFinal)
-        Timber.i("ToolCallingPipeline: stage 10 — final assistant response (${finalResponse.length} chars, preview='${finalResponse.take(80)}')")
+        Timber.i("ToolCallingPipeline: stage 10 — final assistant response (${finalResponse.length} chars, preview=${ContentLog.text(finalResponse)})")
         stages += "10:final_response"
         Timber.i("ToolCallingPipeline: === PIPELINE END ===")
 
@@ -319,7 +320,7 @@ class ToolCallingPipeline @Inject constructor(
         if (specsByName.containsKey("search_web") && (lower.contains("search") || lower.contains("look up") || lower.contains("google"))) {
             extractSearchQueryFromUser(userMessage)?.let { q ->
                 if (q.isNotBlank()) {
-                    Timber.i("ToolCallingPipeline: heuristicFallback — search_web with query '$q'")
+                    Timber.i("ToolCallingPipeline: heuristicFallback — search_web with query ${ContentLog.text(q)}")
                     return listOf(ToolCall(id = "call_search_web_heuristic_0", name = "search_web", arguments = buildJsonObject { put("query", q) }))
                 }
             }

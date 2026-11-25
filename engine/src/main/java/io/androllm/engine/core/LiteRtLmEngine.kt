@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.content.Context
 import android.os.Debug
 import android.os.Process
+import io.androllm.core.common.log.ContentLog
 import com.google.ai.edge.litertlm.Channel as LiteRtChannel
 import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
@@ -1075,7 +1076,7 @@ class LiteRtLmEngine @Inject constructor(
                 logger.i("EOS Received: stop=$stopReason")
                 logger.i(
                     "generation done: ${tokenCount} chunks in ${elapsedMs}ms, stop=$stopReason, " +
-                        "firstTokenMs=$firstMs, text='${stripControlTokens(emittedBuilder.toString()).take(120)}'"
+                        "firstTokenMs=$firstMs, text=${ContentLog.text(stripControlTokens(emittedBuilder.toString()), 120, config.debugTokenLogging)}"
                 )
                 _stats.value = buildGenerationStats(
                     conversation = activeConv,
@@ -1134,7 +1135,7 @@ class LiteRtLmEngine @Inject constructor(
                                 mapOf("promptLength" to prompt.length.toString())
                             )
                             logger.i(
-                                "PREFILL END / DECODER START — TTFT=${firstTokenMs}ms: '${stripControlTokens(text).take(60)}'"
+                                "PREFILL END / DECODER START — TTFT=${firstTokenMs}ms: ${ContentLog.text(stripControlTokens(text), 60, config.debugTokenLogging)}"
                             )
                             logger.i("First Token")
                         }
@@ -1579,7 +1580,8 @@ class LiteRtLmEngine @Inject constructor(
             logPrefillTokenCount(conv)
             logger.i(
                 "chat generation done: ${tokenCount} chunks in ${elapsedMs}ms, stop=$stopReason, " +
-                    "firstTokenMs=$firstMs, text='${stripControlTokens(fullClean).take(120)}' nativeCalls=${lastNativeToolCalls.size}"
+                    "firstTokenMs=$firstMs, reply=${ContentLog.text(stripControlTokens(fullClean), 120, config.debugTokenLogging)} " +
+                    "nativeCalls=${lastNativeToolCalls.size}"
             )
             _stats.value = buildGenerationStats(
                 conversation = conv,
@@ -1689,7 +1691,7 @@ class LiteRtLmEngine @Inject constructor(
                         if (firstTokenSeenAt.get() == 0L) {
                             firstTokenSeenAt.set(System.currentTimeMillis())
                             logger.i(
-                                "PREFILL END / DECODER START — TTFT=${firstTokenSeenAt.get() - startedAt}ms: '${stripControlTokens(clean).take(60)}'"
+                                "PREFILL END / DECODER START — TTFT=${firstTokenSeenAt.get() - startedAt}ms: ${ContentLog.text(stripControlTokens(clean), 60, config.debugTokenLogging)}"
                             )
                             logger.i("First Token")
                         }

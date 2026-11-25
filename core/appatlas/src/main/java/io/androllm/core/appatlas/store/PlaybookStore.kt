@@ -1,5 +1,6 @@
 package io.androllm.core.appatlas.store
 
+import androidx.room.ColumnInfo
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Index
@@ -32,7 +33,10 @@ data class PlaybookRow(
     val failCount: Int,
     val lastRunAt: Long,
     val importedAt: Long,
-    val source: String
+    val source: String,
+    /** Branch Q: runs that succeeded with the postcondition seen on this device. */
+    @ColumnInfo(defaultValue = "0")
+    val verifiedCount: Int = 0
 )
 
 /** Branch N: a pending relearn request for Jarvis (one per playbook + app version). Ids only. */
@@ -129,7 +133,8 @@ class RoomPlaybookStore(private val dao: PlaybookDao) : PlaybookStore {
             failCount = r.failCount,
             lastRunAt = r.lastRunAt,
             importedAt = r.importedAt,
-            source = r.source
+            source = r.source,
+            verifiedCount = r.verifiedCount
         )
     }.getOrNull()
 
@@ -147,7 +152,8 @@ class RoomPlaybookStore(private val dao: PlaybookDao) : PlaybookStore {
         failCount = s.failCount,
         lastRunAt = s.lastRunAt,
         importedAt = s.importedAt,
-        source = s.source
+        source = s.source,
+        verifiedCount = s.verifiedCount
     )
 }
 
@@ -173,6 +179,22 @@ object AtlasMigrations {
     val MIGRATION_2_3 = object : Migration(2, 3) {
         override fun migrate(db: SupportSQLiteDatabase) {
             SQL_2_3.forEach(db::execSQL)
+        }
+    }
+
+    /**
+     * v3 → v4 (branch Q): playbooks.verifiedCount — successful runs with the
+     * postcondition seen on this device. Existing rows start unverified (0);
+     * a Jarvis-synced playbook needs one verified run before the fast path
+     * may route to it (file imports are trusted as before).
+     */
+    val SQL_3_4: List<String> = listOf(
+        "ALTER TABLE `playbooks` ADD COLUMN `verifiedCount` INTEGER NOT NULL DEFAULT 0"
+    )
+
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            SQL_3_4.forEach(db::execSQL)
         }
     }
 }

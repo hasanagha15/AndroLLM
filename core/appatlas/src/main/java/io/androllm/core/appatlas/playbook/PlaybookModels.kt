@@ -166,7 +166,13 @@ data class StoredPlaybook(
     val lastRunAt: Long = 0L,
     val importedAt: Long = 0L,
     /** "file" | "jarvis". */
-    val source: String = "file"
+    val source: String = "file",
+    /**
+     * Branch Q: runs on this device that succeeded WITH the postcondition
+     * seen. Reset when an import changes the playbook. A Jarvis-synced
+     * playbook is routed by the zero-LLM fast path only once this is > 0.
+     */
+    val verifiedCount: Int = 0
 )
 
 /** Small record Jarvis pulls over the link to re-crawl a playbook. Ids only, no user text. */

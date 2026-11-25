@@ -28,6 +28,17 @@ object PlaybookPolicy {
         return if (v < sp.playbook.versionMin || v > sp.playbook.versionMax) PlaybookStatus.UNVERIFIED else PlaybookStatus.OK
     }
 
+    /**
+     * Branch Q (N review rec 1): may the zero-LLM fast path route the owner's
+     * command to [sp] by its triggers? Only a playbook the owner imported
+     * from a local file, or one that already succeeded on this device with
+     * its postcondition seen. A Jarvis-synced playbook can't take over an
+     * owner's command until it has been verified here (the model can still
+     * run it through playbook_run, which is how it gets verified).
+     */
+    fun fastPathTrusted(sp: StoredPlaybook): Boolean =
+        sp.source == PlaybookRepository.SOURCE_FILE || sp.verifiedCount > 0
+
     /** App updated to [versionCode]: out-of-range playbooks → UNVERIFIED (+ relearn), in-range → OK. */
     fun onAppVersion(items: List<StoredPlaybook>, versionCode: Long): List<StoredPlaybook> = items.map { sp ->
         val inRange = versionCode in sp.playbook.versionMin..sp.playbook.versionMax
@@ -97,7 +108,9 @@ class PlaybookRepository(
                     flaggedVersion = if (same) prev!!.flaggedVersion else null,
                     successCount = prev?.successCount ?: 0, failCount = prev?.failCount ?: 0,
                     lastRunAt = prev?.lastRunAt ?: 0L, importedAt = now,
-                    source = if (same) prev!!.source else source
+                    source = if (same) prev!!.source else source,
+                    // Branch Q: changed steps are unverified again (no inherited fast-path trust).
+                    verifiedCount = if (same) prev!!.verifiedCount else 0
                 )
             })
             cache = null
@@ -129,7 +142,13 @@ class PlaybookRepository(
     suspend fun get(id: String): StoredPlaybook? = all().firstOrNull { it.playbook.id == id }
 
     /** Successful run: counters only. */
-    suspend fun recordSuccess(id: String) = update(id) { it.copy(successCount = it.successCount + 1, lastRunAt = clock()) }
+    suspend fun recordSuccess(id: String, verified: Boolean = false) = update(id) {
+        it.copy(
+            successCount = it.successCount + 1,
+            verifiedCount = it.verifiedCount + if (verified) 1 else 0,
+            lastRunAt = clock()
+        )
+    }
 
     /**
      * A mismatch (expected screen / target not found / wrong app): the

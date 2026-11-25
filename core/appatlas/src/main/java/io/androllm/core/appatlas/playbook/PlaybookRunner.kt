@@ -95,7 +95,8 @@ class PlaybookRunner(
 
         val r = engine.run(p, slots, strict = status == PlaybookStatus.UNVERIFIED)
         if (r.success) {
-            repository.recordSuccess(p.id)
+            // Branch Q: a success with the postcondition seen makes the playbook fast-path trusted.
+            repository.recordSuccess(p.id, verified = r.hasPostcondition && r.verified)
             if (r.hasPostcondition && !r.verified) repository.recordUnverified(p.id, version)
             Timber.i("Playbooks: %s ok in %d ms (verified=%s)", p.id, r.elapsedMs, r.verified)
             return ToolResult.Success(
@@ -126,29 +127,35 @@ class PlaybookRunner(
             }
             f.kind == FailureKind.BLOCKED -> {
                 repository.recordFailure(p.id)
-                ToolResult.Failure("$base A protected app is on screen; automation is blocked there.", retryable = false)
+                ToolResult.Failure(
+                    "$base A protected app is on screen; automation is blocked there.",
+                    data = failureData(p, f, r.stepsDone), retryable = false
+                )
             }
             f.kind == FailureKind.SERVICE_OFF -> ToolResult.Failure(
-                "The accessibility service is not enabled. Settings → Accessibility → AndroLLM UI Automation.", retryable = false
+                "The accessibility service is not enabled. Settings → Accessibility → AndroLLM UI Automation.",
+                data = failureData(p, f, r.stepsDone), retryable = false
             )
             f.kind.mismatch -> {
                 repository.recordMismatch(p.id, version, f)
-                fallbackOr(p, slots, allowFallback, "$base Marked stale for v$version; relearn requested.", f)
+                fallbackOr(p, slots, allowFallback, "$base Marked stale for v$version; relearn requested.", f, r.stepsDone)
             }
             else -> {
                 repository.recordFailure(p.id)
-                fallbackOr(p, slots, allowFallback, base, f)
+                fallbackOr(p, slots, allowFallback, base, f, r.stepsDone)
             }
         }
     }
 
-    private suspend fun fallbackOr(p: Playbook, slots: SlotValues, allow: Boolean, why: String, f: StepFailure? = null): ToolResult {
-        val data = buildJsonObject {
-            put("status", "failed")
-            put("playbook", p.id)
-            put("verified", false)
-            f?.let { put("failed_step", it.stepIndex); put("reason", it.kind.wire) }
-        }
+    private suspend fun fallbackOr(
+        p: Playbook,
+        slots: SlotValues,
+        allow: Boolean,
+        why: String,
+        f: StepFailure? = null,
+        stepsDone: Int = 0
+    ): ToolResult {
+        val data = failureData(p, f, stepsDone)
         // Gate N-B1: RemoteToolPolicy forbids ui_run for remote (Jarvis) turns — so no fallback either.
         if (currentRemoteOrigin() != null) {
             repository.requestRelearn(p, installedVersion(p.packageName) ?: 0L, f?.stepIndex ?: -1, f?.kind?.wire ?: "stale")
@@ -168,6 +175,18 @@ class PlaybookRunner(
         } else {
             ToolResult.Failure("$why Fallback ui_run failed: ${out.summary}", data = data, retryable = false)
         }
+    }
+
+    /** Structured failure data: ids, counts and op types only. */
+    private fun failureData(p: Playbook, f: StepFailure?, stepsDone: Int) = buildJsonObject {
+        put("status", "failed")
+        put("playbook", p.id)
+        put("verified", false)
+        f?.let { put("failed_step", it.stepIndex); put("reason", it.kind.wire) }
+        // Branch Q (N rec 2): what already happened on screen — count + op types, never slot values.
+        put("steps_done", stepsDone)
+        put("steps_total", p.steps.size)
+        putJsonArray("done_ops") { p.steps.take(stepsDone).forEach { add(it.op) } }
     }
 
     private suspend fun fallbackGoal(p: Playbook, slots: SlotValues): String {
