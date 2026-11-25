@@ -45,8 +45,14 @@ class DataTaskTest {
         val big = buildJsonObject { put("pad", "x".repeat(40_000)) }
         val bigTyped = JarvisProtocol.encodeTask(TestTasks.KEY, "s4", "", now, type = "playbooks.sync", body = big)
         assertThat(JarvisProtocol.parseTask(bigTyped, now, TestTasks.KEY)).isInstanceOf(TaskParse.Valid::class.java)
-        val bigText = JarvisProtocol.encodeTask(TestTasks.KEY, "s5", "y".repeat(3_000) + "", now, from = "jarvis")
-        assertThat(JarvisProtocol.parseTask(bigText, now, TestTasks.KEY)).isInstanceOf(TaskParse.Valid::class.java)
+        // A normal text task is fine; one whose envelope exceeds 16 KiB is refused (authentic → answered by id).
+        val okText = JarvisProtocol.encodeTask(TestTasks.KEY, "s5", "y".repeat(3_000), now)
+        assertThat(JarvisProtocol.parseTask(okText, now, TestTasks.KEY)).isInstanceOf(TaskParse.Valid::class.java)
+        val bigText = JarvisProtocol.encodeTask(TestTasks.KEY, "s7", "y".repeat(13_000), now)
+        assertThat(bigText.size).isGreaterThan(JarvisProtocol.MAX_PAYLOAD_BYTES)
+        val refused = JarvisProtocol.parseTask(bigText, now, TestTasks.KEY) as TaskParse.Invalid
+        assertThat(refused.reason).isEqualTo("payload too large")
+        assertThat(refused.id).isEqualTo("s7")
         // Forged (wrong key) typed task: never answered.
         val forged = JarvisProtocol.encodeTask(TestTasks.OTHER_KEY, "s6", "", now, type = "playbooks.sync", body = body)
         assertThat((JarvisProtocol.parseTask(forged, now, TestTasks.KEY) as TaskParse.Invalid).id).isNull()

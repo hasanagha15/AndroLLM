@@ -149,9 +149,20 @@ class AccessibilityController @Inject constructor(
     }
 
     /** Re-finds [ref] in the live tree; null when the screen changed under us. */
-    private suspend fun liveNode(root: AccessibilityNodeInfo, ref: NodeRef, max: Int = 500): AccessibilityNodeInfo? = onMain {
-        val n = LiveTree.collect(root, max).getOrNull(ref.index)
-        if (n == null || n.viewIdResourceName != ref.viewId || n.className?.toString() != ref.className) null else n
+    private suspend fun liveNode(root: AccessibilityNodeInfo, ref: NodeRef, max: Int = 500): AccessibilityNodeInfo? {
+        val dm = context.resources.displayMetrics
+        val w = dm.widthPixels.coerceAtLeast(1).toFloat()
+        val h = dm.heightPixels.coerceAtLeast(1).toFloat()
+        return onMain {
+            val n = LiveTree.collect(root, max).getOrNull(ref.index) ?: return@onMain null
+            val r = android.graphics.Rect()
+            n.getBoundsInScreen(r)
+            val ok = ref.matches(
+                n.viewIdResourceName, n.className?.toString(), n.text?.toString(), n.contentDescription?.toString(),
+                r.exactCenterX() / w, r.exactCenterY() / h
+            )
+            if (ok) n else null
+        }
     }
 
     /**

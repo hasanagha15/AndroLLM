@@ -43,7 +43,9 @@ import timber.log.Timber
 class AppAtlasStarter @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repository: AppAtlasRepository,
-    private val recorder: LearnedPathRecorder
+    private val recorder: LearnedPathRecorder,
+    // Branch N: zero-LLM playbook commands for chat + voice (lazy: built on first start()).
+    private val fastPath: dagger.Lazy<io.androllm.core.appatlas.playbook.PlaybookFastPath>
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val pending = LinkedHashSet<String>()
@@ -54,6 +56,7 @@ class AppAtlasStarter @Inject constructor(
         if (started) return
         started = true
         recorder.attach()
+        runCatching { fastPath.get().attach() }
         repository.watchSensitiveApps()
         registerPackageReceiver()
         scheduleWeeklySweep()

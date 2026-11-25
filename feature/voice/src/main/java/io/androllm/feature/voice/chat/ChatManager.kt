@@ -152,6 +152,17 @@ class ChatManager @Inject constructor(
             send(busyReply)
             return@channelFlow
         }
+        // Branch N: zero-LLM playbook command for the owner's own voice turn
+        // (non-risky playbooks, setting "Fast playbook commands"); null = the model answers.
+        if (conversationId == null && currentRemoteOrigin() == null && !remoteTurnActive.get()) {
+            val fast = io.androllm.core.tools.remote.UtteranceFastPaths.tryHandle(trimmed)
+            if (fast != null) {
+                runCatching { persistRefusedTurn(trimmed, origin, fast) }
+                    .onFailure { Timber.w(it, "ChatManager: could not save the playbook turn") }
+                send(fast)
+                return@channelFlow
+            }
+        }
         turnLock.withLock {
         // Remote (Jarvis) turns never touch the owner's shared turn state:
         // no trace-turn stamp, no variable-scope switch, neutral fallback text.

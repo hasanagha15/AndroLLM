@@ -68,34 +68,59 @@ class PlaybookRepository(
         raw: String,
         source: String,
         ownPackage: String?,
-        labelOf: (String) -> String? = { null }
+        appFacts: (String) -> AppFacts? = { null }
     ): ImportReport = withContext(Dispatchers.IO) {
-        val report = PlaybookValidator.parseBundle(raw, extras(), ownPackage, labelOf)
+        val report = PlaybookValidator.parseBundle(raw, extras(), ownPackage, appFacts)
         mutex.withLock {
             val now = clock()
             val existing = store.all().associateBy { it.playbook.id }
-            val room = MAX_STORED - (existing.size - report.accepted.count { it.id in existing })
-            val accepted = report.accepted.take(room.coerceAtLeast(0))
-            val overflow = report.accepted.drop(accepted.size)
+            val kept = mutableListOf<ImportReport.Rejection>()
+            // Gate N: a remote (Jarvis) bundle never silently replaces a playbook the owner imported from a
+            // file — only a NEWER (learnedAt) one that carries its own verifier (postcondition).
+            val candidates = report.accepted.filter { p ->
+                val prev = existing[p.id]
+                val loses = prev != null && prev.source == SOURCE_FILE && source != SOURCE_FILE &&
+                    !(p.learnedAt > prev.playbook.learnedAt && p.postcondition != null)
+                if (loses) kept += ImportReport.Rejection(p.id, "kept the file-imported version (remote is not newer + verified)")
+                !loses
+            }
+            val room = MAX_STORED - (existing.size - candidates.count { it.id in existing })
+            val accepted = candidates.take(room.coerceAtLeast(0))
+            val overflow = candidates.drop(accepted.size)
             store.upsert(accepted.map { p ->
                 val prev = existing[p.id]
+                // Gate N (P6): an unchanged playbook keeps its STALE / UNVERIFIED state.
+                val same = prev != null && prev.playbook == p
                 StoredPlaybook(
-                    playbook = p, status = PlaybookStatus.OK, flaggedVersion = null,
+                    playbook = p,
+                    status = if (same) prev!!.status else PlaybookStatus.OK,
+                    flaggedVersion = if (same) prev!!.flaggedVersion else null,
                     successCount = prev?.successCount ?: 0, failCount = prev?.failCount ?: 0,
-                    lastRunAt = prev?.lastRunAt ?: 0L, importedAt = now, source = source
+                    lastRunAt = prev?.lastRunAt ?: 0L, importedAt = now,
+                    source = if (same) prev!!.source else source
                 )
             })
             cache = null
-            val final = ImportReport(accepted, report.rejected + overflow.map { ImportReport.Rejection(it.id, "library full ($MAX_STORED)") })
+            val final = ImportReport(
+                accepted,
+                report.rejected + kept + overflow.map { ImportReport.Rejection(it.id, "library full ($MAX_STORED)") }
+            )
             Timber.i("Playbooks: import from %s — %s", source, "accepted ${final.accepted.size}, rejected ${final.rejected.size}")
             final
         }
     }
 
-    suspend fun all(): List<StoredPlaybook> = cache ?: withContext(Dispatchers.IO) { store.all().also { cache = it } }
+    /** Reads under the mutex so a concurrent write can never leave a stale cache behind (review N10). */
+    suspend fun all(): List<StoredPlaybook> = cache ?: withContext(Dispatchers.IO) {
+        mutex.withLock { cache ?: store.all().also { cache = it } }
+    }
 
-    /** Playbooks of [pkg] that may run now (protected packages filtered live). */
-    suspend fun forPackage(pkg: String, label: String? = null): List<StoredPlaybook> {
+    /**
+     * Playbooks of [pkg] that may run now (protected packages filtered live).
+     * [atlasSensitive] = the atlas flag (gate N-B3: payment-scheme apps).
+     */
+    suspend fun forPackage(pkg: String, label: String? = null, atlasSensitive: Boolean = false): List<StoredPlaybook> {
+        if (atlasSensitive) return emptyList()
         val extras = extras()
         if (SensitiveClassifier.reason(pkg, label.orEmpty(), extras) != null) return emptyList()
         return all().filter { it.playbook.packageName == pkg }
@@ -113,7 +138,8 @@ class PlaybookRepository(
     suspend fun recordMismatch(id: String, versionCode: Long, failure: StepFailure) {
         val sp = get(id) ?: return
         update(id) { it.copy(status = PlaybookStatus.STALE, flaggedVersion = versionCode, failCount = it.failCount + 1, lastRunAt = clock()) }
-        queueRelearn(sp.playbook, versionCode, failure.stepIndex, failure.kind.wire)
+        // A mismatch is new information: it replaces a pending / delivered record of the same version.
+        queueRelearn(sp.playbook, versionCode, failure.stepIndex, failure.kind.wire, replace = true)
     }
 
     /** Non-mismatch failure (declined, blocked, action failed): counters only. */
@@ -142,21 +168,45 @@ class PlaybookRepository(
     }
 
     /** Pending relearn requests for Jarvis; marked delivered once pulled. */
-    suspend fun pullRelearn(limit: Int = 50, markDelivered: Boolean = true): List<RelearnRequest> = withContext(Dispatchers.IO) {
-        mutex.withLock {
-            val list = store.pendingRelearn(limit.coerceIn(1, 200))
-            if (markDelivered && list.isNotEmpty()) store.markDelivered(list)
-            store.pruneDelivered(clock() - 30L * 24 * 3600 * 1000)
-            list
+    suspend fun pullRelearn(limit: Int = DEFAULT_RELEARN_LIMIT, markDelivered: Boolean = true): List<RelearnRequest> =
+        pullRelearnPage(limit, Int.MAX_VALUE, markDelivered).first
+
+    /**
+     * Review N1: a page of pending requests whose JSON fits [maxChars]; only
+     * the records that fit are marked delivered. Returns (records, more pending).
+     */
+    suspend fun pullRelearnPage(limit: Int, maxChars: Int, markDelivered: Boolean = true): Pair<List<RelearnRequest>, Boolean> =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                val pending = store.pendingRelearn(limit.coerceIn(1, 200) + 1)
+                val out = mutableListOf<RelearnRequest>()
+                var size = 2
+                for (r in pending.take(limit.coerceIn(1, 200))) {
+                    val len = relearnJson.encodeToString(RelearnRequest.serializer(), r).length + 1
+                    if (size + len > maxChars) break
+                    size += len
+                    out += r
+                }
+                if (markDelivered && out.isNotEmpty()) store.markDelivered(out)
+                store.pruneDelivered(clock() - 30L * 24 * 3600 * 1000)
+                out to (pending.size > out.size)
+            }
         }
-    }
 
-    private suspend fun queueRelearn(p: Playbook, versionCode: Long, step: Int, reason: String) = withContext(Dispatchers.IO) {
-        mutex.withLock { addRelearnLocked(p, versionCode, step, reason) }
-    }
+    /** A relearn request outside a run outcome (remote turn without fallback). Added once per (playbook, version). */
+    suspend fun requestRelearn(p: Playbook, versionCode: Long, step: Int, reason: String) =
+        queueRelearn(p, versionCode, step, reason, replace = false)
 
-    private suspend fun addRelearnLocked(p: Playbook, versionCode: Long, step: Int, reason: String) {
-        // Ids and machine reasons only — never slot values or screen text.
+    private suspend fun queueRelearn(p: Playbook, versionCode: Long, step: Int, reason: String, replace: Boolean = false) =
+        withContext(Dispatchers.IO) { mutex.withLock { addRelearnLocked(p, versionCode, step, reason, replace) } }
+
+    /**
+     * Ids and machine reasons only — never slot values or screen text.
+     * Review N8: without [replace] an existing record (pending or delivered)
+     * for the same (playbook, version) is kept — queued once.
+     */
+    private suspend fun addRelearnLocked(p: Playbook, versionCode: Long, step: Int, reason: String, replace: Boolean = false) {
+        if (!replace && store.relearn(p.id, versionCode) != null) return
         store.addRelearn(RelearnRequest(p.packageName, versionCode, p.id, step, reason, clock()))
     }
 
@@ -170,5 +220,9 @@ class PlaybookRepository(
 
     companion object {
         const val MAX_STORED = 2_000
+        const val DEFAULT_RELEARN_LIMIT = 30
+        const val SOURCE_FILE = "file"
+        const val SOURCE_JARVIS = "jarvis"
+        private val relearnJson = kotlinx.serialization.json.Json { encodeDefaults = true }
     }
 }

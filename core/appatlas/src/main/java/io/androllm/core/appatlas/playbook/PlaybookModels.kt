@@ -8,7 +8,7 @@ import kotlinx.serialization.Serializable
  * one app (`youtube.search(query)`) learned OFFLINE by Claude/Jarvis (adb
  * crawl on a laptop) and replayed on the phone deterministically: no LLM call
  * per step. The local model only picks WHICH playbook to run (or the
- * zero-LLM [PlaybookRouter] does). JSON format: documentation/playbooks-schema.md.
+ * zero-LLM [PlaybookRouter] does). JSON format: documentation/PLAYBOOKS_SCHEMA.md.
  */
 @Serializable
 data class PlaybookBundle(

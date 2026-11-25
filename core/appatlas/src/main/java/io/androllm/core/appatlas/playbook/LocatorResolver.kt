@@ -65,20 +65,23 @@ object LocatorResolver {
         nodes: List<ScreenNode>,
         minScore: Double = Locator.DEFAULT_MIN_SCORE,
         strict: Boolean = false,
-        preferEditable: Boolean = false
+        preferEditable: Boolean = false,
+        /** Gate N-B2: taps need an id / desc / text match — positional locators only disambiguate. */
+        requireSemantic: Boolean = strict
     ): Resolution? {
         if (locators.isEmpty()) return null
         val scored = nodes.map { n -> val (s, m) = score(locators, n); Resolution(n, s, m) }
             .filter { it.score >= minScore - 1e-9 && it.score > 0 }
-            .filter { !strict || it.matched.any { k -> k == Locator.ID || k == Locator.DESC || k == Locator.TEXT } }
+            .filter { !(strict || requireSemantic) || it.matched.any { k -> k == Locator.ID || k == Locator.DESC || k == Locator.TEXT } }
         if (scored.isEmpty()) return null
         val best = scored.maxOf { it.score }
         var top = scored.filter { it.score >= best - 1e-9 }
+        // Gate N (P5): strict = a unique best node BEFORE any clickable / editable preference.
+        if (strict && top.size > 1) return null
         if (top.size > 1) {
             val preferred = top.filter { if (preferEditable) it.node.editable else it.node.clickable }
             if (preferred.isNotEmpty()) top = preferred
         }
-        if (strict && top.size > 1) return null
         return top.minByOrNull { it.node.index }
     }
 

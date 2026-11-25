@@ -60,6 +60,8 @@ class AppAtlasSettingsViewModel @Inject constructor(
         if (v) repository.requestSync(AppAtlasRepository.Mode.INCREMENTAL)
     }
     fun setRecordPaths(v: Boolean) = store.setRecordPaths(v)
+    fun setAcceptRemotePlaybooks(v: Boolean) = store.setAcceptRemotePlaybooks(v)
+    fun setFastPlaybookCommands(v: Boolean) = store.setFastPlaybookCommands(v)
     fun clearPaths() { viewModelScope.launch { repository.clearPaths() } }
 
     /** Branch N: imports a playbook bundle (JSON) chosen by the owner; [onDone] gets the report line. */
@@ -107,6 +109,9 @@ fun AppAtlasSettingsCard(viewModel: AppAtlasSettingsViewModel = hiltViewModel())
 
             ToggleRow("Use the App Atlas", settings.enabled) { viewModel.setEnabled(it) }
             ToggleRow("Record learned paths (view ids / app labels only)", settings.recordPaths) { viewModel.setRecordPaths(it) }
+            // Branch N: playbooks.
+            ToggleRow("Fast playbook commands (no model for matching, non-risky commands)", settings.fastPlaybookCommands) { viewModel.setFastPlaybookCommands(it) }
+            ToggleRow("Accept playbooks from Jarvis", settings.acceptRemotePlaybooks) { viewModel.setAcceptRemotePlaybooks(it) }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = { viewModel.reindex(); note = "Re-indexing in the background…" }, enabled = settings.enabled && !status.running) {

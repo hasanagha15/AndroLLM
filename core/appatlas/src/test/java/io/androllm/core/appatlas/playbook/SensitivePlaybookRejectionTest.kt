@@ -31,7 +31,7 @@ class SensitivePlaybookRejectionTest {
 
     @Test
     fun `installed label from the atlas is also checked`() {
-        val r = PlaybookValidator.parseBundle(bundleJson(pb("com.example.app")), emptySet()) { "Birbank" }
+        val r = PlaybookValidator.parseBundle(bundleJson(pb("com.example.app")), emptySet()) { AppFacts(label = "Birbank") }
         assertThat(r.accepted).isEmpty()
     }
 

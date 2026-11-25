@@ -41,6 +41,8 @@ enum class FailureKind(val wire: String, val mismatch: Boolean) {
     AMBIGUOUS("ambiguous_target", true),
     ACTION_FAILED("action_failed", false),
     DECLINED("declined", false),
+    /** The screen changed while the owner looked at a confirmation card: nothing was tapped. */
+    SCREEN_CHANGED("screen_changed", false),
     BLOCKED("blocked", false),
     SERVICE_OFF("service_off", false),
     URI_REFUSED("uri_refused", false),
@@ -94,7 +96,12 @@ data class PlaybookRunResult(
  *   risky step asks even when the gate would not;
  * - on mismatch it stops with a [StepFailure] (ids only).
  * [strict] (unverified app version): every tap / type needs its target
- * present before acting, semantic locators, a unique match, no scrolling.
+ * present before acting and a unique best node. The engine never scrolls on
+ * its own in either mode (scrolling is an explicit `scroll` step).
+ * Gate N-B2: a tap always needs an id / desc / text match (positional
+ * locators only disambiguate); an element with no text, desc or id still
+ * gets a tap-only card. After any card the target is re-resolved and must be
+ * the same element before the tap.
  */
 class PlaybookEngine(
     private val driver: PlaybookDriver,
@@ -158,9 +165,10 @@ class PlaybookEngine(
                     }
                     resolution?.let { stats += "$i:${it.matched.joinToString("+")}" }
                     if (step.op == "tap") {
-                        when (val r = tapWithGate(step, resolution!!)) {
-                            null -> return fail(StepFailure(i, step.op, FailureKind.DECLINED), i)
-                            else -> r
+                        when (val t = tapWithGate(playbook, i, step, resolution!!, minScore, strict)) {
+                            TapOutcome.Declined -> return fail(StepFailure(i, step.op, FailureKind.DECLINED), i)
+                            TapOutcome.Changed -> return fail(StepFailure(i, step.op, FailureKind.SCREEN_CHANGED), i)
+                            is TapOutcome.Done -> t.result
                         }
                     } else {
                         val text = PlaybookSlots.renderText(step.text.orEmpty(), slots)
@@ -202,35 +210,65 @@ class PlaybookEngine(
         )
     }
 
-    /** Taps with the confirmation gate. Null = the owner declined. */
-    private suspend fun tapWithGate(step: PlaybookStep, res: Resolution): UiActionResult? {
-        val ref = refOf(res.node)
-        val facts = RiskyElementGate.Facts(res.node.text, res.node.description, res.node.viewId)
-        val label = RiskyElementGate.displayLabel(facts)
+    private sealed interface TapOutcome {
+        data class Done(val result: UiActionResult) : TapOutcome
+        data object Declined : TapOutcome
+        data object Changed : TapOutcome
+    }
+
+    /** Taps with the confirmation gate; every card is followed by a re-check of the target. */
+    private suspend fun tapWithGate(
+        p: Playbook, i: Int, step: PlaybookStep, res: Resolution, minScore: Double, strict: Boolean
+    ): TapOutcome {
+        var node = res.node
+        val label = RiskyElementGate.displayLabel(RiskyElementGate.Facts(node.text, node.description, node.viewId))
+        // Gate N-B2 (defence in depth): nothing M's gate could classify → ask.
+        val unlabeled = node.text.isNullOrBlank() && node.description.isNullOrBlank() && node.idEntry.isNullOrBlank()
         var approval: RiskApproval? = null
-        if (step.risky) {
-            // Declared / computed risky step: ask on a tap-only card, naming the resolved element.
-            if (!driver.confirmTap(describe(label, res.node))) return null
-            approval = RiskApproval(label, res.node.idEntry)
+        if (step.risky || unlabeled) {
+            // Declared / computed risky step: ask on a tap-only card, naming the playbook, step and element.
+            if (!driver.confirmTap(card(p, i, label.ifEmpty { "an unlabeled element" }, node))) return TapOutcome.Declined
+            node = reverify(p, step, node, minScore, strict) ?: return TapOutcome.Changed
+            approval = RiskApproval(label, node.idEntry)
         }
-        var r = driver.tap(ref, approval)
+        var r = driver.tap(refOf(node), approval)
         r.risky?.let { refusal ->
             // Branch M gate: the resolved element (or its clickable ancestor) is risky.
-            if (!driver.confirmTap(describe(refusal.element, res.node))) return null
-            r = driver.tap(ref, RiskApproval(refusal.element, refusal.id))
+            if (!driver.confirmTap(card(p, i, refusal.element, node))) return TapOutcome.Declined
+            node = reverify(p, step, node, minScore, strict) ?: return TapOutcome.Changed
+            approval = RiskApproval(refusal.element, refusal.id)
+            r = driver.tap(refOf(node), approval)
         }
         if (!r.success && r.retryable && r.risky == null) {
             settle()
-            r = driver.tap(ref, approval)
+            r = driver.tap(refOf(node), approval)
         }
-        return r
+        return TapOutcome.Done(r)
     }
 
-    private fun describe(label: String, node: ScreenNode): String =
-        "tap \"${label.take(160)}\"" + (node.idEntry?.let { " (#$it)" } ?: "") + " — playbook step"
+    /**
+     * After a card (the owner may take minutes): the app must still be in
+     * front and the step must resolve to the SAME element (id, class, text,
+     * desc, position). Null = changed → nothing is tapped.
+     */
+    private suspend fun reverify(p: Playbook, step: PlaybookStep, before: ScreenNode, minScore: Double, strict: Boolean): ScreenNode? {
+        val snap = driver.snapshot() ?: return null
+        if (snap.blockedReason != null || snap.packageName != p.packageName) return null
+        val now = resolve(step, snap.nodes, minScore, strict)?.node ?: return null
+        return now.takeIf { refOf(before).matches(it.viewId, it.className, it.text, it.description, it.centerX, it.centerY) }
+    }
+
+    /** Tap-only card text: the playbook, its action, the step and the element. */
+    private fun card(p: Playbook, i: Int, label: String, node: ScreenNode): String =
+        "playbook ${p.id} (${p.description.take(80)}), step ${i + 1}/${p.steps.size}: tap \"${label.take(160)}\"" +
+            (node.idEntry?.let { " (#$it)" } ?: "")
 
     private fun resolve(step: PlaybookStep, nodes: List<ScreenNode>, minScore: Double, strict: Boolean): Resolution? =
-        LocatorResolver.resolve(step.locators, nodes, minScore, strict, preferEditable = step.op == "type")
+        LocatorResolver.resolve(
+            step.locators, nodes, minScore, strict,
+            preferEditable = step.op == "type",
+            requireSemantic = strict || step.op == "tap"
+        )
 
     private fun mismatch(i: Int, step: PlaybookStep, kind: FailureKind, snap: NodeSnapshot, strict: Boolean) = StepFailure(
         stepIndex = i,
@@ -291,7 +329,7 @@ class PlaybookEngine(
         const val POSTCONDITION_TIMEOUT_MS = 3_000L
         private val ID_RE = Regex("^[A-Za-z0-9_]{1,60}$")
 
-        fun refOf(n: ScreenNode) = NodeRef(n.index, n.viewId, n.className)
+        fun refOf(n: ScreenNode) = NodeRef.of(n)
 
         fun expectSatisfied(e: Expect, nodes: List<ScreenNode>): Boolean {
             if (e.isEmpty) return true

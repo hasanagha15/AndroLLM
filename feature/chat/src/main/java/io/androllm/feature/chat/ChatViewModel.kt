@@ -1001,6 +1001,13 @@ class ChatViewModel @Inject constructor(
                 // Fresh workflow variables for this turn (device facts are
                 // re-collected; tool outputs chain within the turn).
                 variableStore.beginTurn(id)
+                // Branch N: zero-LLM playbook command (non-risky, owner only, setting
+                // "Fast playbook commands"); null = the model answers as before.
+                val fast = if (turnAttachments.isEmpty()) io.androllm.core.tools.remote.UtteranceFastPaths.tryHandle(trimmed) else null
+                if (fast != null) {
+                    appendAssistantMessage(fast)
+                    return@launch
+                }
                 generateFromHistory(currentHistory)
             } catch (e: CancellationException) {
                 throw e

@@ -139,5 +139,6 @@ class FakeDriver(var screen: () -> NodeSnapshot?) : PlaybookDriver {
     override suspend fun back() = UiActionResult.ok("back")
     override suspend fun openDeeplink(pkg: String, uri: String): String? { deeplinks += uri; return null }
     override suspend fun launch(pkg: String): String? { launches++; return null }
-    override suspend fun confirmTap(summary: String): Boolean { confirmations += summary; return approve }
+    var onConfirm: () -> Unit = {}
+    override suspend fun confirmTap(summary: String): Boolean { confirmations += summary; onConfirm(); return approve }
 }

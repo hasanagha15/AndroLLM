@@ -4,6 +4,7 @@ import io.androllm.core.accessibility.executor.AutomationExecutor
 import io.androllm.core.appatlas.AppAtlasRepository
 import io.androllm.core.appatlas.index.SensitiveClassifier
 import io.androllm.core.tools.api.ToolResult
+import io.androllm.core.tools.origin.currentRemoteOrigin
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.sync.Mutex
@@ -33,7 +34,9 @@ class PlaybookRunner(
     private val installedVersion: suspend (String) -> Long?,
     private val appLabel: suspend (String) -> String?,
     private val fallback: (suspend (String) -> FallbackOutcome)?,
-    private val enabled: () -> Boolean = { true }
+    private val enabled: () -> Boolean = { true },
+    /** Gate N-B3: the atlas flag (guard list, name heuristic, payment-scheme handlers). */
+    private val atlasSensitive: suspend (String) -> Boolean = { false }
 ) {
     @Inject constructor(
         repository: PlaybookRepository,
@@ -50,7 +53,8 @@ class PlaybookRunner(
             io.androllm.core.tools.uistep.UiStepJournal.taskFinished(goal, r.success)
             FallbackOutcome(r.success, r.summary, r.retryable)
         },
-        enabled = { atlas.isEnabled }
+        enabled = { atlas.isEnabled },
+        atlasSensitive = { pkg -> atlas.entry(pkg)?.sensitive == true }
     )
 
     private val engine = PlaybookEngine(driver)
@@ -71,6 +75,9 @@ class PlaybookRunner(
         val p = sp.playbook
         // Live protection: the owner's list / guard / heuristic may have changed since import.
         val label = appLabel(p.packageName)
+        if (atlasSensitive(p.packageName)) {
+            return ToolResult.Failure("${p.packageName} is a protected app (banking / payment): no playbooks, no automation.", retryable = false)
+        }
         SensitiveClassifier.reason(p.packageName, listOfNotNull(p.appLabel, label).joinToString(" "), repository.extras())?.let {
             return ToolResult.Failure("${p.packageName} is a protected app ($it): no playbooks, no automation.", retryable = false)
         }
@@ -142,6 +149,14 @@ class PlaybookRunner(
             put("verified", false)
             f?.let { put("failed_step", it.stepIndex); put("reason", it.kind.wire) }
         }
+        // Gate N-B1: RemoteToolPolicy forbids ui_run for remote (Jarvis) turns — so no fallback either.
+        if (currentRemoteOrigin() != null) {
+            repository.requestRelearn(p, installedVersion(p.packageName) ?: 0L, f?.stepIndex ?: -1, f?.kind?.wire ?: "stale")
+            return ToolResult.Failure(
+                "$why Remote task: no ui_run fallback (not allowed for remote tasks); relearn requested.",
+                data = data, retryable = false
+            )
+        }
         val fb = fallback
         if (!allow || fb == null) {
             return ToolResult.Failure("$why Use app_atlas_search + ui_run instead.", data = data, retryable = false)
@@ -172,7 +187,7 @@ object PlaybookFormat {
         val p = sp.playbook
         val status = PlaybookPolicy.effectiveStatus(sp, installedVersion)
         return buildString {
-            append(p.id).append(signature(p)).append(" — ").append(p.description.take(80))
+            append(p.id).append(signature(p)).append(" — ").append(io.androllm.core.appatlas.index.AtlasText.clean(p.description, 80) ?: "")
             if (status != PlaybookStatus.OK) append(" [").append(status.name.lowercase()).append(']')
             if (p.isRisky) append(" (asks to confirm)")
         }

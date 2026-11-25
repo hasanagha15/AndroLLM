@@ -30,6 +30,23 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 
+/** Atlas facts for the validator (label, sensitive flag incl. payment schemes, the app's own https hosts). */
+suspend fun AppAtlasRepository.playbookFacts(): (String) -> AppFacts? {
+    entries() // make sure the cache is loaded
+    return { pkg ->
+        cachedEntry(pkg)?.let { e ->
+            AppFacts(
+                label = e.label,
+                sensitive = e.sensitive,
+                webHosts = e.actions
+                    .filter { it.kind == io.androllm.core.appatlas.model.ActionKind.DEEP_LINK && (it.scheme == "https" || it.scheme == "http") }
+                    .mapNotNull { it.host?.lowercase() }
+                    .toSet()
+            )
+        }
+    }
+}
+
 /** Lookup helpers shared by the tools, the atlas search and the fast path. */
 @Singleton
 class PlaybookCatalog @Inject constructor(
@@ -42,7 +59,7 @@ class PlaybookCatalog @Inject constructor(
         for (pkg in packages) {
             val entry = atlas.cachedEntry(pkg)
             if (entry?.sensitive == true) continue
-            val list = repository.forPackage(pkg, entry?.label)
+            val list = repository.forPackage(pkg, entry?.label, entry?.sensitive == true)
             if (list.isEmpty()) continue
             out[pkg] = list.sortedByDescending { it.successCount }.take(perApp).map { PlaybookFormat.line(it, entry?.versionCode) }
         }
@@ -61,19 +78,21 @@ class PlaybookCatalog @Inject constructor(
             words.any { it in hay }
         }.map { it.playbook.packageName }
         val result = mutableListOf<Pair<StoredPlaybook, Long?>>()
+        atlas.entries()
         for (pkg in (pkgs + byWord).distinct()) {
             val entry = atlas.cachedEntry(pkg)
-            repository.forPackage(pkg, entry?.label).forEach { result += it to entry?.versionCode }
+            // Gate N-B3: atlas-sensitive apps (payment schemes) are never listed.
+            repository.forPackage(pkg, entry?.label, entry?.sensitive == true).forEach { result += it to entry?.versionCode }
         }
         return result
     }
 
-    /** Playbooks the zero-LLM router may pick: installed, not protected, status OK. */
+    /** Playbooks the zero-LLM router may pick: installed, not protected, status OK, NOT risky. */
     suspend fun routable(): List<StoredPlaybook> {
         val extras = repository.extras()
         return repository.all().filter { sp ->
             val e = atlas.cachedEntry(sp.playbook.packageName) ?: return@filter false
-            !e.sensitive && sp.playbook.triggers.isNotEmpty() &&
+            !e.sensitive && sp.playbook.triggers.isNotEmpty() && !sp.playbook.isRisky &&
                 io.androllm.core.appatlas.index.SensitiveClassifier.reason(e.packageName, e.label, extras) == null &&
                 PlaybookPolicy.effectiveStatus(sp, e.versionCode) == PlaybookStatus.OK
         }
@@ -82,7 +101,10 @@ class PlaybookCatalog @Inject constructor(
 
 /** `playbook_list` — which ready-made app actions exist (names, params, one-line descriptions). */
 @Singleton
-class PlaybookListTool @Inject constructor(private val catalog: PlaybookCatalog) : Tool {
+class PlaybookListTool @Inject constructor(
+    private val catalog: PlaybookCatalog,
+    private val atlas: AppAtlasRepository
+) : Tool {
 
     override val spec = ToolSpec(
         name = NAME,
@@ -107,6 +129,7 @@ class PlaybookListTool @Inject constructor(private val catalog: PlaybookCatalog)
     override suspend fun execute(arguments: JsonObject): ToolResult {
         val q = ToolArgs.str(arguments, "query", "package", "app", "q")?.take(120)
             ?: return ToolResult.Failure("Missing required argument: query")
+        if (!atlas.isEnabled) return ToolResult.Failure("The App Atlas is turned off in Settings.", retryable = false)
         val found = catalog.find(q)
         if (found.isEmpty()) return ToolResult.Failure("No playbooks for \"${q.take(60)}\". Use app_atlas_search.", retryable = false)
         val sb = StringBuilder()
@@ -197,23 +220,26 @@ class PlaybookRunTool @Inject constructor(private val runner: PlaybookRunner) : 
 class PlaybookSyncHandler @Inject constructor(
     @ApplicationContext private val context: Context,
     private val repository: PlaybookRepository,
-    private val atlas: AppAtlasRepository
+    private val atlas: AppAtlasRepository,
+    private val settings: io.androllm.core.appatlas.settings.AppAtlasSettingsStore
 ) : RemoteDataTaskHandler {
 
     override val types: Set<String> = setOf(TYPE_SYNC, TYPE_RELEARN)
 
     override suspend fun handle(type: String, body: JsonObject?): RemoteDataResult = when (type) {
-        TYPE_SYNC -> {
-            if (body == null) RemoteDataResult(false, "playbooks.sync needs a bundle body")
-            else {
-                val report = repository.importJson(body.toString(), SOURCE_JARVIS, context.packageName) { atlas.cachedEntry(it)?.label }
+        TYPE_SYNC -> when {
+            // Owner setting "Accept playbooks from Jarvis" (default on) and the atlas master switch.
+            !settings.current().acceptRemotePlaybooks -> RemoteDataResult(false, "disabled")
+            !atlas.isEnabled -> RemoteDataResult(false, "disabled (App Atlas is off)")
+            body == null -> RemoteDataResult(false, "playbooks.sync needs a bundle body")
+            else -> {
+                val report = repository.importJson(body.toString(), SOURCE_JARVIS, context.packageName, atlas.playbookFacts())
                 RemoteDataResult(report.accepted.isNotEmpty() || report.rejected.isEmpty(), report.summary())
             }
         }
         TYPE_RELEARN -> {
-            val limit = (body?.get("limit") as? JsonPrimitive)?.intOrNull ?: 50
-            val list = repository.pullRelearn(limit)
-            RemoteDataResult(true, Json.encodeToString(ListSerializer(RelearnRequest.serializer()), list))
+            val limit = ((body?.get("limit") as? JsonPrimitive)?.intOrNull ?: PlaybookRepository.DEFAULT_RELEARN_LIMIT).coerceIn(1, 100)
+            relearnResult(repository, limit)
         }
         else -> RemoteDataResult(false, "unknown task type")
     }
@@ -221,7 +247,16 @@ class PlaybookSyncHandler @Inject constructor(
     companion object {
         const val TYPE_SYNC = "playbooks.sync"
         const val TYPE_RELEARN = "playbooks.relearn"
-        const val SOURCE_JARVIS = "jarvis"
+        const val SOURCE_JARVIS = PlaybookRepository.SOURCE_JARVIS
+        /** Under the 8000-char result cap of the link protocol (wrapper included). */
+        const val RELEARN_MAX_CHARS = 7_500
+
+        /** Review N1: `{"requests":[…],"more":bool}` — only the records that fit are marked delivered. */
+        suspend fun relearnResult(repository: PlaybookRepository, limit: Int): RemoteDataResult {
+            val (list, more) = repository.pullRelearnPage(limit, RELEARN_MAX_CHARS - 40)
+            val arr = Json.encodeToString(ListSerializer(RelearnRequest.serializer()), list)
+            return RemoteDataResult(true, "{\"requests\":$arr,\"more\":$more}")
+        }
     }
 }
 
@@ -245,7 +280,7 @@ class PlaybookFileImporter @Inject constructor(
                 if (n >= buf.size) null else String(buf, 0, n, Charsets.UTF_8)
             }
         }.getOrNull() ?: return@withContext ImportReport(emptyList(), listOf(ImportReport.Rejection("file", "unreadable or too large")))
-        repository.importJson(raw, "file", context.packageName) { atlas.cachedEntry(it)?.label }
+        repository.importJson(raw, PlaybookRepository.SOURCE_FILE, context.packageName, atlas.playbookFacts())
     }
 }
 
@@ -258,9 +293,35 @@ class PlaybookFileImporter @Inject constructor(
 class PlaybookFastPath @Inject constructor(
     private val catalog: PlaybookCatalog,
     private val runner: PlaybookRunner,
-    private val repository: PlaybookRepository
-) {
+    private val repository: PlaybookRepository,
+    private val atlas: AppAtlasRepository,
+    private val settings: io.androllm.core.appatlas.settings.AppAtlasSettingsStore
+) : io.androllm.core.tools.remote.UtteranceFastPaths.Handler {
+
+    /** Registers with the chat / voice entry points (called from AppAtlasStarter). */
+    fun attach() = io.androllm.core.tools.remote.UtteranceFastPaths.register(this)
+
     suspend fun match(utterance: String): RouteMatch? = PlaybookRouter.match(utterance, catalog.routable().map { it.playbook })
+
+    /**
+     * Owner decision: chat + voice, ONLY non-risky playbooks, never for remote
+     * turns, behind "Fast playbook commands" (default on). No match / tie /
+     * a failed replay → null, the model answers as before.
+     */
+    override suspend fun tryHandle(utterance: String): String? {
+        if (io.androllm.core.tools.origin.currentRemoteOrigin() != null) return null
+        if (!atlas.isEnabled || !settings.current().fastPlaybookCommands) return null
+        val m = match(utterance) ?: return null
+        if (m.playbook.isRisky) return null
+        return when (val r = run(m)) {
+            is ToolResult.Success -> {
+                val verified = r.data["verified"]?.let { (it as? JsonPrimitive)?.contentOrNull } == "true"
+                "✓ ${io.androllm.core.appatlas.index.AtlasText.clean(m.playbook.description, 80) ?: m.playbook.name}" +
+                    if (verified) "" else " (not confirmed on screen)"
+            }
+            is ToolResult.Failure -> if (r.summary.startsWith("The user declined")) "Cancelled." else null
+        }
+    }
 
     /** No ui_run fallback here: on failure the caller hands the utterance to the model as usual. */
     suspend fun run(m: RouteMatch): ToolResult {

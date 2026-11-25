@@ -5,6 +5,18 @@ import io.androllm.core.appatlas.index.SchemePolicy
 import io.androllm.core.appatlas.index.SensitiveClassifier
 import kotlinx.serialization.json.Json
 
+/**
+ * What the atlas knows about an installed app (gate N-B3): its label, whether
+ * the atlas flagged it sensitive (guard list, name heuristic AND payment-scheme
+ * handlers such as upi / venmo / metamask / wc), and the https hosts its own
+ * manifest deep links declare.
+ */
+data class AppFacts(
+    val label: String? = null,
+    val sensitive: Boolean = false,
+    val webHosts: Set<String> = emptySet()
+)
+
 /** Outcome of validating a bundle. Rejections name the playbook (id or #index) and a short reason. */
 data class ImportReport(
     val accepted: List<Playbook>,
@@ -63,6 +75,20 @@ object PlaybookValidator {
     private val SLOT_RE = Regex("\\{([^{}]*)\\}")
     private val BAD_CHARS = Regex("[\\p{Cc}\\p{Cf}\\u2028\\u2029<>`\\[\\]]")
 
+    /** Gate N-B2: locators that name the element (M's gate can classify what they match). */
+    val SEMANTIC_KINDS = setOf(Locator.ID, Locator.DESC, Locator.TEXT)
+
+    /** Gate N (P3): host / path words of share / compose / send / pay links, for ANY scheme. */
+    private val LINK_DENY_WORDS = setOf(
+        "post", "share", "sharer", "send", "sendto", "msg", "compose", "message", "messages", "tweet",
+        "pay", "payment", "transfer", "intent", "dm", "reply", "forward"
+    )
+
+    /** Gate N (P3): query parameters that pre-fill a draft (text, recipient, link). */
+    private val DRAFT_PARAMS = setOf(
+        "text", "message", "msg", "body", "to", "url", "link", "recipient", "amount", "subject", "cc", "bcc", "phone"
+    )
+
     /** Strict decoder: an unknown field anywhere rejects the bundle. */
     private val strictJson = Json { ignoreUnknownKeys = false; isLenient = false; explicitNulls = false }
 
@@ -74,7 +100,7 @@ object PlaybookValidator {
         raw: String,
         extras: Set<String>,
         ownPackage: String? = null,
-        labelOf: (String) -> String? = { null }
+        appFacts: (String) -> AppFacts? = { null }
     ): ImportReport {
         if (raw.length > MAX_BUNDLE_CHARS) return bundleError("bundle larger than $MAX_BUNDLE_CHARS chars")
         val bundle = try {
@@ -82,14 +108,14 @@ object PlaybookValidator {
         } catch (e: Exception) {
             return bundleError("not a valid playbook bundle (${e.javaClass.simpleName})")
         }
-        return validateBundle(bundle, extras, ownPackage, labelOf)
+        return validateBundle(bundle, extras, ownPackage, appFacts)
     }
 
     fun validateBundle(
         bundle: PlaybookBundle,
         extras: Set<String>,
         ownPackage: String? = null,
-        labelOf: (String) -> String? = { null }
+        appFacts: (String) -> AppFacts? = { null }
     ): ImportReport {
         if (bundle.format != PlaybookBundle.FORMAT) return bundleError("format must be '${PlaybookBundle.FORMAT}'")
         if (bundle.schemaVersion != PlaybookBundle.SCHEMA_VERSION) {
@@ -101,7 +127,7 @@ object PlaybookValidator {
         val seen = HashSet<String>()
         bundle.playbooks.forEachIndexed { i, p ->
             val ref = p.id.takeIf { it.length in 1..120 && !BAD_CHARS.containsMatchIn(it) } ?: "#$i"
-            val error = validate(p, extras, ownPackage, labelOf) ?: if (!seen.add(p.id)) "duplicate id" else null
+            val error = validate(p, extras, ownPackage, appFacts) ?: if (!seen.add(p.id)) "duplicate id" else null
             if (error != null) rejected += ImportReport.Rejection(ref, error)
             else accepted += withComputedRisk(p)
         }
@@ -113,12 +139,15 @@ object PlaybookValidator {
         p: Playbook,
         extras: Set<String>,
         ownPackage: String? = null,
-        labelOf: (String) -> String? = { null }
+        appFacts: (String) -> AppFacts? = { null }
     ): String? {
         if (!PKG_RE.matches(p.packageName) || p.packageName.length > 120) return "malformed package"
         if (ownPackage != null && p.packageName == ownPackage) return "playbooks for this assistant itself are not allowed"
         // Protected apps are never imported (guard list, owner's extras, banking/payment heuristic).
-        val label = listOfNotNull(p.appLabel, labelOf(p.packageName)).joinToString(" ")
+        val facts = appFacts(p.packageName)
+        // Gate N-B3: the atlas flag also covers payment-scheme apps (upi / venmo / metamask / wc …).
+        if (facts?.sensitive == true) return "protected app: the App Atlas marks it sensitive (banking / payment)"
+        val label = listOfNotNull(p.appLabel, facts?.label).joinToString(" ")
         SensitiveClassifier.reason(p.packageName, label, extras)?.let { return "protected app: $it" }
         if (!NAME_RE.matches(p.name)) return "malformed name"
         if (p.id != "${p.packageName}/${p.name}") return "id must be '<package>/<name>'"
@@ -153,13 +182,13 @@ object PlaybookValidator {
 
         if (p.steps.isEmpty() || p.steps.size > MAX_STEPS) return "steps must be 1..$MAX_STEPS"
         for ((i, s) in p.steps.withIndex()) {
-            validateStep(s, paramNames)?.let { return "step $i: $it" }
+            validateStep(s, paramNames, facts?.webHosts.orEmpty())?.let { return "step $i: $it" }
         }
         p.postcondition?.let { validateExpect(it)?.let { e -> return "postcondition: $e" } }
         return null
     }
 
-    private fun validateStep(s: PlaybookStep, params: Set<String>): String? {
+    private fun validateStep(s: PlaybookStep, params: Set<String>, webHosts: Set<String>): String? {
         if (s.op !in OPS) return "unknown op '${s.op.take(20)}'"
         if (s.timeoutMs !in MIN_TIMEOUT_MS..MAX_TIMEOUT_MS) return "timeoutMs must be $MIN_TIMEOUT_MS..$MAX_TIMEOUT_MS"
         s.minScore?.let { if (it < 0.1 || it > 5.0) return "minScore must be 0.1..5" }
@@ -173,7 +202,11 @@ object PlaybookValidator {
         if (s.op != "wait" && s.waitMs != null) return "waitMs only allowed for wait"
         if (s.op !in setOf("tap", "type") && s.locators.isNotEmpty()) return "locators only allowed for tap/type"
         when (s.op) {
-            "tap" -> if (s.locators.isEmpty()) return "tap needs locators"
+            "tap" -> {
+                if (s.locators.isEmpty()) return "tap needs locators"
+                // Gate N-B2: positional locators (bounds / class_index) only disambiguate.
+                if (s.locators.none { it.kind in SEMANTIC_KINDS }) return "tap needs an id, desc or text locator (positional locators only disambiguate)"
+            }
             "type" -> {
                 val t = s.text ?: return "type needs text"
                 if (t.isEmpty() || t.length > MAX_TEXT_TEMPLATE) return "text must be 1..$MAX_TEXT_TEMPLATE chars"
@@ -184,7 +217,7 @@ object PlaybookValidator {
             "scroll" -> if (s.direction !in DIRECTIONS) return "direction must be up|down|left|right"
             "wait" -> { val w = s.waitMs ?: return "wait needs waitMs"; if (w !in 0..MAX_WAIT_MS) return "waitMs must be 0..$MAX_WAIT_MS" }
             "back" -> Unit
-            "open_deeplink" -> return validateUriTemplate(s.uri ?: return "open_deeplink needs uri", params)
+            "open_deeplink" -> return validateUriTemplate(s.uri ?: return "open_deeplink needs uri", params, webHosts)
         }
         return null
     }
@@ -215,7 +248,7 @@ object PlaybookValidator {
     }
 
     /** Scheme and authority fixed; slots only after the host; blocked / compose links refused. */
-    private fun validateUriTemplate(uri: String, params: Set<String>): String? {
+    private fun validateUriTemplate(uri: String, params: Set<String>, webHosts: Set<String>): String? {
         if (uri.isEmpty() || uri.length > MAX_URI) return "uri must be 1..$MAX_URI chars"
         if (uri.any { it.isWhitespace() || Character.isISOControl(it) || it in "<>\"`" }) return "uri has forbidden characters"
         val slots = slotsOf(uri) ?: return "bad placeholder in uri"
@@ -227,6 +260,36 @@ object PlaybookValidator {
         if (firstSlot in 0 until authorityEnd) return "placeholders are not allowed in the scheme or host"
         val sample = SLOT_RE.replace(uri, "x")
         if (SchemePolicy.isComposeWebUrl(sample)) return "share / compose links are not allowed"
+        linkProblem(uri, scheme, webHosts)?.let { return it }
+        return null
+    }
+
+    /**
+     * Gate N (P3): share / compose / send / pay links through ANY scheme
+     * (twitter://post, line://msg, fb-messenger://share …) and draft-filling
+     * query parameters are refused; http(s) only to hosts the app's own
+     * manifest deep links declare (atlas), so slot values cannot leak to a
+     * foreign server.
+     */
+    internal fun linkProblem(uri: String, scheme: String, webHosts: Set<String>): String? {
+        val rest = uri.substring(uri.indexOf(':') + 1).removePrefix("//")
+        val authority = rest.substringBefore('/').substringBefore('?').substringBefore('#')
+        val host = authority.substringAfterLast('@').substringBefore(':').lowercase()
+        if (scheme == "http" || scheme == "https") {
+            val allowed = webHosts.map { it.lowercase().trim() }.filter { it.isNotEmpty() }
+            if (host.isEmpty() || allowed.none { host == it }) {
+                return "https links are only allowed to hosts the app itself declares (${allowed.take(5).joinToString(", ").ifEmpty { "none known" }})"
+            }
+        }
+        val path = rest.removePrefix(authority).substringBefore('?').substringBefore('#')
+        val words = (listOf(host) + path.split('/'))
+            .flatMap { it.lowercase().split('.', '-', '_', '+') }
+            .map { it.replace(Regex("\\{[^}]*\\}"), "") }
+            .filter { it.isNotEmpty() }
+        words.firstOrNull { it in LINK_DENY_WORDS }?.let { return "share / send / compose / pay links are not allowed ('$it')" }
+        val query = rest.substringAfter('?', "").substringBefore('#')
+        val names = query.split('&').map { it.substringBefore('=').lowercase() }.filter { it.isNotEmpty() }
+        names.firstOrNull { it in DRAFT_PARAMS }?.let { return "draft-filling parameter '$it' is not allowed" }
         return null
     }
 

@@ -79,7 +79,8 @@ class PlaybookValidatorTest {
             val r = parse(withStep("""{"op":"open_deeplink","uri":"$uri"}"""))
             assertThat(r.accepted).isEmpty()
         }
-        assertThat(parse(withStep("""{"op":"open_deeplink","uri":"https://video.example.com/results?q={q}"}""")).accepted).hasSize(1)
+        val hosts: (String) -> AppFacts? = { AppFacts(webHosts = setOf("video.example.com")) }
+        assertThat(PlaybookValidator.parseBundle(withStep("""{"op":"open_deeplink","uri":"https://video.example.com/results?q={q}"}"""), emptySet(), null, hosts).accepted).hasSize(1)
     }
 
     @Test

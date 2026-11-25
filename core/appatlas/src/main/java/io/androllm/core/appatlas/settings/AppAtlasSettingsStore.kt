@@ -15,7 +15,11 @@ data class AppAtlasSettings(
     /** Record replayable element paths (ids / app UI strings only) after successful UI tasks. */
     val recordPaths: Boolean = true,
     /** Packages the owner excluded: never indexed, never opened by atlas tools. */
-    val exclusions: Set<String> = emptySet()
+    val exclusions: Set<String> = emptySet(),
+    /** Branch N: accept playbook bundles pushed by Jarvis (playbooks.sync). */
+    val acceptRemotePlaybooks: Boolean = true,
+    /** Branch N: zero-LLM fast path — matching commands run a non-risky playbook without the model. */
+    val fastPlaybookCommands: Boolean = true
 )
 
 /**
@@ -44,7 +48,9 @@ class AppAtlasSettingsStore @Inject constructor(
             _settings.value = AppAtlasSettings(
                 enabled = prefs.getBoolean(KEY_ENABLED, true),
                 recordPaths = prefs.getBoolean(KEY_RECORD, true),
-                exclusions = SensitiveAppGuard.parsePackages(prefs.getString(KEY_EXCLUSIONS, ""))
+                exclusions = SensitiveAppGuard.parsePackages(prefs.getString(KEY_EXCLUSIONS, "")),
+                acceptRemotePlaybooks = prefs.getBoolean(KEY_ACCEPT_REMOTE_PB, true),
+                fastPlaybookCommands = prefs.getBoolean(KEY_FAST_PB, true)
             )
         }
         loaded = true
@@ -52,6 +58,8 @@ class AppAtlasSettingsStore @Inject constructor(
 
     fun setEnabled(v: Boolean) = update { it.copy(enabled = v) }
     fun setRecordPaths(v: Boolean) = update { it.copy(recordPaths = v) }
+    fun setAcceptRemotePlaybooks(v: Boolean) = update { it.copy(acceptRemotePlaybooks = v) }
+    fun setFastPlaybookCommands(v: Boolean) = update { it.copy(fastPlaybookCommands = v) }
 
     /** Parses a comma/space separated package list; invalid entries are dropped. Returns the saved set. */
     fun setExclusions(raw: String): Set<String> {
@@ -68,6 +76,8 @@ class AppAtlasSettingsStore @Inject constructor(
                 .putBoolean(KEY_ENABLED, next.enabled)
                 .putBoolean(KEY_RECORD, next.recordPaths)
                 .putString(KEY_EXCLUSIONS, next.exclusions.joinToString(", "))
+                .putBoolean(KEY_ACCEPT_REMOTE_PB, next.acceptRemotePlaybooks)
+                .putBoolean(KEY_FAST_PB, next.fastPlaybookCommands)
                 .apply()
         }
     }
@@ -97,5 +107,7 @@ class AppAtlasSettingsStore @Inject constructor(
         private const val KEY_LAST_SYNC = "last_sync_at"
         private const val KEY_LAST_SWEEP = "last_sweep_at"
         private const val KEY_SENS_FP = "sensitivity_fingerprint"
+        private const val KEY_ACCEPT_REMOTE_PB = "accept_remote_playbooks"
+        private const val KEY_FAST_PB = "fast_playbook_commands"
     }
 }

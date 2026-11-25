@@ -93,7 +93,7 @@ class PlaybookEngineTest {
     }
 
     @Test
-    fun `strict mode needs a semantic locator`() = runTest {
+    fun `positional-only taps never resolve, in any mode (gate N-B2)`() = runTest {
         val p = Playbook(
             id = "$PKG/go", packageName = PKG, name = "go", description = "Go", versionMin = 1, versionMax = 9,
             steps = listOf(PlaybookStep(op = "tap", timeoutMs = 500, locators = listOf(
@@ -101,7 +101,9 @@ class PlaybookEngineTest {
             )))
         )
         val screen = NodeSnapshot(PKG, listOf(node(0, cls = "android.widget.Button")))
-        assertThat(PlaybookEngine(FakeDriver { screen }).run(p, SlotValues.EMPTY, strict = false).success).isTrue()
+        val normal = FakeDriver { screen }
+        assertThat(PlaybookEngine(normal).run(p, SlotValues.EMPTY, strict = false).success).isFalse()
+        assertThat(normal.taps).isEmpty()
         val strict = PlaybookEngine(FakeDriver { screen }).run(p, SlotValues.EMPTY, strict = true)
         assertThat(strict.success).isFalse()
         assertThat(strict.failure!!.kind.mismatch).isTrue()
