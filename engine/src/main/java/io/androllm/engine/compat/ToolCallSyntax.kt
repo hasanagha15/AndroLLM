@@ -20,15 +20,21 @@ package io.androllm.engine.compat
 object ToolCallSyntax {
 
     const val QWEN_INSTRUCTION: String =
-        "HOW TO CALL A TOOL: reply with ONLY the call, no other text, in exactly this format:\n" +
+        "HOW TO CALL A TOOL: only when the request needs one of the tools listed below, reply with ONLY " +
+            "the call, no other text, in exactly this format:\n" +
             "<tool_call>\n{\"name\": \"<tool name>\", \"arguments\": {<arguments as JSON>}}\n</tool_call>\n" +
             "Example: <tool_call>\n{\"name\": \"get_battery\", \"arguments\": {}}\n</tool_call>\n" +
-            "After the tool result arrives, answer the user in plain text."
+            "Questions you can answer yourself (facts, chat, translation) get a plain-text answer without any tool. " +
+            "After a tool result arrives, answer the user in plain text."
 
+    // Branch P (phone run 1): an example with a placeholder name made Gemma 4
+    // copy it literally ("call:tool_name{…}") — name no syntax here; the
+    // runtime's declarations already teach the format.
     const val GEMMA4_INSTRUCTION: String =
-        "HOW TO CALL A TOOL: use your native function-calling format for the declared tools " +
-            "(<|tool_call>call:tool_name{argument:<|\"|>value<|\"|>}<tool_call|>), with no other text. " +
-            "After the tool result arrives, answer the user in plain text."
+        "HOW TO CALL A TOOL: only when the request needs one of the declared tools, call it with your " +
+            "native function-calling format, using the exact declared tool name. Questions you can answer " +
+            "yourself (facts, chat, translation) get a plain-text answer without any tool. " +
+            "After a tool result arrives, answer the user in plain text."
 
     /** True when the container's template carries Gemma 4's native tool syntax. */
     fun isGemma4Template(template: String?): Boolean =

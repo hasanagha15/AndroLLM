@@ -1176,6 +1176,17 @@ class DefaultEngineRepository @Inject constructor(
          * [HARD_FLOOR_MS] (previous fixed behavior) and never above
          * [HARD_TIMEOUT_MAX_MS].
          */
+        /** Branch P: fixed context in front of the benchmark prompt (prefill measurement). */
+        internal val BENCHMARK_CONTEXT: String = (
+            "Context for this benchmark. The theory of relativity has two parts. Special relativity " +
+                "(1905) says the laws of physics are the same for all observers moving at constant speed, and " +
+                "the speed of light in vacuum is the same for every observer. Consequences are time dilation, " +
+                "length contraction and the equivalence of mass and energy, E = mc^2. General relativity (1915) " +
+                "describes gravity as the curvature of spacetime caused by mass and energy; it explains the orbit " +
+                "of Mercury, the bending of light by the Sun, gravitational redshift, black holes and " +
+                "gravitational waves, first detected in 2015. GPS satellites must correct for both effects. "
+            ).repeat(2) + "\n\nTask: "
+
         fun hardGenerationTimeoutMs(maxTokens: Int): Long {
             val budget = maxTokens.coerceAtLeast(0).toLong() * MS_PER_GENERATED_TOKEN + HARD_FLOOR_MS
             return budget.coerceIn(HARD_FLOOR_MS, HARD_TIMEOUT_MAX_MS)
@@ -1258,7 +1269,9 @@ class DefaultEngineRepository @Inject constructor(
         var failed = false
         var failure: String? = null
         try {
-            engine.tokenStream(prompt, GenerationConfig(maxTokens = 64))
+            // Branch P: a ~300-token context in front of the prompt so prefill
+            // throughput is measurable (a 14-token prompt reported 0 tok/s).
+            engine.tokenStream(BENCHMARK_CONTEXT + prompt, GenerationConfig(maxTokens = 64))
                 .collect { res ->
                     when (res) {
                         is Result.Success -> {
@@ -1283,7 +1296,14 @@ class DefaultEngineRepository @Inject constructor(
         // only a fallback for decode.
         val wallTps = if (tokenCount > 0) tokenCount * 1000f / elapsedMs else 0f
         val decodeTps = stats?.decodeTokensPerSecond?.takeIf { it > 0f } ?: wallTps
-        val prefillTps = stats?.promptTokensPerSecond ?: 0f
+        val prefillTps = stats?.promptTokensPerSecond?.takeIf { it > 0f }
+            ?: run {
+                // Runtime reported no prefill rate: prompt tokens over the
+                // time to first token (prefill dominates TTFT).
+                val ttft = stats?.firstTokenMs?.takeIf { it > 0L } ?: firstTokenMs
+                val tokens = stats?.promptTokens ?: 0L
+                if (ttft > 0L && tokens > 0L) tokens * 1000f / ttft else 0f
+            }
         val ttftMs = stats?.firstTokenMs?.takeIf { it > 0L } ?: firstTokenMs
         android.util.Log.i(
             TAG,

@@ -30,7 +30,7 @@ class WifiTool @Inject constructor(
 
     override val spec = ToolSpec(
         name = "set_wifi",
-        description = "Turn Wi-Fi on or off. On newer Android versions the OS may require opening the settings panel instead.",
+        description = "Turn Wi-Fi on or off, or open the Wi-Fi settings (on newer Android versions the OS only allows opening the Wi-Fi settings panel).",
         parameters = buildJsonObject {
             put("type", "object")
             putJsonObject("properties") {

@@ -2150,13 +2150,16 @@ class LiteRtLmEngine @Inject constructor(
     @OptIn(ExperimentalApi::class)
     private fun logPrefillTokenCount(conv: Conversation) {
         if (!isDebugBuild) return
-        runCatching {
+        try {
             val b = conv.getBenchmarkInfo()
+            val total = try { conv.getTokenCount().toString() } catch (t: Throwable) { "n/a (${t.javaClass.simpleName})" }
             logger.i(
                 "PROMPT TOKENS: prefill=${b.lastPrefillTokenCount} decode=${b.lastDecodeTokenCount} " +
-                    "conversationTotal=${conv.getTokenCount()} prefillTps=${"%.1f".format(b.lastPrefillTokensPerSecond)} " +
+                    "conversationTotal=$total prefillTps=${"%.1f".format(b.lastPrefillTokensPerSecond)} " +
                     "decodeTps=${"%.1f".format(b.lastDecodeTokensPerSecond)} ttft=${"%.0f".format(b.timeToFirstTokenInSecond * 1000)}ms"
             )
+        } catch (t: Throwable) {
+            logger.w("PROMPT TOKENS unavailable: ${t.javaClass.simpleName}: ${t.message}")
         }
     }
 
