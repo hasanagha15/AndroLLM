@@ -97,6 +97,88 @@ class AccessibilityController @Inject constructor(
     fun onAccessibilityEvent(event: AccessibilityEvent) {
         windowMonitor.onEvent(event)
         uiState.onEvent(event)
+        // Branch N: playbook replay waits on these instead of fixed sleeps.
+        val t = event.eventType
+        if (t == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || t == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            _uiEvents.value = _uiEvents.value + 1
+        }
+    }
+
+    private val _uiEvents = kotlinx.coroutines.flow.MutableStateFlow(0L)
+
+    /** Branch N: increments on every window-state / window-content change. */
+    val uiEvents: kotlinx.coroutines.flow.StateFlow<Long> = _uiEvents
+
+    // ── Branch N: playbook replay primitives (tree only, no screenshots) ────
+
+    /**
+     * Visible nodes of the active window, or null when the service is off /
+     * no window. Protected apps (SensitiveAppGuard) yield an empty snapshot
+     * with [NodeSnapshot.blockedReason] — their content is never read.
+     */
+    suspend fun nodeSnapshot(max: Int = 500): NodeSnapshot? {
+        val root = onMain { service?.rootInActiveWindow } ?: return null
+        val pkg = onMain { root.packageName?.toString() }
+        guardReason(pkg)?.let { return NodeSnapshot(pkg, emptyList(), it) }
+        val dm = context.resources.displayMetrics
+        val w = dm.widthPixels.coerceAtLeast(1).toFloat()
+        val h = dm.heightPixels.coerceAtLeast(1).toFloat()
+        val nodes = onMain {
+            val perClass = HashMap<String, Int>()
+            val r = android.graphics.Rect()
+            LiveTree.collect(root, max).mapIndexedNotNull { i, n ->
+                if (!n.isVisibleToUser) return@mapIndexedNotNull null
+                val cls = n.className?.toString()
+                val ci = perClass.getOrDefault(cls.orEmpty(), 0)
+                perClass[cls.orEmpty()] = ci + 1
+                n.getBoundsInScreen(r)
+                ScreenNode(
+                    index = i,
+                    viewId = n.viewIdResourceName,
+                    text = n.text?.toString(),
+                    description = n.contentDescription?.toString(),
+                    className = cls,
+                    classIndex = ci,
+                    clickable = n.isClickable,
+                    editable = n.isEditable,
+                    left = r.left / w, top = r.top / h, right = r.right / w, bottom = r.bottom / h
+                )
+            }
+        } ?: return null
+        return NodeSnapshot(pkg, nodes)
+    }
+
+    /** Re-finds [ref] in the live tree; null when the screen changed under us. */
+    private suspend fun liveNode(root: AccessibilityNodeInfo, ref: NodeRef, max: Int = 500): AccessibilityNodeInfo? = onMain {
+        val n = LiveTree.collect(root, max).getOrNull(ref.index)
+        if (n == null || n.viewIdResourceName != ref.viewId || n.className?.toString() != ref.className) null else n
+    }
+
+    /**
+     * Taps the node [ref] (from [nodeSnapshot]). Same guards as [click]: the
+     * SensitiveAppGuard and the branch-M risk gate on the resolved element.
+     */
+    suspend fun clickNodeRef(ref: NodeRef, approval: RiskApproval? = null): UiActionResult {
+        val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
+        guardReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
+        val node = liveNode(root, ref) ?: return UiActionResult.fail("The screen changed before the tap.")
+        val facts = factsOf(node)
+        (RiskyElementGate.decide(facts, approval) as? RiskyElementGate.Decision.Refuse)?.let {
+            return UiActionResult.risky(it, verb = "playbook_run")
+        }
+        val ok = gestures.clickNode(node)
+        reportStep(root, node, UiStep.Op.TAP, RiskyElementGate.displayLabel(facts).ifEmpty { null }, ok)
+        return if (ok) UiActionResult.ok("Tapped.") else UiActionResult.fail("Tap failed.")
+    }
+
+    /** Types [text] into the node [ref]; the text is never reported or logged. */
+    suspend fun typeIntoNodeRef(ref: NodeRef, text: String): UiActionResult {
+        val root = onMain { service?.rootInActiveWindow } ?: return UiActionResult.fail(notConnected())
+        guardReason(onMain { root.packageName })?.let { return UiActionResult.blocked(it) }
+        val node = liveNode(root, ref) ?: return UiActionResult.fail("The screen changed before typing.")
+        val ok = textInput.setText(node, text)
+        reportStep(root, node, UiStep.Op.TYPE, null, ok)
+        return if (ok) UiActionResult.ok("Typed.") else UiActionResult.fail("Typing failed.")
     }
 
     /** Runs [block] on the main thread; null when the node access failed. */

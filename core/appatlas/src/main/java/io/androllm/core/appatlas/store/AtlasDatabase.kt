@@ -84,9 +84,11 @@ abstract class AtlasDao {
     }
 }
 
-@Database(entities = [AtlasAppRow::class, LearnedPathRow::class], version = 2, exportSchema = false)
+// v3 (branch N): + playbooks, playbook_relearn (AtlasMigrations.MIGRATION_2_3). Schema exported to core/appatlas/schemas.
+@Database(entities = [AtlasAppRow::class, LearnedPathRow::class, PlaybookRow::class, RelearnRow::class], version = 3, exportSchema = true)
 abstract class AtlasDatabase : RoomDatabase() {
     abstract fun dao(): AtlasDao
+    abstract fun playbookDao(): PlaybookDao
 
     companion object {
         /** Opened under noBackupFilesDir (absolute path) — excluded from backup and transfer. */

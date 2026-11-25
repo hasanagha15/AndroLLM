@@ -4,6 +4,7 @@ import io.androllm.core.jarvislink.protocol.JarvisProtocol
 import io.androllm.core.jarvislink.protocol.JarvisTask
 import io.androllm.core.jarvislink.protocol.ResultStatus
 import io.androllm.core.jarvislink.protocol.TaskParse
+import io.androllm.core.tools.remote.RemoteDataTaskHandler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -43,7 +44,9 @@ class RemoteTaskProcessor(
     private val signingKey: () -> ByteArray?,
     private val clock: () -> Long = System::currentTimeMillis,
     queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
-    private val maxTasksPerHour: Int = DEFAULT_MAX_TASKS_PER_HOUR
+    private val maxTasksPerHour: Int = DEFAULT_MAX_TASKS_PER_HOUR,
+    /** Branch N: typed data tasks ("playbooks.sync"...) - run without an agent turn. */
+    private val dataHandlers: Set<RemoteDataTaskHandler> = emptySet()
 ) {
     private val queue = Channel<JarvisTask>(capacity = queueCapacity)
     private var worker: Job? = null
@@ -142,7 +145,7 @@ class RemoteTaskProcessor(
         }
         tracker.begin(task)
         val outcome = try {
-            runner.run(task)
+            if (task.type != null) runData(task) else runner.run(task)
         } catch (e: CancellationException) {
             currentCoroutineContext().ensureActive()
             TaskOutcome(ResultStatus.ERROR, "Task was interrupted on the phone.")
@@ -154,6 +157,15 @@ class RemoteTaskProcessor(
         }
         val status = if (outcome.status.isFinal) outcome.status else ResultStatus.OK
         reply(task.id, status, outcome.text, final = true)
+    }
+
+    /** Branch N: a typed data task goes to its handler; unknown types are `invalid`. */
+    private suspend fun runData(task: JarvisTask): TaskOutcome {
+        val type = task.type ?: return TaskOutcome(ResultStatus.INVALID, "missing type")
+        val handler = dataHandlers.firstOrNull { type in it.types }
+            ?: return TaskOutcome(ResultStatus.INVALID, "unknown task type '$type'")
+        val r = handler.handle(type, task.body)
+        return TaskOutcome(if (r.ok) ResultStatus.OK else ResultStatus.INVALID, r.text)
     }
 
     /** Re-sends final results that failed to publish (call after reconnect). */

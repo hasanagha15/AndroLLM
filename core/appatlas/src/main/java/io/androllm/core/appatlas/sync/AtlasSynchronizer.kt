@@ -28,7 +28,9 @@ data class SyncReport(
 class AtlasSynchronizer(
     private val source: PackageSource,
     private val store: AtlasStore,
-    private val indexer: AtlasIndexer
+    private val indexer: AtlasIndexer,
+    /** Branch N: an installed app changed versionCode (playbooks outside their range become unverified). */
+    private val onVersionChange: suspend (String, Long) -> Unit = { _, _ -> }
 ) {
 
     suspend fun sync(
@@ -55,6 +57,7 @@ class AtlasSynchronizer(
             store.upsert(indexer.index(b, extras))
             indexed++
             if (prev != null && prev.versionCode != b.versionCode) {
+                runCatching { onVersionChange(b.packageName, b.versionCode) }
                 val paths = store.paths(b.packageName)
                 if (paths.isNotEmpty()) {
                     val updated = LearnedPathPolicy.onVersionChange(paths, b.versionCode)

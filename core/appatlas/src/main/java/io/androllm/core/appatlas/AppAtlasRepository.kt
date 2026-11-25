@@ -6,6 +6,7 @@ import io.androllm.core.appatlas.index.SensitiveClassifier
 import io.androllm.core.appatlas.learn.LearnedPathPolicy
 import io.androllm.core.appatlas.model.AppAtlasEntry
 import io.androllm.core.appatlas.model.LearnedPath
+import io.androllm.core.appatlas.playbook.PlaybookRepository
 import io.androllm.core.appatlas.search.AtlasHit
 import io.androllm.core.appatlas.search.AtlasSearch
 import io.androllm.core.appatlas.settings.AppAtlasSettingsStore
@@ -42,10 +43,12 @@ class AppAtlasRepository @Inject constructor(
     private val source: PackageSource,
     private val store: AtlasStore,
     private val settingsStore: AppAtlasSettingsStore,
-    private val sensitiveApps: SensitiveAppStore
+    private val sensitiveApps: SensitiveAppStore,
+    private val playbooks: PlaybookRepository
 ) {
     private val indexer = AtlasIndexer(source)
-    private val synchronizer = AtlasSynchronizer(source, store, indexer)
+    // Branch N: app updates re-check playbook version ranges (unverified + relearn request).
+    private val synchronizer = AtlasSynchronizer(source, store, indexer) { pkg, v -> playbooks.onAppVersion(pkg, v) }
     private val syncMutex = Mutex()
 
     @Volatile private var cache: List<AppAtlasEntry>? = null

@@ -11,6 +11,11 @@ plugins {
 // (database under noBackupFilesDir); nothing about installed apps is ever
 // committed or sent anywhere.
 
+// Branch N: export the Room schema (playbook tables, migration test reads it).
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 android {
     namespace = "io.androllm.core.appatlas"
     compileSdk = 36
@@ -62,4 +67,6 @@ dependencies {
     testImplementation(libs.truth)
     // Real XmlPullParser for the manifest / shortcut XML parser tests.
     testImplementation("net.sf.kxml:kxml2:2.3.0")
+    // Branch N: runs the Room migration SQL against a real SQLite in AtlasMigrationTest.
+    testImplementation("org.xerial:sqlite-jdbc:3.41.2.2")
 }

@@ -18,4 +18,8 @@ abstract class JarvisLinkModule {
     @Binds
     @Singleton
     abstract fun bindConfirmationNotifier(impl: NotificationConfirmationNotifier): ConfirmationNotifier
+
+    /** Branch N: typed data task handlers (may be empty). */
+    @dagger.multibindings.Multibinds
+    abstract fun dataTaskHandlers(): Set<io.androllm.core.tools.remote.RemoteDataTaskHandler>
 }

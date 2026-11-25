@@ -40,7 +40,8 @@ import timber.log.Timber
 @Singleton
 class AppAtlasSearchTool @Inject constructor(
     private val repository: AppAtlasRepository,
-    private val recorder: LearnedPathRecorder
+    private val recorder: LearnedPathRecorder,
+    private val playbooks: io.androllm.core.appatlas.playbook.PlaybookCatalog
 ) : Tool {
 
     init {
@@ -85,7 +86,9 @@ class AppAtlasSearchTool @Inject constructor(
         recorder.noteQuery(query)
         val hits = repository.search(query)
         Timber.d("AppAtlas: search → %d hit(s)", hits.size)
-        val text = AtlasSearch.render(hits, query)
+        // Branch N: ready-made playbooks of the matched apps are listed first.
+        val pb = runCatching { playbooks.linesFor(hits.filter { !it.entry.sensitive }.map { it.entry.packageName }) }.getOrDefault(emptyMap())
+        val text = AtlasSearch.render(hits, query, pb)
         return if (hits.isEmpty()) {
             ToolResult.Failure(text, retryable = false)
         } else {

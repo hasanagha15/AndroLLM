@@ -25,6 +25,7 @@ import io.androllm.core.jarvislink.processing.RemoteTaskProcessor
 import io.androllm.core.jarvislink.processing.RemoteTaskTracker
 import io.androllm.core.jarvislink.processing.TaskDeduplicator
 import io.androllm.core.jarvislink.settings.JarvisLinkSettingsStore
+import io.androllm.core.tools.remote.RemoteDataTaskHandler
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -47,6 +48,8 @@ class JarvisLinkService : Service() {
     @Inject lateinit var tracker: RemoteTaskTracker
     @Inject lateinit var router: RemoteConfirmationRouter
     @Inject lateinit var status: JarvisLinkStatus
+    // Branch N: typed data tasks (playbooks.sync / playbooks.relearn).
+    @Inject lateinit var dataHandlers: Set<@JvmSuppressWildcards RemoteDataTaskHandler>
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var link: HiveMqJarvisLink? = null
@@ -101,7 +104,8 @@ class JarvisLinkService : Service() {
             publisher = { bytes -> newLink.publishResult(bytes) },
             deduplicator = TaskDeduplicator(store = settingsStore),
             tracker = tracker,
-            signingKey = { settingsStore.signingKey() }
+            signingKey = { settingsStore.signingKey() },
+            dataHandlers = dataHandlers
         )
         processor = newProcessor
         link = newLink

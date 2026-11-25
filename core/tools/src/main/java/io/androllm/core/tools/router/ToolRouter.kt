@@ -347,7 +347,8 @@ class ToolRouter @Inject constructor() {
         )
 
         /** Branch L: App Atlas tools, in the order they are offered. */
-        internal val ATLAS_TOOLS = listOf("app_atlas_search", "app_open_action")
+        // Branch N: playbook_run right after the search (atlas results list playbooks first).
+        internal val ATLAS_TOOLS = listOf("app_atlas_search", "playbook_run", "app_open_action")
 
         private val APP_CONTROL_REGEX = Regex(
             """\b(open|launch|go to|switch to)\b\s+\S+|\bin (the )?\S+ app\b|\b(app|application)\b"""

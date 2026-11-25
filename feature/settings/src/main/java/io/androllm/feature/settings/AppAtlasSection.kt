@@ -25,6 +25,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.androllm.core.appatlas.AppAtlasRepository
 import io.androllm.core.appatlas.AtlasStatus
+import io.androllm.core.appatlas.playbook.PlaybookFileImporter
 import io.androllm.core.appatlas.settings.AppAtlasSettings
 import io.androllm.core.appatlas.settings.AppAtlasSettingsStore
 import io.androllm.core.ui.components.CloudGlassCard
@@ -42,7 +43,8 @@ import kotlinx.coroutines.launch
 @HiltViewModel
 class AppAtlasSettingsViewModel @Inject constructor(
     private val repository: AppAtlasRepository,
-    private val store: AppAtlasSettingsStore
+    private val store: AppAtlasSettingsStore,
+    private val playbookImporter: PlaybookFileImporter
 ) : ViewModel() {
     val status: StateFlow<AtlasStatus> = repository.status
     val settings: StateFlow<AppAtlasSettings> = store.settings
@@ -60,6 +62,11 @@ class AppAtlasSettingsViewModel @Inject constructor(
     fun setRecordPaths(v: Boolean) = store.setRecordPaths(v)
     fun clearPaths() { viewModelScope.launch { repository.clearPaths() } }
 
+    /** Branch N: imports a playbook bundle (JSON) chosen by the owner; [onDone] gets the report line. */
+    fun importPlaybooks(uri: android.net.Uri, onDone: (String) -> Unit) {
+        viewModelScope.launch { onDone("Playbooks: " + playbookImporter.import(uri).summary()) }
+    }
+
     /** Saves the exclusion list and drops excluded apps from the atlas. Returns the number saved. */
     fun saveExclusions(raw: String): Int {
         val saved = store.setExclusions(raw)
@@ -75,6 +82,9 @@ fun AppAtlasSettingsCard(viewModel: AppAtlasSettingsViewModel = hiltViewModel())
     val settings by viewModel.settings.collectAsState()
     var exclusions by remember(settings.exclusions) { mutableStateOf(settings.exclusions.joinToString(", ")) }
     var note by remember { mutableStateOf<String?>(null) }
+    val pickBundle = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri -> if (uri != null) viewModel.importPlaybooks(uri) { note = it } }
 
     CloudGlassCard(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -105,6 +115,10 @@ fun AppAtlasSettingsCard(viewModel: AppAtlasSettingsViewModel = hiltViewModel())
                 TextButton(onClick = { viewModel.clearPaths(); note = "Learned paths cleared." }) {
                     Text("Clear learned paths")
                 }
+            }
+            // Branch N: playbook bundle from a file (Jarvis can also push them over the link).
+            TextButton(onClick = { pickBundle.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }) {
+                Text("Import playbooks (JSON)")
             }
 
             OutlinedTextField(

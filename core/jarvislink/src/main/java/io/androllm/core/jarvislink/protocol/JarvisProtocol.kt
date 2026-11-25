@@ -31,6 +31,8 @@ import kotlinx.serialization.json.put
  * ```
  * envelope   {"v":2,"kind":"task"|"result","n":b64(12-byte nonce),"c":b64(ciphertext||tag)}
  * task       {"id","text","from","ts","ttl_s"}        key = HKDF(k, "androllm-jarvislink", "task-v2"),   AAD "androllm/v2/task"
+ * data task  {"id","type","body"?,"from","ts","ttl_s"}  (branch N: e.g. "playbooks.sync" / "playbooks.relearn";
+ *            same keys and AAD, no agent turn; payload up to MAX_DATA_PAYLOAD_BYTES)
  * result     {"id","status","text","ts"}              key = HKDF(k, "androllm-jarvislink", "result-v2"), AAD "androllm/v2/result"
  * status     retained plaintext {"v":2,"state":"online|offline","ts"}
  * ```
@@ -48,7 +50,11 @@ data class JarvisTask(
     val text: String,
     val from: String,
     val sentAtMs: Long,
-    val ttlSeconds: Long
+    val ttlSeconds: Long,
+    /** Branch N: typed data task ("playbooks.sync"...) - handled without an agent turn. Null = normal text task. */
+    val type: String? = null,
+    /** Branch N: JSON body of a typed task. */
+    val body: JsonObject? = null
 ) {
     fun expiresAtMs(): Long = sentAtMs + ttlSeconds * 1000 + JarvisProtocol.CLOCK_SKEW_MS
 }
@@ -144,6 +150,8 @@ object JarvisProtocol {
     const val MAX_ID_LENGTH = 64
     const val MAX_TEXT_LENGTH = 4_000
     const val MAX_PAYLOAD_BYTES = 16_384
+    /** Branch N: typed data tasks (playbook bundles) may be larger; text tasks keep [MAX_PAYLOAD_BYTES]. */
+    const val MAX_DATA_PAYLOAD_BYTES = 393_216
     const val MAX_RESULT_TEXT = 8_000
     const val DEFAULT_TTL_S = 600L
     /** Short ttl + the persisted dedupe window make replay of a captured task useless. */
@@ -156,6 +164,7 @@ object JarvisProtocol {
 
     private val ID_RE = Regex("^[A-Za-z0-9._:-]{1,$MAX_ID_LENGTH}$")
     private val FROM_RE = Regex("^[A-Za-z0-9._-]{1,32}$")
+    private val TYPE_RE = Regex("^[a-z][a-z0-9._-]{0,39}$")
     private val HEX_RE = Regex("^[0-9a-fA-F]{64}$")
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -170,9 +179,16 @@ object JarvisProtocol {
     }
 
     /** Builds an encrypted task envelope (used by tests; the Jarvis side does the same in Python). */
-    fun encodeTask(master: ByteArray, id: String, text: String, ts: Long, ttl: Long = DEFAULT_TTL_S, from: String = "jarvis"): ByteArray {
+    fun encodeTask(
+        master: ByteArray, id: String, text: String, ts: Long, ttl: Long = DEFAULT_TTL_S, from: String = "jarvis",
+        type: String? = null, body: JsonObject? = null
+    ): ByteArray {
         val inner = buildJsonObject {
-            put("id", id); put("text", text); put("from", from); put("ts", ts); put("ttl_s", ttl)
+            put("id", id)
+            if (type == null || text.isNotEmpty()) put("text", text)
+            put("from", from); put("ts", ts); put("ttl_s", ttl)
+            if (type != null) put("type", type)
+            if (body != null) put("body", body)
         }.toString().toByteArray(Charsets.UTF_8)
         return envelope("task", JarvisCrypto.seal(taskKey(master), AAD_TASK, inner))
     }
@@ -185,7 +201,7 @@ object JarvisProtocol {
      */
     fun parseTask(payload: ByteArray, nowMs: Long, master: ByteArray?): TaskParse {
         if (master == null || master.size != KEY_BYTES) return TaskParse.Invalid("no task key configured", null)
-        if (payload.size > MAX_PAYLOAD_BYTES) return TaskParse.Invalid("payload too large", null)
+        if (payload.size > MAX_DATA_PAYLOAD_BYTES) return TaskParse.Invalid("payload too large", null)
         val inner = openEnvelope(payload, "task", taskKey(master), AAD_TASK)
             ?: return TaskParse.Invalid("not an authentic task envelope", null)
         val obj = runCatching { json.parseToJsonElement(inner.toString(Charsets.UTF_8)).jsonObject }.getOrNull()
@@ -196,15 +212,23 @@ object JarvisProtocol {
         val id = str("id")?.takeIf { ID_RE.matches(it) } ?: return TaskParse.Invalid("missing or malformed id", null)
         // ── authentic from here on: rejections are answered by id ──
         val ts = num("ts") ?: return TaskParse.Invalid("missing ts", id)
-        val text = str("text")?.trim() ?: return TaskParse.Invalid("missing text", id)
+        // Branch N: typed data task.
+        val typeEl = obj["type"]
+        val type = (typeEl as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+        if (typeEl != null && (type == null || !TYPE_RE.matches(type))) return TaskParse.Invalid("malformed type", id)
+        if (type == null && payload.size > MAX_PAYLOAD_BYTES) return TaskParse.Invalid("payload too large", id)
+        val bodyEl = obj["body"]
+        val body = bodyEl as? JsonObject
+        if (bodyEl != null && (type == null || body == null)) return TaskParse.Invalid("body only allowed as an object of a typed task", id)
+        val text = (str("text")?.trim() ?: if (type != null) "" else null) ?: return TaskParse.Invalid("missing text", id)
         val from = str("from") ?: "jarvis"
         val ttl = num("ttl_s") ?: DEFAULT_TTL_S
         if (!FROM_RE.matches(from)) return TaskParse.Invalid("malformed from", id)
-        if (text.isEmpty()) return TaskParse.Invalid("missing text", id)
+        if (text.isEmpty() && type == null) return TaskParse.Invalid("missing text", id)
         if (text.length > MAX_TEXT_LENGTH) return TaskParse.Invalid("text longer than $MAX_TEXT_LENGTH chars", id)
         if (ttl < 1 || ttl > MAX_TTL_S) return TaskParse.Invalid("ttl_s must be 1..$MAX_TTL_S", id)
         if (ts - nowMs > CLOCK_SKEW_MS) return TaskParse.Invalid("ts is in the future", id)
-        val task = JarvisTask(id = id, text = text, from = from, sentAtMs = ts, ttlSeconds = ttl)
+        val task = JarvisTask(id = id, text = text, from = from, sentAtMs = ts, ttlSeconds = ttl, type = type, body = body)
         if (nowMs > task.expiresAtMs()) return TaskParse.Expired(id, nowMs - ts)
         return TaskParse.Valid(task)
     }

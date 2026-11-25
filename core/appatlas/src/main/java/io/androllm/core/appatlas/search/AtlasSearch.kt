@@ -78,7 +78,8 @@ object AtlasSearch {
         return pool.sortedWith(compareByDescending<AtlasHit> { it.score }.thenBy { it.entry.label.lowercase() }).take(MAX_APPS)
     }
 
-    fun render(hits: List<AtlasHit>, query: String): String {
+    /** [playbooks] (branch N): package → compact playbook lines, shown FIRST for that app. */
+    fun render(hits: List<AtlasHit>, query: String, playbooks: Map<String, List<String>> = emptyMap()): String {
         if (hits.isEmpty()) {
             return "No app in the atlas matches \"${query.take(60)}\". Try launch_app with the app name, or ui_read_screen."
         }
@@ -93,6 +94,7 @@ object AtlasSearch {
                 block.append("   NO AUTOMATION: ").append(e.sensitiveReason ?: "protected app")
                     .append(". Only action_id=open; never tap or type inside.\n")
             } else {
+                for (pb in playbooks[e.packageName].orEmpty()) block.append("   playbook_run ").append(AtlasText.clean(pb, 160) ?: "").append('\n')
                 for (a in h.actions) block.append("   - ").append(describe(a)).append('\n')
                 if (h.uiHints.isNotEmpty()) block.append("   ui: ").append(h.uiHints.joinToString(", ")).append('\n')
                 for (p in h.paths) block.append("   learned ").append(LearnedPathPolicy.render(p, e.versionCode)).append('\n')
