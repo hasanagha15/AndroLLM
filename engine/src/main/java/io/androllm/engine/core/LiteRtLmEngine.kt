@@ -563,7 +563,18 @@ class LiteRtLmEngine @Inject constructor(
             // subdirectory per context size keeps a cache from one shape away
             // from another.
             val cacheDir = runCatching {
-                File(context.cacheDir, "litertlm/ctx${clampedMaxNumTokens ?: 0}").apply { mkdirs() }.absolutePath
+                val root = File(context.cacheDir, "litertlm")
+                val current = File(root, "ctx${clampedMaxNumTokens ?: 0}").apply { mkdirs() }
+                // Gate N8: at most 2 context caches per model; legacy flat files removed.
+                runCatching {
+                    val pruned = io.androllm.engine.utils.RuntimeCachePruner.prune(
+                        root = root, legacyDir = context.cacheDir, modelFileName = file.name, currentDir = current
+                    )
+                    if (pruned.deletedFiles > 0) {
+                        logger.i("CACHE PRUNE: ${pruned.deletedFiles} stale runtime cache file(s), ${pruned.freedBytes / (1024 * 1024)} MB freed")
+                    }
+                }
+                current.absolutePath
             }.getOrNull()
             // The directory that must hold the vendor NPU dispatch libraries
             // (`libLiteRtDispatch_*.so`); passed to Backend.NPU(nativeLibraryDir).
@@ -1435,21 +1446,34 @@ class LiteRtLmEngine @Inject constructor(
             // real prefill token count. The full dump stays behind
             // config.debugTokenLogging.
             if (config.debugTokenLogging || isDebugBuild) {
-                val rendered = renderPromptMirror(plan, addAssistant)
-                if (rendered != null) {
-                    val shape = io.androllm.engine.compat.PromptShapeCheck.check(rendered)
+                // Gate B1: by default ONLY the shape is logged — roles, content
+                // lengths, turn markers, the tail marker and a token estimate.
+                // The skeleton is rendered with every message's content
+                // replaced by a "[role: N chars]" placeholder, so no user text,
+                // system prompt or tool data ever reaches logcat. Real content
+                // is dumped only when config.debugTokenLogging is explicitly on.
+                val turns = ChatTurnPlanner.mirrorMessages(plan).map { it.role to it.content }
+                val skeleton = renderPromptMirror(
+                    io.androllm.engine.compat.PromptShapeCheck.placeholders(turns), addAssistant
+                )
+                if (skeleton != null) {
+                    val shape = io.androllm.engine.compat.PromptShapeCheck.check(skeleton)
+                    val contentChars = turns.sumOf { it.second.length }
                     logger.i(
-                        "PROMPT MIRROR (${templateSelection?.source?.label}): ${rendered.length} chars, " +
-                            "~${rendered.length / 4} tokens est, ${shape.describe()}"
+                        "PROMPT SHAPE (${templateSelection?.source?.label}): turns=[${io.androllm.engine.compat.PromptShapeCheck.describeTurns(turns)}] " +
+                            "contentChars=$contentChars ~tokens=${(contentChars + skeleton.length) / 4} ${shape.describe()} " +
+                            "tail=${io.androllm.engine.compat.PromptShapeCheck.visible(shape.assistantHeader)}"
                     )
                     if (!shape.ok) logger.w("PROMPT SHAPE WARNING: ${shape.describe()}")
-                    if (config.debugTokenLogging) {
+                    logger.i("PROMPT SKELETON (no content):\n${io.androllm.engine.compat.PromptShapeCheck.excerpt(skeleton)}")
+                }
+                if (config.debugTokenLogging) {
+                    val rendered = renderPromptMirror(turns, addAssistant)
+                    if (rendered != null) {
                         val parts = (rendered.length + 2999) / 3000
                         rendered.chunked(3000).forEachIndexed { i, chunk ->
                             logger.i("rendered prompt part ${i + 1}/$parts (${rendered.length} chars):\n$chunk")
                         }
-                    } else {
-                        logger.i("PROMPT EXCERPT:\n${io.androllm.engine.compat.PromptShapeCheck.excerpt(rendered)}")
                     }
                 }
             }
@@ -2115,20 +2139,16 @@ class LiteRtLmEngine @Inject constructor(
      * implement, so it is mirrored by [io.androllm.engine.compat.Gemma4PromptMirror].
      * Null when no model is loaded or the template cannot be mirrored.
      */
-    private fun renderPromptMirror(plan: ChatTurnPlan, addAssistant: Boolean): String? {
+    private fun renderPromptMirror(msgs: List<Pair<String, String>>, addAssistant: Boolean): String? {
         val sel = templateSelection ?: return null
         val fc = familyConfig ?: return null
-        val msgs = ChatTurnPlanner.mirrorMessages(plan)
         return runCatching {
             if (sel.override == null && io.androllm.engine.compat.ToolCallSyntax.isGemma4Template(sel.effective)) {
-                io.androllm.engine.compat.Gemma4PromptMirror.render(
-                    msgs.map { it.role to it.content },
-                    addGenerationPrompt = addAssistant
-                )
+                io.androllm.engine.compat.Gemma4PromptMirror.render(msgs, addGenerationPrompt = addAssistant)
             } else {
                 ChatTemplateRenderer().render(
                     template = sel.effective,
-                    messages = msgs.map { ChatTemplateRenderer.RenderMessage(it.role, it.content) },
+                    messages = msgs.map { ChatTemplateRenderer.RenderMessage(it.first, it.second) },
                     bosToken = "",
                     eosToken = fc.specialTokens.eos,
                     addGenerationPrompt = addAssistant,

@@ -256,10 +256,45 @@ class DefaultEngineRepository @Inject constructor(
     @Volatile
     private var reloadAfterMemoryPressure: Boolean = false
 
+    /**
+     * Gate N2: set when an automatic reload failed. Requests then fail with
+     * this message instead of retrying the load on every message, until the
+     * user loads a model again.
+     */
+    @Volatile
+    private var reloadFailureMessage: String? = null
+
+    private sealed interface ModelGate {
+        data object Ready : ModelGate
+        data object Cancelled : ModelGate
+        data class Missing(val message: String) : ModelGate
+    }
+
+    /**
+     * Called under [generationMutex] at the start of a request: a loaded model
+     * is Ready; a memory-pressure unload is reloaded once; a Stop pressed
+     * during that reload cancels the request (gate N2).
+     */
+    private suspend fun ensureModelLocked(): ModelGate {
+        if (engine.isLoaded()) return ModelGate.Ready
+        val reloaded = reloadAfterMemoryPressureLocked()
+        if (reloaded && cancelRequested.getAndSet(false)) {
+            android.util.Log.i(TAG, "AUTO-RELOAD: Stop pressed during the reload — request cancelled")
+            return ModelGate.Cancelled
+        }
+        if (reloaded) return ModelGate.Ready
+        return ModelGate.Missing(reloadFailureMessage ?: "Model not loaded")
+    }
+
     override suspend fun loadModel(
         model: Model,
         config: ModelLoadConfig
     ): Result<Unit> = generationMutex.withLock {
+        // Gate N3: a new user load supersedes any pending memory-pressure
+        // reload, whether it succeeds or not (a failed load of B must never
+        // silently bring back A on the next message).
+        reloadAfterMemoryPressure = false
+        reloadFailureMessage = null
         val result = loadModelLocked(model, config)
         if (result is Result.Success) {
             lastLoadRequest = model to config
@@ -275,6 +310,7 @@ class DefaultEngineRepository @Inject constructor(
             _engineState.value = EngineState.Unloaded
             _memoryStats.value = null
             reloadAfterMemoryPressure = lastLoadRequest != null
+            reloadFailureMessage = null
             android.util.Log.w(TAG, "MEMORY PRESSURE: model unloaded — it reloads on the next request")
         }
     }
@@ -297,7 +333,14 @@ class DefaultEngineRepository @Inject constructor(
             android.util.Log.i(TAG, "AUTO-RELOAD complete")
             true
         } else {
-            android.util.Log.w(TAG, "AUTO-RELOAD failed: ${(result as? Result.Error)?.exception?.message}")
+            val why = (result as? Result.Error)?.exception?.message ?: "unknown error"
+            android.util.Log.w(TAG, "AUTO-RELOAD failed: $why — not retrying until the user loads a model")
+            // Gate N2: back off — one attempt only, then a clear error.
+            reloadAfterMemoryPressure = false
+            reloadFailureMessage =
+                "Could not reload ${request.first.name} after the system freed memory ($why). " +
+                    "Load the model again from the Models screen."
+            _engineState.value = EngineState.Failed(message = reloadFailureMessage!!)
             false
         }
     }
@@ -392,6 +435,7 @@ class DefaultEngineRepository @Inject constructor(
     override suspend fun unloadModel(): Result<Unit> = generationMutex.withLock {
         io.androllm.core.common.runCatching {
             reloadAfterMemoryPressure = false
+            reloadFailureMessage = null
             engine.unloadModel()
             _engineState.value = EngineState.Unloaded
             _memoryStats.value = null
@@ -474,9 +518,17 @@ class DefaultEngineRepository @Inject constructor(
         // the engine was idle or waiting behind background work).
         cancelRequested.set(false)
 
-        if (!engine.isLoaded() && !reloadAfterMemoryPressureLocked()) {
-            _generationState.value = GenerationState.Failed("Model not loaded")
-            return Result.error("Model not loaded")
+        when (val gate = ensureModelLocked()) {
+            ModelGate.Ready -> Unit
+            // Gate N2: Stop pressed while the model was reloading.
+            ModelGate.Cancelled -> {
+                _generationState.value = GenerationState.Cancelled
+                return Result.Success(Unit)
+            }
+            is ModelGate.Missing -> {
+                _generationState.value = GenerationState.Failed(gate.message)
+                return Result.error(gate.message)
+            }
         }
 
         _generationState.value = GenerationState.Generating(prompt = prompt, streamingText = "", generatedTokens = 0L)
@@ -754,9 +806,17 @@ class DefaultEngineRepository @Inject constructor(
         android.util.Log.i(TAG, "Generation Started")
         cancelRequested.set(false)
 
-        if (!engine.isLoaded() && !reloadAfterMemoryPressureLocked()) {
-            _generationState.value = GenerationState.Failed("Model not loaded")
-            return Result.error("Model not loaded")
+        when (val gate = ensureModelLocked()) {
+            ModelGate.Ready -> Unit
+            // Gate N2: Stop pressed while the model was reloading.
+            ModelGate.Cancelled -> {
+                _generationState.value = GenerationState.Cancelled
+                return Result.Success(Unit)
+            }
+            is ModelGate.Missing -> {
+                _generationState.value = GenerationState.Failed(gate.message)
+                return Result.error(gate.message)
+            }
         }
 
         val lastUser = messages.lastOrNull { it.role == "user" }?.content ?: "(chat)"
@@ -1171,11 +1231,6 @@ class DefaultEngineRepository @Inject constructor(
                 .coerceIn(FIRST_TOKEN_TIMEOUT_MS, FIRST_TOKEN_TIMEOUT_MAX_MS)
         }
 
-        /**
-         * Hard ceiling for a run requesting [maxTokens] tokens. Never below
-         * [HARD_FLOOR_MS] (previous fixed behavior) and never above
-         * [HARD_TIMEOUT_MAX_MS].
-         */
         /** Branch P: fixed context in front of the benchmark prompt (prefill measurement). */
         internal val BENCHMARK_CONTEXT: String = (
             "Context for this benchmark. The theory of relativity has two parts. Special relativity " +
@@ -1187,6 +1242,11 @@ class DefaultEngineRepository @Inject constructor(
                 "gravitational waves, first detected in 2015. GPS satellites must correct for both effects. "
             ).repeat(2) + "\n\nTask: "
 
+        /**
+         * Hard ceiling for a run requesting [maxTokens] tokens. Never below
+         * [HARD_FLOOR_MS] (previous fixed behavior) and never above
+         * [HARD_TIMEOUT_MAX_MS].
+         */
         fun hardGenerationTimeoutMs(maxTokens: Int): Long {
             val budget = maxTokens.coerceAtLeast(0).toLong() * MS_PER_GENERATED_TOKEN + HARD_FLOOR_MS
             return budget.coerceIn(HARD_FLOOR_MS, HARD_TIMEOUT_MAX_MS)

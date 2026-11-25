@@ -792,7 +792,10 @@ class ChatViewModel @Inject constructor(
                 ChatHistoryTrimmer.estimateTokens(assistantInstructions) +
                 ChatHistoryTrimmer.estimateTokens(memoryContext.systemText) +
                 (if (attachmentContext.isNotBlank()) ChatHistoryTrimmer.estimateTokens(attachmentContext) else 0) +
-                (toolAdvertisement?.let { ChatHistoryTrimmer.estimateTokens(it) } ?: 0)
+                (toolAdvertisement?.let { ChatHistoryTrimmer.estimateTokens(it) } ?: 0) +
+                // Gate N1: Gemma 4's native tool declarations are rendered by
+                // the container template INSIDE the system turn — reserve them.
+                io.androllm.engine.core.NativeToolDeclarations.estimatedTokens(turnNativeTools)
             val trimmedHistory = ChatHistoryTrimmer.trim(
                 history = history,
                 contextLength = contextLength,
@@ -1706,7 +1709,8 @@ class ChatViewModel @Inject constructor(
         engineRepository.generateChat(
             messages = retryMessages,
             addAssistant = true,
-            config = localTurnConfig()
+            // Plain text only: no native tool declarations on the retry.
+            config = localTurnConfig().copy(nativeTools = emptyList())
         )
         val retryState = engineRepository.generationState.value
         return if (retryState is GenerationState.Completed) {

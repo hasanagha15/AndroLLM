@@ -13,9 +13,9 @@ package io.androllm.engine.compat
  * template embedded in the .litertlm container".
  *
  * Rules (first match wins):
- *  1. The container embeds a template that reads the `text` parts
- *     (parts-aware, e.g. Gemma 4's `<|turn>…<turn|>` template) → use the
- *     container's own template, NO override. Overriding it was the step-4
+ *  1. The container embeds a VERIFIED parts-aware template (today: Gemma 4's
+ *     `<|turn>…<turn|>` template, gate N4) → use the container's own
+ *     template, NO override. Overriding it was the step-4
  *     bug: Gemma 4 got the Gemma 3 `<start_of_turn>` template and read the
  *     system prompt back for 82 s.
  *  2. GENERIC family → the embedded template as-is (identity), else the
@@ -43,11 +43,25 @@ object TemplateSelector {
         val source: Source
     )
 
-    private val TEXT_PART = Regex("""['"]text['"]""")
+    // Gate N4: a strict signature — the template must both test a part's
+    // type against 'text' AND read the part's text. A bare quoted 'text'
+    // elsewhere (e.g. `m.type == 'text'` next to string concatenation of
+    // `m.content`) no longer counts.
+    private val TYPE_IS_TEXT = Regex("""(\['type']|\["type"]|\.type)\s*==\s*['"]text['"]""")
+    private val READS_TEXT = Regex("""(\['text']|\["text"]|\.text\b)""")
 
-    /** True when [template] flattens list-of-parts content (reads the `text` parts). */
+    /** True when [template] flattens list-of-parts content (tests `type == 'text'` and reads `['text']`). */
     fun isPartsAware(template: String?): Boolean =
-        !template.isNullOrBlank() && TEXT_PART.containsMatchIn(template)
+        !template.isNullOrBlank() && TYPE_IS_TEXT.containsMatchIn(template) && READS_TEXT.containsMatchIn(template)
+
+    /**
+     * Gate N4: containers whose embedded template was VERIFIED on the phone
+     * to render correctly with LiteRT-LM 0.19.1 list-of-parts content. Only
+     * Gemma 4 so far (Qwen3 containers are string-only and keep the override);
+     * every other family keeps the pre-branch-P official override.
+     */
+    fun isVerifiedContainerTemplate(family: ModelFamily, embedded: String?): Boolean =
+        family == ModelFamily.GEMMA && ToolCallSyntax.isGemma4Template(embedded) && isPartsAware(embedded)
 
     /**
      * True for the Qwen3 Instruct-2507 line (no thinking mode). Detected from
@@ -63,7 +77,7 @@ object TemplateSelector {
     }
 
     fun select(family: ModelFamily, embedded: String?, modelName: String?): Selection {
-        if (isPartsAware(embedded)) {
+        if (isVerifiedContainerTemplate(family, embedded)) {
             return Selection(override = null, effective = embedded!!, source = Source.CONTAINER)
         }
         if (family == ModelFamily.GENERIC) {

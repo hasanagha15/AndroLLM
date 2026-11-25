@@ -734,7 +734,9 @@ private fun BenchmarkBackendsCard(
                                     text = if (r.succeeded) {
                                         buildString {
                                             // Branch P: prefill and decode separately, plus TTFT.
-                                            append(String.format("prefill %.1f tok/s", r.prefillTokensPerSecond))
+                                            // Gate N7: LiteRT-LM 0.19.1 exposes no BenchmarkInfo to
+                                            // Kotlin — prefill is estimated (≈ tokens / TTFT).
+                                            append(String.format("prefill ≈%.1f tok/s", r.prefillTokensPerSecond))
                                             append(String.format(" · decode %.1f tok/s", r.decodeTokensPerSecond))
                                             append(" · TTFT ${r.firstTokenMs} ms")
                                             append(" · init ${r.initTimeMs} ms")
@@ -751,7 +753,7 @@ private fun BenchmarkBackendsCard(
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
                                 text = if (r.succeeded) {
-                                    String.format("%.1f / %.1f", r.prefillTokensPerSecond, r.decodeTokensPerSecond)
+                                    String.format("≈%.0f / %.1f", r.prefillTokensPerSecond, r.decodeTokensPerSecond)
                                 } else {
                                     "—"
                                 },

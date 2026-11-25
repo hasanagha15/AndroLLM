@@ -51,8 +51,27 @@ object PromptShapeCheck {
     }
 
     /**
-     * Length-capped excerpt for logcat: head + tail with the elided middle
-     * counted, so the turn markers at both ends are always visible.
+     * Gate B1: the messages with their content replaced by a
+     * `[role: N chars]` placeholder. Rendering THESE through the template
+     * shows every turn marker and the tail exactly as the real prompt has
+     * them, while no user text, system prompt or tool data is present.
+     */
+    fun placeholders(messages: List<Pair<String, String>>): List<Pair<String, String>> =
+        messages.map { (role, content) -> role to "[$role: ${content.length} chars]" }
+
+    /** `system:4523, user:16` — roles and content lengths only. */
+    fun describeTurns(messages: List<Pair<String, String>>): String =
+        messages.joinToString(", ") { (role, content) -> "$role:${content.length}" }
+
+    /** Makes control characters visible for a one-line log (`\n` → `\\n`). */
+    fun visible(marker: String?): String =
+        if (marker == null) "<none>" else "'" + marker.replace("\n", "\\n") + "'"
+
+    /**
+     * Length-capped excerpt: head + tail with the elided middle counted, so
+     * the turn markers at both ends are always visible. Content-free only when
+     * applied to a skeleton rendered from [placeholders] — never call it on a
+     * real prompt for a default log (gate B1).
      */
     fun excerpt(rendered: String, headChars: Int = 400, tailChars: Int = 600): String =
         if (rendered.length <= headChars + tailChars) {

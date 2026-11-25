@@ -38,6 +38,17 @@ object NativeToolDeclarations {
     }
 
     /**
+     * Gate N1: rough token cost of the declarations the container template
+     * renders into the system turn (~4 chars per token, like the chat
+     * trimmer's estimate), so the history trimmer reserves room for them.
+     */
+    fun estimatedTokens(specs: List<NativeToolSpec>): Int =
+        specs.sumOf { descriptionJson(it).length + DECLARATION_FRAMING_CHARS } / 4
+
+    /** `<|tool>declaration:` … `<tool|>` and the template's key rewriting. */
+    private const val DECLARATION_FRAMING_CHARS = 24
+
+    /**
      * Keeps the most relevant tools (callers pass them most-relevant-first)
      * whose declarations fit [maxChars] (<= 0 = unlimited). At least one tool
      * is kept when any is given, so a tight budget never silently disables
