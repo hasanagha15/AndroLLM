@@ -13,6 +13,8 @@ import io.androllm.engine.api.GenerationState
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Branch T: one reading of what slows screen transitions down on this phone.
@@ -95,7 +97,10 @@ object LoadFactor {
      * Transition time ≈ fixed work + animation. Measured (branch T): all three
      * scales at 0.5 → in-app transitions ×0.58 (p50) / ×0.69 (p95); launch
      * TotalTime (first frame) barely moves. Linear fit through (1, 1) and
-     * (0.5, 0.7): 0.4 + 0.6 × scale; larger scales lengthen it (k is clamped anyway).
+     * (0.5, 0.7): 0.4 + 0.6 × scale; larger scales lengthen it.
+     * Note (review R7): k is clamped to ≥ [K_MIN], so on an idle phone a lower
+     * scale does not shorten the waits — it only offsets other load terms;
+     * the learned per-transition times pick the faster transitions up anyway.
      */
     fun animFactor(scale: Float): Double = when {
         scale.isNaN() || scale < 0f -> 1.0
@@ -137,6 +142,9 @@ class DeviceLoadMonitor internal constructor(
 
     /** Current load factor k in [LoadFactor.K_MIN, LoadFactor.K_MAX]. */
     fun loadFactor(): Double = LoadFactor.compute(sample())
+
+    /** Review R5: the same, sampled off the main thread (binder calls + /proc read). */
+    suspend fun loadFactorAsync(): Double = withContext(Dispatchers.Default) { loadFactor() }
 
     companion object {
         const val CACHE_MS = 1_000L

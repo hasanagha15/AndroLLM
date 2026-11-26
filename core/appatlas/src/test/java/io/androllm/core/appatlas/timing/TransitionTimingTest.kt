@@ -46,6 +46,39 @@ class TransitionTimingTest {
     }
 
     @Test
+    fun `R2 - the first sample is clipped to 2_5 x the default p95`() {
+        val s = TimingStats().update(45_000.0, 0, defaultP95Ms = 1_100.0)
+        assertThat(s.p50Ms).isWithin(1e-6).of(1_100.0 * TimingStats.OUTLIER_X)
+        assertThat(TimingStats.OUTLIER_X).isEqualTo(2.5)
+    }
+
+    @Test
+    fun `R1 - launch and in-app samples of the same step are kept apart`() = runTest {
+        val m = TransitionTimingModel(MemoryTimingStore())
+        val launch = t.copy(stepIndex = 0, kind = TransitionKind.LAUNCH)
+        val inApp = t.copy(stepIndex = 0, kind = TransitionKind.IN_APP)
+        assertThat(launch.key).isNotEqualTo(inApp.key)
+        repeat(5) {
+            m.record(launch, AppUiType.VIEWS, 1_500.0, ok = true)
+            m.record(inApp, AppUiType.VIEWS, 100.0, ok = true)
+        }
+        assertThat(m.estimate(launch, AppUiType.VIEWS).p50Ms).isWithin(1.0).of(1_500.0)
+        assertThat(m.estimate(inApp, AppUiType.VIEWS).p50Ms).isWithin(1.0).of(100.0)
+    }
+
+    @Test
+    fun `R4 - forget drops cached and stored rows of a package`() = runTest {
+        val store = MemoryTimingStore()
+        val m = TransitionTimingModel(store)
+        repeat(3) { m.record(t, AppUiType.VIEWS, 500.0, ok = true) }
+        m.flush()
+        assertThat(store.rows).isNotEmpty()
+        m.forget(listOf(PKG))
+        assertThat(store.rows).isEmpty()
+        assertThat(m.estimate(t, AppUiType.VIEWS).learnedRuns).isEqualTo(0)
+    }
+
+    @Test
     fun `a timeout widens the spread and counts a failure`() {
         var s = TimingStats()
         repeat(10) { s = s.update(300.0, 0) }
@@ -90,7 +123,7 @@ class TransitionTimingTest {
         assertThat(store.rows).isEmpty()
         m.flush()
         val row = store.rows.values.single()
-        assertThat(row.transitionKey).isEqualTo("$PKG/search#1")
+        assertThat(row.transitionKey).isEqualTo("$PKG/search#1:in_app")
         assertThat(row.kind).isEqualTo(TransitionKind.IN_APP)
         assertThat(row.uiType).isEqualTo(AppUiType.COMPOSE)
         assertThat(row.stats.updatedAt).isEqualTo(42L)

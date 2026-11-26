@@ -52,10 +52,17 @@ data class TimingStats(
 ) {
     val p95Ms: Double get() = max(p50Ms + Z * devMs, p50Ms * P95_MIN_RATIO)
 
-    /** One successful observation [x] (normalized ms). Outliers are clamped to [OUTLIER_X] × p95. */
-    fun update(x: Double, now: Long): TimingStats {
+    /**
+     * One successful observation [x] (normalized ms). Outliers are clamped to
+     * [OUTLIER_X] × p95; the very first one to [OUTLIER_X] × [defaultP95Ms]
+     * (review R2: a run caught only by the retry must not set the timeout to the ceiling).
+     */
+    fun update(x: Double, now: Long, defaultP95Ms: Double = Double.MAX_VALUE / OUTLIER_X): TimingStats {
         if (x.isNaN() || x < 0) return this
-        if (n == 0) return copy(n = 1, p50Ms = x, devMs = x * FIRST_DEV_RATIO, updatedAt = now)
+        if (n == 0) {
+            val x0 = x.coerceAtMost(defaultP95Ms * OUTLIER_X)
+            return copy(n = 1, p50Ms = x0, devMs = x0 * FIRST_DEV_RATIO, updatedAt = now)
+        }
         val xc = x.coerceAtMost(p95Ms * OUTLIER_X)
         val a = max(1.0 / (n + 1), ALPHA)
         val p50 = p50Ms + a * (xc - p50Ms)
@@ -76,7 +83,7 @@ data class TimingStats(
         const val Z = 2.5
         const val P95_MIN_RATIO = 1.25
         const val FIRST_DEV_RATIO = 0.3
-        const val OUTLIER_X = 4.0
+        const val OUTLIER_X = 2.5
         const val N_CAP = 10_000
         /** Below this many runs the learned value is blended with the default. */
         const val TRUSTED_N = 3
@@ -119,6 +126,7 @@ interface TimingStore {
     suspend fun forPackage(packageName: String): List<TimingRecord>
     suspend fun upsert(records: List<TimingRecord>)
     suspend fun all(limit: Int): List<TimingRecord>
+    suspend fun deleteFor(packageNames: List<String>)
 }
 
 /**
@@ -164,9 +172,22 @@ class TransitionTimingModel(
         val m = pkg(t.packageName)
         val prev = m[t.key] ?: TimingRecord(t.packageName, t.key, t.kind, type, TimingStats())
         val now = clock()
-        val stats = if (ok) prev.stats.update(normalizedMs, now) else prev.stats.failed(normalizedMs, now)
+        val stats = if (ok) {
+            prev.stats.update(normalizedMs, now, TimingDefaults.of(t.kind, type).p95Ms)
+        } else {
+            prev.stats.failed(normalizedMs, now)
+        }
         m[t.key] = prev.copy(kind = t.kind, uiType = if (type != AppUiType.UNKNOWN) type else prev.uiType, stats = stats)
         dirty += t.packageName to t.key
+    }
+
+    /** Review R4: drops everything learned for [packageNames] (uninstalled / protected). */
+    suspend fun forget(packageNames: Collection<String>) {
+        if (packageNames.isEmpty()) return
+        mutex.withLock {
+            packageNames.forEach { p -> cache.remove(p); dirty.removeAll { it.first == p } }
+        }
+        runCatching { store.deleteFor(packageNames.toList()) }
     }
 
     /** Writes changed rows. */
@@ -191,4 +212,5 @@ class MemoryTimingStore : TimingStore {
     override suspend fun forPackage(packageName: String) = rows.values.filter { it.packageName == packageName }
     override suspend fun upsert(records: List<TimingRecord>) { records.forEach { rows[it.packageName to it.transitionKey] = it } }
     override suspend fun all(limit: Int) = rows.values.take(limit)
+    override suspend fun deleteFor(packageNames: List<String>) { rows.keys.removeAll { it.first in packageNames } }
 }

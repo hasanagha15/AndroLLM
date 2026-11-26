@@ -93,6 +93,8 @@ abstract class AppAtlasModule {
                 File(context.noBackupFilesDir, TimingDatabase.FILE_NAME).absolutePath
             )
                 .fallbackToDestructiveMigration(dropAllTables = true)
+                // Review R8: an older build opening a newer cache just starts empty.
+                .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
                 .build()
 
         @Provides

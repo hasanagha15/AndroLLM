@@ -95,13 +95,18 @@ class PlaybookRunner(
         // Live protection: the owner's list / guard / heuristic may have changed since import.
         val label = appLabel(p.packageName)
         if (atlasSensitive(p.packageName)) {
+            timing.forget(p.packageName) // branch T review R4: no timings kept for protected apps
             return ToolResult.Failure("${p.packageName} is a protected app (banking / payment): no playbooks, no automation.", retryable = false)
         }
         SensitiveClassifier.reason(p.packageName, listOfNotNull(p.appLabel, label).joinToString(" "), repository.extras())?.let {
+            timing.forget(p.packageName)
             return ToolResult.Failure("${p.packageName} is a protected app ($it): no playbooks, no automation.", retryable = false)
         }
         val version = installedVersion(p.packageName)
-            ?: return ToolResult.Failure("${p.packageName} is not installed (or excluded from the atlas).", retryable = false)
+        if (version == null) {
+            timing.forget(p.packageName)
+            return ToolResult.Failure("${p.packageName} is not installed (or excluded from the atlas).", retryable = false)
+        }
         val status = PlaybookPolicy.effectiveStatus(sp, version)
         if (requireTrustedOk) {
             if (!PlaybookPolicy.fastPathTrusted(sp)) {

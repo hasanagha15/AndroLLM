@@ -48,14 +48,15 @@ class AdaptiveStepTiming @Inject constructor(
     }
 
     override suspend fun plan(t: Transition, step: PlaybookStep): WaitPlan {
-        val k = effectiveK(t.kind, load.loadFactor())
+        val k = effectiveK(t.kind, load.loadFactorAsync())
         plannedK[t.key] = k
         val est = model.estimate(t, uiType)
         return planFor(t.kind, uiType, est, k, step.timeoutMs)
     }
 
     override suspend fun settle(): SettlePlan {
-        val k = load.loadFactor()
+        // Review R7: after an action the next change is usually in-app → scale with k', not k.
+        val k = effectiveK(TransitionKind.IN_APP, load.loadFactorAsync())
         return SettlePlan(
             settleMs = (PlaybookEngine.SETTLE_MS * k).roundToLong().coerceIn(PlaybookEngine.SETTLE_MS, SETTLE_MAX_MS),
             debounceMs = debounceFor(uiType, k)
@@ -66,13 +67,17 @@ class AdaptiveStepTiming @Inject constructor(
         if (ok && snapshot?.packageName == t.packageName) {
             AppUiType.detect(snapshot).takeIf { it != AppUiType.UNKNOWN }?.let { uiType = it }
         }
-        val k = plannedK[t.key] ?: effectiveK(t.kind, load.loadFactor())
+        val k = plannedK[t.key] ?: effectiveK(t.kind, load.loadFactorAsync())
         model.record(t, uiType, elapsedMs / k, ok)
         if (retried) Timber.i("Timing: %s needed the retry (ok=%s, k=%.2f)", t.key, ok, k)
     }
 
     override suspend fun end() {
         model.flush()
+    }
+
+    override suspend fun forget(packageName: String) {
+        model.forget(listOf(packageName))
     }
 
     companion object {

@@ -28,8 +28,12 @@ data class Transition(
     val stepIndex: Int,
     val kind: TransitionKind
 ) {
-    /** Stable, content-free key: "<playbook id>#<step>". */
-    val key: String get() = "$playbookId#$stepIndex"
+    /**
+     * Stable, content-free key: "<playbook id>#<step>:<kind>". The kind is
+     * part of it (review R1): step 0 is a LAUNCH when the app had to be
+     * started and IN_APP when it was already open — different populations.
+     */
+    val key: String get() = "$playbookId#$stepIndex:${kind.wire}"
 }
 
 /** How long and how carefully to wait for one transition. */
@@ -70,6 +74,8 @@ interface StepTimingPolicy {
     suspend fun observe(t: Transition, elapsedMs: Long, ok: Boolean, retried: Boolean, snapshot: NodeSnapshot?) {}
     /** End of the run: persist what was learned. */
     suspend fun end() {}
+    /** Review R4: [packageName] is uninstalled or protected — drop its timings. */
+    suspend fun forget(packageName: String) {}
 }
 
 /** Branch N behaviour, unchanged. */

@@ -1,7 +1,6 @@
 package io.androllm.core.appatlas.timing
 
 import io.androllm.core.accessibility.timing.DeviceLoadMonitor
-import io.androllm.core.accessibility.timing.LoadFactor
 import io.androllm.core.appatlas.AppAtlasRepository
 import io.androllm.core.tools.remote.RemoteDataResult
 import io.androllm.core.tools.remote.RemoteDataTaskHandler
@@ -24,7 +23,8 @@ import kotlinx.serialization.json.put
 class TimingSyncHandler @Inject constructor(
     private val model: TransitionTimingModel,
     private val load: DeviceLoadMonitor,
-    private val atlas: AppAtlasRepository
+    private val atlas: AppAtlasRepository,
+    private val playbooks: io.androllm.core.appatlas.playbook.PlaybookRepository
 ) : RemoteDataTaskHandler {
 
     override val types: Set<String> = setOf(TYPE)
@@ -33,7 +33,15 @@ class TimingSyncHandler @Inject constructor(
         if (type != TYPE) return RemoteDataResult(false, "unknown task type")
         if (!atlas.isEnabled) return RemoteDataResult(false, "disabled (App Atlas is off)")
         val limit = ((body?.get("limit") as? JsonPrimitive)?.intOrNull ?: DEFAULT_LIMIT).coerceIn(1, MAX_LIMIT)
-        return RemoteDataResult(true, render(model.snapshot(limit), LoadFactor.compute(load.sample()), MAX_CHARS))
+        val rows = model.snapshot(limit)
+        // Review R4: never export (and drop) timings of apps that are uninstalled / excluded or protected NOW.
+        val extras = playbooks.extras()
+        val gone = rows.map { it.packageName }.distinct().filter { pkg ->
+            val e = atlas.entry(pkg)
+            e == null || e.sensitive || io.androllm.core.appatlas.index.SensitiveClassifier.reason(pkg, e.label, extras) != null
+        }.toSet()
+        if (gone.isNotEmpty()) model.forget(gone)
+        return RemoteDataResult(true, render(rows.filter { it.packageName !in gone }, load.loadFactorAsync(), MAX_CHARS))
     }
 
     companion object {

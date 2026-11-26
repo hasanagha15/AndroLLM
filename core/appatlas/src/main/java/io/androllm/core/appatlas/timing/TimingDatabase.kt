@@ -59,6 +59,7 @@ class RoomTimingStore(private val dao: TimingDao) : TimingStore {
     override suspend fun forPackage(packageName: String): List<TimingRecord> = dao.forPackage(packageName).mapNotNull(::decode)
     override suspend fun upsert(records: List<TimingRecord>) = dao.upsert(records.map(::encode))
     override suspend fun all(limit: Int): List<TimingRecord> = dao.recent(limit).mapNotNull(::decode)
+    override suspend fun deleteFor(packageNames: List<String>) = packageNames.chunked(400).forEach { dao.deleteFor(it) }
 
     companion object {
         fun decode(r: TimingRow): TimingRecord? {

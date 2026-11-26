@@ -60,7 +60,7 @@ class AutomationExecutor @Inject constructor(
 ) {
 
     /** Branch T: [baseMs] x k (1.0 ... 3.0). */
-    private fun scaled(baseMs: Long): Long = (baseMs * load.loadFactor()).toLong()
+    private suspend fun scaled(baseMs: Long): Long = (baseMs * load.loadFactorAsync()).toLong()
 
     private val cancelled = AtomicBoolean(false)
 
