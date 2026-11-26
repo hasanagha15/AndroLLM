@@ -209,4 +209,88 @@ class JarvisPlaybookTaskHandlerTest {
         assertThat(e["status"]!!.jsonPrimitive.content).isEqualTo("ok")
         assertThat((e["trusted"] as JsonPrimitive).content).isEqualTo("true")
     }
+
+    // ── Branch W2 (gate R2-R4) ──────────────────────────────────────────────
+
+    @Test
+    fun `gate R2 - a relative run window from receipt caps the run even with a far absolute deadline`() = runTest {
+        val screen = NodeSnapshot(PKG, listOf(node(0, "comment_edit", editable = true), node(1, "send_button", text = "Send")))
+        val fake = FakeDriver { screen }
+        val slow = object : PlaybookDriver by fake {
+            override suspend fun confirmTap(summary: String): Boolean { delay(200_000L); return fake.confirmTap(summary) }
+        }
+        val p = Playbook(
+            id = "$PKG/one_send", packageName = PKG, name = "one_send", description = "One send",
+            versionMin = 1, versionMax = 999, risk = Playbook.RISK_CONFIRM,
+            steps = listOf(PlaybookStep(op = "tap", locators = listOf(Locator("id", "send_button")), risky = true))
+        )
+        put(p, source = PlaybookRepository.SOURCE_FILE)
+        val repo = PlaybookRepository(store) { emptySet() }
+        val runner = PlaybookRunner(repo, slow, { 150L }, { "Example Video" }, fallback = null)
+        val h = JarvisPlaybookTaskHandler(
+            repository = repo,
+            runPlaybook = { id, args -> runner.run(id, args, allowFallback = false, requireTrustedOk = true) },
+            installedVersion = { 150L }, appLabel = { "Example Video" }, atlasSensitive = { false },
+            listEnabled = { true }, runEnabled = { true }, ownPackage = "io.androllm.app",
+            clock = { testScheduler.currentTime }
+        )
+        val start = testScheduler.currentTime
+        // absolute deadline far in the "future" (skewed clocks), relative window 100 s
+        val r = h.handle(JarvisPlaybookTaskHandler.TYPE_RUN, buildJsonObject {
+            put("id", p.id); put("deadline_ms", start + 10_000_000L); put("run_window_ms", 100_000L)
+        })
+        assertThat(outcome(r)).isEqualTo("timeout")
+        assertThat(fake.taps).isEmpty()
+        assertThat(testScheduler.currentTime - start).isAtMost(100_000L)
+    }
+
+    @Test
+    fun `gate R3 - events of our own run and its tail do not count as the owner`() {
+        val t = OwnRunTracker()
+        fun busy(now: Long, last: Long) = JarvisPlaybookTaskHandler.busyReason(true, false, now, last, t)
+        assertThat(busy(100_000L, 95_000L)).isEqualTo("owner_active")      // no own run yet
+        t.begin(200_000L)
+        assertThat(busy(205_000L, 204_000L)).isNull()                      // during our run
+        t.end(210_000L)
+        assertThat(busy(225_000L, 229_000L - 5_000L)).isNull()             // within the 20 s tail
+        assertThat(busy(240_000L, 235_000L)).isEqualTo("owner_active")     // after the tail: a human
+        assertThat(busy(300_000L, 235_000L)).isNull()                      // idle long enough
+        assertThat(JarvisPlaybookTaskHandler.busyReason(false, false, 0L, 0L, t)).isEqualTo("screen_off")
+        assertThat(JarvisPlaybookTaskHandler.busyReason(true, true, 0L, 0L, t)).isEqualTo("screen_locked")
+    }
+
+    @Test
+    fun `gate R3 - the handler marks its own run in the tracker`() = runTest {
+        put(PlaybookFixtures.searchPlaybook())
+        val tracker = OwnRunTracker()
+        var el = 1_000L
+        val h = JarvisPlaybookTaskHandler(
+            repository = PlaybookRepository(store) { emptySet() },
+            runPlaybook = { _, _ -> assertThat(tracker.running).isTrue(); el += 3_000L; result },
+            installedVersion = { installed[it] }, appLabel = { "Example Video" }, atlasSensitive = { false },
+            listEnabled = { true }, runEnabled = { true }, ownPackage = "io.androllm.app",
+            ownRun = tracker, elapsed = { el }, clock = { now }
+        )
+        assertThat(h.handle(JarvisPlaybookTaskHandler.TYPE_RUN, runBody("$PKG/search")).ok).isTrue()
+        assertThat(tracker.running).isFalse()
+        assertThat(tracker.startedAt).isEqualTo(1_000L)
+        assertThat(tracker.endedAt).isEqualTo(4_000L)
+        assertThat(tracker.isOwn(4_000L + 19_000L)).isTrue()
+    }
+
+    @Test
+    fun `gate R4 - a protected app appearing mid-run reports failed with steps_done`() = runTest {
+        put(PlaybookFixtures.searchPlaybook())
+        result = ToolResult.Failure(
+            "Playbook stopped. A protected app is on screen; automation is blocked there.",
+            buildJsonObject { put("status", "failed"); put("failed_step", 2); put("reason", "blocked"); put("steps_done", 2); put("steps_total", 3) },
+            retryable = false
+        )
+        val r = handler.handle(JarvisPlaybookTaskHandler.TYPE_RUN, runBody("$PKG/search"))
+        val o = json(r.text)
+        assertThat(r.status).isEqualTo("error")
+        assertThat(o["outcome"]!!.jsonPrimitive.content).isEqualTo("failed")
+        assertThat(o["reason"]!!.jsonPrimitive.content).isEqualTo("blocked")
+        assertThat(o["steps_done"]!!.jsonPrimitive.content).isEqualTo("2")
+    }
 }

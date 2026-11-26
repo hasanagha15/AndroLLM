@@ -241,7 +241,7 @@ Two more typed tasks let Claude on the Jarvis host list and run playbooks **with
 
 ```json
 {"id":"pl-1","type":"playbooks.list","body":{"package":"com.example.video"},"from":"jarvis","ts":…,"ttl_s":60}
-{"id":"pr-1","type":"playbook.run","body":{"id":"com.example.video/search","args":{"query":"cats"},"deadline_ms":…},"from":"jarvis","ts":…,"ttl_s":60}
+{"id":"pr-1","type":"playbook.run","body":{"id":"com.example.video/search","args":{"query":"cats"},"deadline_ms":…,"run_window_ms":300000},"from":"jarvis","ts":…,"ttl_s":60}
 ```
 
 - `playbooks.list` (`package` optional; needs "Accept playbooks from Jarvis") →
@@ -250,7 +250,8 @@ Two more typed tasks let Claude on the Jarvis host list and run playbooks **with
   (< 7500 chars). Protected and not-installed apps are never listed.
 - `playbook.run` needs its **own** setting "Jarvis may run verified playbooks" (`allowJarvisPlaybookRun`,
   **off by default**; the import flag never enables runs). `ttl_s` ≤ 300 for this type (protocol). `deadline_ms`
-  (epoch ms) is required; the phone caps it at now + 330 s, starts nothing after it and cancels the whole replay —
+  (epoch ms) is required; optional `run_window_ms` is counted from receipt (branch W2, clock-skew proof). The run ends at
+  min(`deadline_ms`, receipt + `run_window_ms`, receipt + 330 s); the phone caps it at now + 330 s, starts nothing after it and cancels the whole replay —
   every step and every card wait — at the deadline. Jarvis waits longer than the deadline, so it always gets the
   final answer.
 - Runs only a playbook **trusted on this device** with effective status **OK**, re-checked under the runner mutex.
@@ -266,8 +267,8 @@ Two more typed tasks let Claude on the Jarvis host list and run playbooks **with
 | `ok` | `ok` | + `verified`, `steps`, `elapsed_ms`, `mode` |
 | `denied` | `refused` | `disabled`, `playbook_not_found`, `protected`, `not_installed`, `not_trusted`, `status_stale`, `status_unverified` |
 | `denied` | `denied` / `timeout` | `declined` / `card_timeout`, `deadline` |
-| `busy` | `busy` | `owner_active` (UI events in the last 20 s), `screen_locked`, `screen_off` |
-| `error` | `failed` | the replay failure kind (`target_not_found`, `screen_changed`, `expect_timeout`, `blocked`, …) + `failed_step`, `steps_done`, `steps_total` |
+| `busy` | `busy` | `owner_active` (UI events in the last 20 s that were not caused by our own run or its 20 s tail), `screen_locked`, `screen_off` |
+| `error` | `failed` | `blocked` (a protected app appeared mid-run; `steps_done` tells how far it got), or the replay failure kind (`target_not_found`, `screen_changed`, `expect_timeout`, `blocked`, …) + `failed_step`, `steps_done`, `steps_total` |
 | `invalid` | `invalid` | `missing id`, `missing deadline_ms`, `bad_args` … |
 
 - `RemoteDataResult.status` (core:tools) lets a typed handler name the final status (`denied` / `error` / `invalid` / `busy`);

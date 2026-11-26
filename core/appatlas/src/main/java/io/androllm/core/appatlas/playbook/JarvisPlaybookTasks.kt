@@ -35,6 +35,35 @@ fun interface OwnerActivity {
 }
 
 /**
+ * Branch W2 (gate R3): when our own Jarvis playbook runs, in elapsedRealtime. Accessibility events from
+ * [startedAt] until [OWN_EVENT_TAIL_MS] after the run ended are ours (taps, window changes we caused,
+ * the app settling) and never count as "the owner is using the phone".
+ */
+@Singleton
+class OwnRunTracker @Inject constructor() {
+    @Volatile var startedAt: Long = -1L
+        private set
+    @Volatile var endedAt: Long = -1L
+        private set
+    @Volatile var running: Boolean = false
+        private set
+
+    fun begin(now: Long) { startedAt = now; running = true }
+    fun end(now: Long) { endedAt = now; running = false }
+
+    /** Was an event at [eventAt] (elapsedRealtime) caused by / right after our own run? */
+    fun isOwn(eventAt: Long): Boolean {
+        if (startedAt < 0 || eventAt < startedAt) return false
+        if (running) return true
+        return eventAt <= endedAt + OWN_EVENT_TAIL_MS
+    }
+
+    companion object {
+        const val OWN_EVENT_TAIL_MS = 20_000L
+    }
+}
+
+/**
  * Branch W (Jarvis planner): typed Jarvis-link tasks that let Claude on the
  * Jarvis host list and run the phone's playbooks WITHOUT an agent turn on the
  * phone (no local model in the loop, no slot values through a prompt).
@@ -73,6 +102,8 @@ class JarvisPlaybookTaskHandler(
     private val runEnabled: () -> Boolean,
     private val ownPackage: String,
     private val owner: OwnerActivity = OwnerActivity { null },
+    private val ownRun: OwnRunTracker = OwnRunTracker(),
+    private val elapsed: () -> Long = { SystemClock.elapsedRealtime() },
     private val clock: () -> Long = System::currentTimeMillis,
     private val confirmTimeoutMs: Long = ToolConfirmationManager.CONFIRMATION_TIMEOUT_MS
 ) : RemoteDataTaskHandler {
@@ -83,7 +114,8 @@ class JarvisPlaybookTaskHandler(
         runner: PlaybookRunner,
         atlas: AppAtlasRepository,
         settings: io.androllm.core.appatlas.settings.AppAtlasSettingsStore,
-        controller: AccessibilityController
+        controller: AccessibilityController,
+        ownRun: OwnRunTracker
     ) : this(
         repository = repository,
         runPlaybook = { id, args -> runner.run(id, args, allowFallback = false, requireTrustedOk = true) },
@@ -93,7 +125,8 @@ class JarvisPlaybookTaskHandler(
         listEnabled = { atlas.isEnabled && settings.current().acceptRemotePlaybooks },
         runEnabled = { atlas.isEnabled && settings.current().allowJarvisPlaybookRun },
         ownPackage = context.packageName,
-        owner = deviceOwnerActivity(context) { controller.lastEventAtElapsedMs }
+        owner = deviceOwnerActivity(context, ownRun) { controller.lastEventAtElapsedMs },
+        ownRun = ownRun
     )
 
     override val types: Set<String> = setOf(TYPE_LIST, TYPE_RUN)
@@ -158,8 +191,14 @@ class JarvisPlaybookTaskHandler(
         val deadlineIn = (body["deadline_ms"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
             ?: return invalid("missing deadline_ms")
         val args = (argsEl as? JsonObject)?.mapValues { (_, v) -> (v as? JsonPrimitive)?.contentOrNull } ?: emptyMap()
+        // Gate R2: also a RELATIVE window from receipt, so a skewed phone clock cannot stretch the run.
+        val windowIn = (body["run_window_ms"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull
         val start = clock()
-        val deadline = minOf(deadlineIn, start + MAX_RUN_WINDOW_MS)
+        val deadline = minOf(
+            deadlineIn,
+            start + MAX_RUN_WINDOW_MS,
+            if (windowIn != null && windowIn > 0) start + windowIn else Long.MAX_VALUE
+        )
         if (deadline <= start) return finish(id, "timeout", "deadline", STATUS_DENIED)
 
         val sp = repository.get(id) ?: return refused("playbook_not_found", id)
@@ -173,10 +212,15 @@ class JarvisPlaybookTaskHandler(
         if (status != PlaybookStatus.OK) return refused("status_${status.name.lowercase()}", id)
         owner.busyReason()?.let { return finish(id, "busy", it, STATUS_BUSY) }
 
-        val r = withTimeoutOrNull(deadline - clock()) {
-            withContext(RemoteToolOrigin(label = REMOTE_LABEL, ownPackages = setOf(ownPackage))) {
-                runPlaybook(id, args)
+        ownRun.begin(elapsed())
+        val r = try {
+            withTimeoutOrNull(deadline - clock()) {
+                withContext(RemoteToolOrigin(label = REMOTE_LABEL, ownPackages = setOf(ownPackage))) {
+                    runPlaybook(id, args)
+                }
             }
+        } finally {
+            ownRun.end(elapsed())
         } ?: return finish(id, "timeout", "deadline", STATUS_DENIED)
         val elapsed = clock() - start
         return when (r) {
@@ -199,6 +243,11 @@ class JarvisPlaybookTaskHandler(
                 // The manager denies on timeout; a decline this close to the card timeout is reported as such.
                 if (elapsed >= confirmTimeoutMs - TIMEOUT_SLACK_MS) finish(id, "timeout", "card_timeout", STATUS_DENIED)
                 else finish(id, "denied", "declined", STATUS_DENIED)
+            // Gate R4: a protected app appeared mid-run -> report the partial run (steps_done), before the text heuristics.
+            dataReason == "blocked" -> RemoteDataResult(false, buildJsonObject {
+                put("outcome", "failed"); put("playbook", id)
+                r.data.forEach { (k, v) -> if (k in FAIL_KEYS) put(k, v) }
+            }.toString(), status = STATUS_ERROR)
             refusedByRunner && dataReason != null -> refused(dataReason, id)
             r.summary.contains("protected app") -> refused("protected", id)
             r.summary.contains("not installed") -> refused("not_installed", id)
@@ -247,16 +296,25 @@ class JarvisPlaybookTaskHandler(
         private val OK_KEYS = setOf("verified", "steps", "elapsed_ms", "mode")
         private val FAIL_KEYS = setOf("failed_step", "failed_op", "reason", "steps_done", "steps_total")
 
-        /** Production [OwnerActivity]: screen off / locked / recent UI events → busy. */
-        fun deviceOwnerActivity(context: Context, lastEventAt: () -> Long): OwnerActivity = OwnerActivity {
+        /** Production [OwnerActivity]: screen off / locked / recent UI events that were not ours → busy. */
+        fun deviceOwnerActivity(context: Context, ownRun: OwnRunTracker, lastEventAt: () -> Long): OwnerActivity = OwnerActivity {
             val pm = context.getSystemService(PowerManager::class.java)
             val km = context.getSystemService(KeyguardManager::class.java)
-            when {
-                pm == null || !pm.isInteractive -> "screen_off"
-                km == null || km.isKeyguardLocked -> "screen_locked"
-                SystemClock.elapsedRealtime() - lastEventAt() < OWNER_IDLE_MS -> "owner_active"
-                else -> null
-            }
+            busyReason(
+                interactive = pm?.isInteractive == true,
+                locked = km == null || km.isKeyguardLocked,
+                nowElapsed = SystemClock.elapsedRealtime(),
+                lastEventAt = lastEventAt(),
+                ownRun = ownRun
+            )
+        }
+
+        /** Pure decision (unit-tested): events caused by our own run (and its 20 s tail) are ignored (gate R3). */
+        fun busyReason(interactive: Boolean, locked: Boolean, nowElapsed: Long, lastEventAt: Long, ownRun: OwnRunTracker): String? = when {
+            !interactive -> "screen_off"
+            locked -> "screen_locked"
+            lastEventAt > 0 && nowElapsed - lastEventAt < OWNER_IDLE_MS && !ownRun.isOwn(lastEventAt) -> "owner_active"
+            else -> null
         }
     }
 }
