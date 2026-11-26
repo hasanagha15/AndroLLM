@@ -50,18 +50,21 @@ object LoadFactor {
     const val K_MIN = 1.0
     const val K_MAX = 3.0
 
-    // Coefficients (branch T calibration). Each term is the measured p95 slow-down share.
-    const val THERMAL_LIGHT = 0.05    // status 1
-    const val THERMAL_MODERATE = 0.20 // status 2
-    const val THERMAL_SEVERE = 0.50   // status 3
-    const val THERMAL_CRITICAL = 1.00 // status ≥ 4
-    const val MEM_LOW = 0.40          // lowMemory or < 10 % free
+    // Coefficients — branch T calibration on the owner's S24 Ultra (26.11, see T-result.md).
+    // Measured on app launches (am start -W, p50/p95 ratios vs. idle without a model):
+    //   model resident on GPU ×1.16–1.38, generating ×2.1 (cold) … ×3.0 (warm),
+    //   battery saver +3–7 %. In-app transitions move far less (see AdaptiveStepTiming.sensitivity).
+    const val THERMAL_LIGHT = 0.0     // status 1: no measurable effect
+    const val THERMAL_MODERATE = 0.10 // status 2 (the phone's usual state while charging)
+    const val THERMAL_SEVERE = 0.30   // status 3 (reached during sustained generation)
+    const val THERMAL_CRITICAL = 0.80 // status ≥ 4 (not reached; extrapolated)
+    const val MEM_LOW = 0.40          // lowMemory or < 10 % free (LMK kills → cold starts)
     const val MEM_TIGHT = 0.15        // < 20 % free
-    const val SAVER = 0.25
+    const val SAVER = 0.10
     const val CPU_MAX = 0.40          // linear from CPU_KNEE to 100 % busy
     const val CPU_KNEE = 0.50
-    const val MODEL_LOADED = 0.05
-    const val MODEL_GENERATING = 0.35
+    const val MODEL_LOADED = 0.25
+    const val MODEL_GENERATING = 1.00
 
     fun compute(s: LoadSample): Double {
         var k = 1.0
@@ -89,14 +92,15 @@ object LoadFactor {
     }
 
     /**
-     * Transition time ≈ fixed work + animation. Scale 0.5 saves part of the
-     * animation share, scale 0 most of it; never below 0.7 (layout / data still take time).
-     * Larger scales only lengthen it (and k is clamped anyway).
+     * Transition time ≈ fixed work + animation. Measured (branch T): all three
+     * scales at 0.5 → in-app transitions ×0.58 (p50) / ×0.69 (p95); launch
+     * TotalTime (first frame) barely moves. Linear fit through (1, 1) and
+     * (0.5, 0.7): 0.4 + 0.6 × scale; larger scales lengthen it (k is clamped anyway).
      */
     fun animFactor(scale: Float): Double = when {
         scale.isNaN() || scale < 0f -> 1.0
         scale >= 1f -> 1.0 + 0.5 * (scale - 1f).toDouble()
-        else -> (0.7 + 0.3 * scale.toDouble())
+        else -> 0.4 + 0.6 * scale.toDouble()
     }
 }
 

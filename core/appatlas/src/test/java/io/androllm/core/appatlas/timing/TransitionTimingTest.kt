@@ -173,9 +173,20 @@ class TransitionTimingTest {
         assertThat(plan.retryTimeoutMs).isEqualTo(plan.timeoutMs * 2)
         policy.observe(t, 1_600, ok = true, retried = false, snapshot = null)
         policy.end()
-        val k = 1.0 + 0.25 + 0.35
+        // Raw k = 1 + saver + generating; an in-app transition feels 20 % of it.
+        val raw = 1.0 + io.androllm.core.accessibility.timing.LoadFactor.SAVER + io.androllm.core.accessibility.timing.LoadFactor.MODEL_GENERATING
+        val k = AdaptiveStepTiming.effectiveK(TransitionKind.IN_APP, raw)
+        assertThat(k).isWithin(1e-9).of(1.0 + (raw - 1.0) * 0.2)
         assertThat(store.rows.values.single().stats.p50Ms).isWithin(1.0).of(1_600 / k)
         assertThat(store.rows.values.single().uiType).isEqualTo(AppUiType.VIEWS)
+    }
+
+    @Test
+    fun `launches follow the load fully, in-app transitions only partly`() {
+        assertThat(AdaptiveStepTiming.effectiveK(TransitionKind.LAUNCH, 2.0)).isEqualTo(2.0)
+        assertThat(AdaptiveStepTiming.effectiveK(TransitionKind.DEEPLINK, 2.0)).isEqualTo(2.0)
+        assertThat(AdaptiveStepTiming.effectiveK(TransitionKind.IN_APP, 2.0)).isWithin(1e-9).of(1.2)
+        assertThat(AdaptiveStepTiming.effectiveK(TransitionKind.DIALOG, 1.0)).isEqualTo(1.0)
     }
 
     @Test

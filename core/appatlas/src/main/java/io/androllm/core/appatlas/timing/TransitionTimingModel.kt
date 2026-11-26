@@ -90,10 +90,13 @@ object TimingDefaults {
     /** Calibrated on the owner's phone — see T-result.md (k = 1 values). */
     fun of(kind: TransitionKind, type: AppUiType): Default {
         val base = when (kind) {
-            TransitionKind.LAUNCH -> Default(700.0, 1_800.0)
+            // launcher intent: hot ≈ 50–100 ms, warm stable ≈ 600 ms, cold stable 0.4–2.4 s
+            TransitionKind.LAUNCH -> Default(600.0, 2_000.0)
             TransitionKind.DEEPLINK -> Default(600.0, 1_500.0)
-            TransitionKind.IN_APP -> Default(300.0, 800.0)
-            TransitionKind.DIALOG -> Default(200.0, 500.0)
+            // tabs / list → detail, input → last frame of the burst: p50 426, p95 1 101 (n = 38)
+            TransitionKind.IN_APP -> Default(400.0, 1_100.0)
+            // popup menu: 330–390 ms
+            TransitionKind.DIALOG -> Default(300.0, 600.0)
         }
         return Default(base.p50Ms * type.defaultScale, base.p95Ms * type.defaultScale)
     }

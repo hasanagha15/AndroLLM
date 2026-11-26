@@ -18,7 +18,8 @@ import timber.log.Timber
 /**
  * Branch T: playbook waits calibrated to the phone's current load.
  *
- *   timeout = clamp(p95 × k × MARGIN, min(kind), max(kind))   (+ one retry with 2 × timeout)
+ *   k'      = 1 + (k − 1) × sensitivity(kind)      (launches feel the load fully, in-app ≈ 20 %)
+ *   timeout = clamp(p95 × k' × MARGIN, min(kind), max(kind))   (+ one retry with 2 × timeout)
  *   debounce = clamp(debounce(uiType) × k, 60, 300)
  *   stable   = clamp(stable(uiType) × k, 0, 600), at most 4 × stable of waiting for quiet
  *   settle   = clamp(250 × k, 250, 800)
@@ -47,7 +48,7 @@ class AdaptiveStepTiming @Inject constructor(
     }
 
     override suspend fun plan(t: Transition, step: PlaybookStep): WaitPlan {
-        val k = load.loadFactor()
+        val k = effectiveK(t.kind, load.loadFactor())
         plannedK[t.key] = k
         val est = model.estimate(t, uiType)
         return planFor(t.kind, uiType, est, k, step.timeoutMs)
@@ -65,7 +66,7 @@ class AdaptiveStepTiming @Inject constructor(
         if (ok && snapshot?.packageName == t.packageName) {
             AppUiType.detect(snapshot).takeIf { it != AppUiType.UNKNOWN }?.let { uiType = it }
         }
-        val k = plannedK[t.key] ?: load.loadFactor()
+        val k = plannedK[t.key] ?: effectiveK(t.kind, load.loadFactor())
         model.record(t, uiType, elapsedMs / k, ok)
         if (retried) Timber.i("Timing: %s needed the retry (ok=%s, k=%.2f)", t.key, ok, k)
     }
@@ -83,6 +84,18 @@ class AdaptiveStepTiming @Inject constructor(
         const val STABLE_MAX_MS = 600L
         const val STABLE_WAIT_FACTOR = 4
         const val RETRY_MAX_MS = 30_000L
+
+        /**
+         * How strongly a kind of transition follows the load factor (branch T
+         * measurements: generation slowed launches ×2–3 but in-app tab /
+         * screen changes only ×1.0–1.15).
+         */
+        fun sensitivity(kind: TransitionKind): Double = when (kind) {
+            TransitionKind.LAUNCH, TransitionKind.DEEPLINK -> 1.0
+            TransitionKind.IN_APP, TransitionKind.DIALOG -> 0.2
+        }
+
+        fun effectiveK(kind: TransitionKind, k: Double): Double = 1.0 + (k - 1.0) * sensitivity(kind)
 
         fun minTimeout(kind: TransitionKind): Long = when (kind) {
             TransitionKind.LAUNCH -> 3_000L

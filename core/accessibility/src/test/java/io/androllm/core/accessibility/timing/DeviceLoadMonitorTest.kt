@@ -36,11 +36,11 @@ class DeviceLoadMonitorTest {
     @Test
     fun `lower animation scale shortens, but never below the floor`() {
         assertThat(LoadFactor.animFactor(1f)).isEqualTo(1.0)
-        assertThat(LoadFactor.animFactor(0.5f)).isWithin(1e-9).of(0.85)
-        assertThat(LoadFactor.animFactor(0f)).isWithin(1e-9).of(0.7)
+        assertThat(LoadFactor.animFactor(0.5f)).isWithin(1e-9).of(0.7)
+        assertThat(LoadFactor.animFactor(0f)).isWithin(1e-9).of(0.4)
         // k never goes below 1 even with animations off (the floor of the clamp).
         assertThat(LoadFactor.compute(LoadSample(animatorScale = 0f))).isEqualTo(1.0)
-        assertThat(LoadFactor.compute(LoadSample(powerSave = true, animatorScale = 0.5f))).isWithin(1e-9).of((1.0 + LoadFactor.SAVER) * 0.85)
+        assertThat(LoadFactor.compute(LoadSample(modelGenerating = true, animatorScale = 0.5f))).isWithin(1e-9).of((1.0 + LoadFactor.MODEL_GENERATING) * 0.7)
     }
 
     @Test
