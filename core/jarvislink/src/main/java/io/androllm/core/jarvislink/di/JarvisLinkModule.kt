@@ -33,4 +33,11 @@ abstract class JarvisLinkModule {
     abstract fun bindAppFunctionConfirm(
         impl: io.androllm.core.jarvislink.confirm.AppFunctionConfirmHandler
     ): io.androllm.core.tools.remote.RemoteDataTaskHandler
+
+    /** Branch V (gate B1): approvals are signed by a non-exportable Android Keystore key. */
+    @Binds
+    @Singleton
+    abstract fun bindConfirmSigner(
+        impl: io.androllm.core.jarvislink.confirm.KeystoreConfirmSigner
+    ): io.androllm.core.jarvislink.confirm.ConfirmSigner
 }

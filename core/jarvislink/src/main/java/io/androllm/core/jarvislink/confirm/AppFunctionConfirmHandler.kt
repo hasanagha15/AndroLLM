@@ -1,17 +1,17 @@
 package io.androllm.core.jarvislink.confirm
 
-import io.androllm.core.jarvislink.protocol.JarvisCrypto
-import io.androllm.core.jarvislink.settings.JarvisLinkSettingsStore
 import io.androllm.core.tools.confirmation.PendingToolConfirmation
 import io.androllm.core.tools.confirmation.ToolConfirmationManager
 import io.androllm.core.tools.remote.RemoteDataResult
 import io.androllm.core.tools.remote.RemoteDataTaskHandler
 import java.security.MessageDigest
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
+import java.util.Base64
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -27,56 +27,57 @@ import kotlinx.serialization.json.longOrNull
  * {"canon": "{\"fn\":…,\"params\":{…},\"pkg\":…}",   // the EXACT canonical JSON the bridge recomputes
  *  "nonce": "16..64 [A-Za-z0-9_-]", "exp": epoch-ms (<= 10 min ahead)}
  * ```
- * The card shows package, function and the parameters parsed from `canon` itself — what the owner sees is what
- * is hashed. It is ALWAYS tap-only (remote origin; a spoken "yes" never approves) and times out to deny.
+ * Gate V B3: the card shows EVERY parameter field, nested fields flattened one per line, recipients / targets
+ * first, control and bidi characters escaped. If the full text does not fit, the request is REFUSED ("too long
+ * to show") — never truncated. The card is remote-origin and tap-only (a spoken "yes" never approves); no answer
+ * within the manager timeout = deny.
  *
- * Result text: `{"approved":bool,"digest":sha256(canon),"nonce","exp","sig"}`, sig = HMAC-SHA256(confirmKey,
- * "afc1|digest|nonce|exp|1") only when approved; confirmKey = HKDF(task.key, "androllm-jarvislink",
- * "appfunction-confirm-v1"). The bridge holds only that derived key, checks digest == its own canonical JSON of
- * the request, the expiry and single use of the nonce.
+ * Gate V B1: result text `{"approved","digest":sha256(canon),"nonce","exp","sig"}`; sig = base64 DER
+ * ECDSA-P256/SHA-256 over `afc2|digest|nonce|exp|1`, made by a non-exportable Android Keystore key
+ * ([KeystoreConfirmSigner]) only after the tap. The bridge verifies it with the public key it pulled over adb.
  */
 @Singleton
 class AppFunctionConfirmHandler @Inject constructor(
     private val confirmations: ToolConfirmationManager,
-    private val settings: JarvisLinkSettingsStore
+    private val signer: ConfirmSigner
 ) : RemoteDataTaskHandler {
 
     override val types: Set<String> = setOf(TYPE)
 
     override suspend fun handle(type: String, body: JsonObject?): RemoteDataResult {
-        val master = settings.signingKey() ?: return RemoteDataResult(false, "no link key")
         val req = parse(body, System.currentTimeMillis()) ?: return RemoteDataResult(false, "invalid appfunction.confirm body")
+        val summary = cardText(req) ?: return RemoteDataResult(false, "too long to show")
         val card = PendingToolConfirmation(
             id = "afc_" + req.nonce,
             toolName = "appfunction_" + req.fn.substringAfterLast('#').substringAfterLast('_'),
-            toolDisplayName = "AppFunction · " + req.pkg.substringAfterLast('.'),
-            actionSummary = req.summary(),
+            toolDisplayName = "AppFunction · " + escape(req.pkg.substringAfterLast('.')),
+            actionSummary = summary,
             speakableQuestion = "",
             remoteOrigin = "Jarvis",
             tapOnly = true
         )
         val approved = confirmations.awaitDecision(card)
-        return RemoteDataResult(true, resultJson(confirmKey(master), req, approved))
+        return RemoteDataResult(true, resultJson(signer, req, approved))
     }
 
     data class Request(val canon: String, val pkg: String, val fn: String, val params: JsonObject,
-                       val nonce: String, val exp: Long) {
-        fun summary(): String = buildString {
-            append(pkg).append('\n').append(fn.substringAfterLast('#')).append('\n')
-            params.forEach { (k, v) -> append(k).append(" = ").append(v.toString().take(MAX_VALUE_CHARS)).append('\n') }
-        }.take(MAX_SUMMARY_CHARS)
-    }
+                       val nonce: String, val exp: Long)
 
     companion object {
         const val TYPE = "appfunction.confirm"
         const val MAX_AGE_MS = 10 * 60 * 1000L
         private const val MAX_CANON = 16 * 1024
-        private const val MAX_VALUE_CHARS = 300
-        private const val MAX_SUMMARY_CHARS = 1500
+        const val MAX_LINES = 60
+        const val MAX_VALUE_CHARS = 600
+        const val MAX_CARD_CHARS = 3000
         private val NONCE = Regex("^[A-Za-z0-9_-]{16,64}$")
         private val json = Json { ignoreUnknownKeys = false }
 
-        fun confirmKey(master: ByteArray): ByteArray = JarvisCrypto.hkdf(master, "appfunction-confirm-v1")
+        /** Fields naming who / where the action goes to — shown first. */
+        private val TARGET = Regex(
+            "(recipient|attendee|participant|invitee|target|destination|phone|number|email|address|person|contact|" +
+                "device|url|uri|link|payee)", RegexOption.IGNORE_CASE
+        )
 
         /** Strict parse; null on anything unexpected (expired, oversized, malformed, extra keys in canon). */
         fun parse(body: JsonObject?, nowMs: Long): Request? {
@@ -95,14 +96,61 @@ class AppFunctionConfirmHandler @Inject constructor(
             return Request(canon, pkg, fn, params, nonce, exp)
         }
 
+        /** Escapes C0/C1 controls, line/paragraph separators, bidi overrides/isolates and zero-width marks. */
+        fun escape(s: String): String = buildString {
+            for (c in s) {
+                val code = c.code
+                val bad = code < 0x20 || code in 0x7F..0x9F || code in 0x200B..0x200F || code in 0x2028..0x202E ||
+                    code in 0x2066..0x2069 || code == 0x061C || code == 0xFEFF
+                if (bad) append("\\u%04x".format(code)) else append(c)
+            }
+        }
+
+        private fun flatten(prefix: String, e: JsonElement, out: MutableList<Pair<String, String>>) {
+            when (e) {
+                is JsonObject -> if (e.isEmpty()) {
+                    out += prefix to "{}"
+                } else {
+                    e.forEach { (k, v) -> flatten(if (prefix.isEmpty()) k else "$prefix.$k", v, out) }
+                }
+                is JsonArray -> if (e.isEmpty()) {
+                    out += prefix to "[]"
+                } else {
+                    e.forEachIndexed { i, v -> flatten("$prefix[$i]", v, out) }
+                }
+                is JsonNull -> out += prefix to "null"
+                is JsonPrimitive -> out += prefix to e.toString() // strings keep their quotes
+            }
+        }
+
+        /** Full card text, or null when it cannot be shown completely (then the request is refused). */
+        fun cardText(req: Request): String? {
+            val fields = mutableListOf<Pair<String, String>>()
+            flatten("", req.params, fields)
+            val (targets, rest) = fields.partition { TARGET.containsMatchIn(it.first) }
+            val ordered = targets + rest
+            if (ordered.size > MAX_LINES) return null
+            val sb = StringBuilder()
+            sb.append(escape(req.pkg)).append('\n')
+            sb.append(escape(req.fn.substringAfterLast('#'))).append('\n')
+            for ((k, v) in ordered) {
+                val ev = escape(v)
+                if (ev.length > MAX_VALUE_CHARS) return null
+                sb.append(escape(k)).append(" = ").append(ev).append('\n')
+            }
+            return if (sb.length > MAX_CARD_CHARS) null else sb.toString()
+        }
+
         fun digest(canon: String): String =
             MessageDigest.getInstance("SHA-256").digest(canon.toByteArray(Charsets.UTF_8)).toHex()
 
-        fun resultJson(key: ByteArray, req: Request, approved: Boolean): String {
+        fun confirmMessage(digest: String, nonce: String, exp: Long): ByteArray =
+            "afc2|$digest|$nonce|$exp|1".toByteArray(Charsets.UTF_8)
+
+        fun resultJson(signer: ConfirmSigner, req: Request, approved: Boolean): String {
             val d = digest(req.canon)
             val sig = if (approved) {
-                val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(key, "HmacSHA256")) }
-                mac.doFinal("afc1|$d|${req.nonce}|${req.exp}|1".toByteArray(Charsets.UTF_8)).toHex()
+                Base64.getEncoder().encodeToString(signer.sign(confirmMessage(d, req.nonce, req.exp)))
             } else {
                 ""
             }
