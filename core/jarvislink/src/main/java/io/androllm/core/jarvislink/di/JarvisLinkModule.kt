@@ -26,4 +26,18 @@ abstract class JarvisLinkModule {
     /** Branch N: typed data task handlers (may be empty). */
     @dagger.multibindings.Multibinds
     abstract fun dataTaskHandlers(): Set<io.androllm.core.tools.remote.RemoteDataTaskHandler>
+
+    /** Branch V: `appfunction.confirm` - tap-only owner approval for an outward AppFunction run by the Acer bridge. */
+    @Binds
+    @dagger.multibindings.IntoSet
+    abstract fun bindAppFunctionConfirm(
+        impl: io.androllm.core.jarvislink.confirm.AppFunctionConfirmHandler
+    ): io.androllm.core.tools.remote.RemoteDataTaskHandler
+
+    /** Branch V (gate B1): approvals are signed by a non-exportable Android Keystore key. */
+    @Binds
+    @Singleton
+    abstract fun bindConfirmSigner(
+        impl: io.androllm.core.jarvislink.confirm.KeystoreConfirmSigner
+    ): io.androllm.core.jarvislink.confirm.ConfirmSigner
 }

@@ -30,6 +30,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- Branch V (gate B1): PUBLIC half of the AppFunction confirmation key, readable only by the adb shell
+             (DUMP is signature|privileged|development). The Acer pulls it over adb; nothing else can. -->
+        <provider
+            android:name=".confirm.AppFunctionKeyProvider"
+            android:authorities="${applicationId}.afckey"
+            android:exported="true"
+            android:readPermission="android.permission.DUMP"
+            android:writePermission="android.permission.DUMP" />
+
         <!-- Re-attach the link on app start when it is enabled (androidx.startup). -->
         <provider
             android:name="androidx.startup.InitializationProvider"
