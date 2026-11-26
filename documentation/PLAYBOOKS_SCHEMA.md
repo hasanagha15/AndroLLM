@@ -234,6 +234,31 @@ The inner (encrypted) task JSON carries a `type` instead of `text`:
   (`failedStep` = -1 for `version_update` and `app_updated`), always < 8000 chars; only the records
   that fit are marked delivered — pull again while `more` is true.
 
+### Jarvis planner tasks (branch W)
+
+Two more typed tasks let Claude on the Jarvis host list and run playbooks **without an agent turn**
+(no local model in the loop, slot values never pass through a prompt). Both answer `denied`
+`{"outcome":"refused","reason":"disabled"}` while "Accept playbooks from Jarvis" or the App Atlas is off.
+
+```json
+{"id":"pl-1","type":"playbooks.list","body":{"package":"com.example.video"},"from":"jarvis","ts":…,"ttl_s":120}
+{"id":"pr-1","type":"playbook.run","body":{"id":"com.example.video/search","args":{"query":"cats"}},"from":"jarvis","ts":…,"ttl_s":600}
+```
+
+- `playbooks.list` (`package` optional) → `{"playbooks":[{"id","package","name","description","params":[{"name","type","required","values"?}],
+  "status":"ok|unverified|stale","risky","verified","trusted","source","installedVc","versionMin","versionMax"}…],"more":bool}`
+  (< 7500 chars). Protected and not-installed apps are never listed.
+- `playbook.run` runs only a playbook that is **trusted on this device** (`source` = file, or verified by an owner run) and has
+  effective status **OK** (never stale / app-updated / outside the learned range); otherwise `denied` with
+  `{"outcome":"refused","reason":…}`. The replay happens inside `RemoteToolOrigin`: no ui_run fallback, every risky step raises the
+  remote-labelled **tap-only** card (heads-up notification); nothing is auto-approved. Result text (ids, counts, machine reasons only):
+  `{"outcome":"ok","playbook","verified","steps","elapsed_ms","mode"}` (status `ok`);
+  `{"outcome":"denied"|"timeout",…}` (status `denied`; `timeout` = the card was not answered within 5 min);
+  `{"outcome":"failed","failed_step","failed_op","reason","steps_done","steps_total"}` (status `error`); `invalid` for bad args.
+  A remote run never makes a playbook trusted.
+- `RemoteDataResult.status` (core:tools) lets a typed handler name the final status (`denied` / `error` / `invalid` / `busy`);
+  `ok` / `accepted` are never taken from it for a failure.
+
 ## App updates (branch R1)
 
 The phone notices an app install / update / removal itself (`AppUpdateWatcher`,

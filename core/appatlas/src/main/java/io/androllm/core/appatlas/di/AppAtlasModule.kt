@@ -42,6 +42,8 @@ abstract class AppAtlasModule {
     @Binds @IntoSet abstract fun bindPlaybookList(tool: PlaybookListTool): Tool
     @Binds @IntoSet abstract fun bindPlaybookRun(tool: PlaybookRunTool): Tool
     @Binds @IntoSet abstract fun bindPlaybookSync(handler: PlaybookSyncHandler): RemoteDataTaskHandler
+    // Branch W: Jarvis planner — playbooks.list / playbook.run without an agent turn.
+    @Binds @IntoSet abstract fun bindJarvisPlaybookTasks(handler: io.androllm.core.appatlas.playbook.JarvisPlaybookTaskHandler): RemoteDataTaskHandler
 
     @Binds abstract fun bindPackageSource(source: AndroidPackageSource): PackageSource
 
