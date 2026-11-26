@@ -245,37 +245,22 @@ class JarvisPlaybookTaskHandlerTest {
     }
 
     @Test
-    fun `gate R3 - events of our own run and its tail do not count as the owner`() {
+    fun `gate rev3 R3 - only events right after our own actions are masked, not card waits`() {
         val t = OwnRunTracker()
-        fun busy(now: Long, last: Long) = JarvisPlaybookTaskHandler.busyReason(true, false, now, last, t)
-        assertThat(busy(100_000L, 95_000L)).isEqualTo("owner_active")      // no own run yet
-        t.begin(200_000L)
-        assertThat(busy(205_000L, 204_000L)).isNull()                      // during our run
-        t.end(210_000L)
-        assertThat(busy(225_000L, 229_000L - 5_000L)).isNull()             // within the 20 s tail
-        assertThat(busy(240_000L, 235_000L)).isEqualTo("owner_active")     // after the tail: a human
-        assertThat(busy(300_000L, 235_000L)).isNull()                      // idle long enough
-        assertThat(JarvisPlaybookTaskHandler.busyReason(false, false, 0L, 0L, t)).isEqualTo("screen_off")
-        assertThat(JarvisPlaybookTaskHandler.busyReason(true, true, 0L, 0L, t)).isEqualTo("screen_locked")
-    }
-
-    @Test
-    fun `gate R3 - the handler marks its own run in the tracker`() = runTest {
-        put(PlaybookFixtures.searchPlaybook())
-        val tracker = OwnRunTracker()
-        var el = 1_000L
-        val h = JarvisPlaybookTaskHandler(
-            repository = PlaybookRepository(store) { emptySet() },
-            runPlaybook = { _, _ -> assertThat(tracker.running).isTrue(); el += 3_000L; result },
-            installedVersion = { installed[it] }, appLabel = { "Example Video" }, atlasSensitive = { false },
-            listEnabled = { true }, runEnabled = { true }, ownPackage = "io.androllm.app",
-            ownRun = tracker, elapsed = { el }, clock = { now }
-        )
-        assertThat(h.handle(JarvisPlaybookTaskHandler.TYPE_RUN, runBody("$PKG/search")).ok).isTrue()
-        assertThat(tracker.running).isFalse()
-        assertThat(tracker.startedAt).isEqualTo(1_000L)
-        assertThat(tracker.endedAt).isEqualTo(4_000L)
-        assertThat(tracker.isOwn(4_000L + 19_000L)).isTrue()
+        fun busy(now: Long, input: Long, any: Long = input) = JarvisPlaybookTaskHandler.busyReason(true, false, now, input, any, t)
+        assertThat(busy(100_000L, 95_000L)).isEqualTo("owner_active")          // no own action yet
+        t.actionStart(200_000L); t.actionEnd(200_300L)                         // our tap
+        assertThat(busy(202_000L, 201_500L)).isNull()                          // window change 1.2 s after our tap
+        assertThat(busy(210_000L, 205_000L)).isEqualTo("owner_active")         // 4.7 s after: not ours (e.g. card tap)
+        // passive content change after our action: the app settling, not the owner
+        assertThat(busy(210_000L, 0L, any = 209_000L)).isNull()
+        // passive change long after our last action (video): the owner
+        assertThat(busy(260_000L, 0L, any = 255_000L)).isEqualTo("owner_active")
+        t.actionStart(300_000L)                                                 // an action in progress
+        assertThat(busy(300_500L, 300_400L)).isNull()
+        assertThat(JarvisPlaybookTaskHandler.busyReason(false, false, 0L, 0L, 0L, t)).isEqualTo("screen_off")
+        assertThat(JarvisPlaybookTaskHandler.busyReason(true, true, 0L, 0L, 0L, t)).isEqualTo("screen_locked")
+        assertThat(busy(400_000L, 300_000L)).isNull()                          // idle long enough
     }
 
     @Test

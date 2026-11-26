@@ -267,7 +267,7 @@ Two more typed tasks let Claude on the Jarvis host list and run playbooks **with
 | `ok` | `ok` | + `verified`, `steps`, `elapsed_ms`, `mode` |
 | `denied` | `refused` | `disabled`, `playbook_not_found`, `protected`, `not_installed`, `not_trusted`, `status_stale`, `status_unverified` |
 | `denied` | `denied` / `timeout` | `declined` / `card_timeout`, `deadline` |
-| `busy` | `busy` | `owner_active` (UI events in the last 20 s that were not caused by our own run or its 20 s tail), `screen_locked`, `screen_off` |
+| `busy` | `busy` | `owner_active` (in the last 20 s: an input-like event — window change, scroll, focus — not within 3 s of one of our own Jarvis-run actions; or a passive content change when our last own action is ≥ 20 s ago; card waits are never masked — branch W3), `screen_locked`, `screen_off` |
 | `error` | `failed` | `blocked` (a protected app appeared mid-run; `steps_done` tells how far it got), or the replay failure kind (`target_not_found`, `screen_changed`, `expect_timeout`, `blocked`, …) + `failed_step`, `steps_done`, `steps_total` |
 | `invalid` | `invalid` | `missing id`, `missing deadline_ms`, `bad_args` … |
 

@@ -35,31 +35,38 @@ fun interface OwnerActivity {
 }
 
 /**
- * Branch W2 (gate R3): when our own Jarvis playbook runs, in elapsedRealtime. Accessibility events from
- * [startedAt] until [OWN_EVENT_TAIL_MS] after the run ended are ours (taps, window changes we caused,
- * the app settling) and never count as "the owner is using the phone".
+ * Branch W3 (gate rev 3, R3 narrowed): marks each of OUR OWN UI actions (tap / type / scroll / back /
+ * launch / deeplink) done for a Jarvis (remote-origin) playbook run, in elapsedRealtime. Only accessibility
+ * events from the start of such an action until [OWN_ACTION_MASK_MS] after it ended are ours. Waiting on a
+ * confirmation card is NOT masked (the owner's taps on the card count), and the owner's own fast-path runs
+ * are never marked (they are the owner using the phone).
  */
 @Singleton
 class OwnRunTracker @Inject constructor() {
-    @Volatile var startedAt: Long = -1L
+    @Volatile var actionStartedAt: Long = -1L
         private set
-    @Volatile var endedAt: Long = -1L
+    @Volatile var actionEndedAt: Long = -1L
         private set
-    @Volatile var running: Boolean = false
+    @Volatile var inAction: Boolean = false
         private set
 
-    fun begin(now: Long) { startedAt = now; running = true }
-    fun end(now: Long) { endedAt = now; running = false }
+    fun actionStart(now: Long) { actionStartedAt = now; inAction = true }
+    fun actionEnd(now: Long) { actionEndedAt = now; inAction = false }
 
-    /** Was an event at [eventAt] (elapsedRealtime) caused by / right after our own run? */
+    /** Was an event at [eventAt] (elapsedRealtime) caused by one of our own actions? */
     fun isOwn(eventAt: Long): Boolean {
-        if (startedAt < 0 || eventAt < startedAt) return false
-        if (running) return true
-        return eventAt <= endedAt + OWN_EVENT_TAIL_MS
+        if (actionStartedAt < 0 || eventAt < actionStartedAt) return false
+        if (inAction) return true
+        return eventAt <= actionEndedAt + OWN_ACTION_MASK_MS
     }
 
+    /** ms since our last own action ended (Long.MAX_VALUE = none yet). */
+    fun sinceLastAction(now: Long): Long = if (actionEndedAt < 0) Long.MAX_VALUE else now - actionEndedAt
+
     companion object {
-        const val OWN_EVENT_TAIL_MS = 20_000L
+        const val OWN_ACTION_MASK_MS = 3_000L
+        /** Passive content changes this soon after our last action are the app settling, not the owner. */
+        const val SETTLE_MS = 20_000L
     }
 }
 
@@ -102,8 +109,6 @@ class JarvisPlaybookTaskHandler(
     private val runEnabled: () -> Boolean,
     private val ownPackage: String,
     private val owner: OwnerActivity = OwnerActivity { null },
-    private val ownRun: OwnRunTracker = OwnRunTracker(),
-    private val elapsed: () -> Long = { SystemClock.elapsedRealtime() },
     private val clock: () -> Long = System::currentTimeMillis,
     private val confirmTimeoutMs: Long = ToolConfirmationManager.CONFIRMATION_TIMEOUT_MS
 ) : RemoteDataTaskHandler {
@@ -125,8 +130,7 @@ class JarvisPlaybookTaskHandler(
         listEnabled = { atlas.isEnabled && settings.current().acceptRemotePlaybooks },
         runEnabled = { atlas.isEnabled && settings.current().allowJarvisPlaybookRun },
         ownPackage = context.packageName,
-        owner = deviceOwnerActivity(context, ownRun) { controller.lastEventAtElapsedMs },
-        ownRun = ownRun
+        owner = deviceOwnerActivity(context, ownRun, { controller.lastInputEventAtElapsedMs }, { controller.lastEventAtElapsedMs })
     )
 
     override val types: Set<String> = setOf(TYPE_LIST, TYPE_RUN)
@@ -212,15 +216,10 @@ class JarvisPlaybookTaskHandler(
         if (status != PlaybookStatus.OK) return refused("status_${status.name.lowercase()}", id)
         owner.busyReason()?.let { return finish(id, "busy", it, STATUS_BUSY) }
 
-        ownRun.begin(elapsed())
-        val r = try {
-            withTimeoutOrNull(deadline - clock()) {
-                withContext(RemoteToolOrigin(label = REMOTE_LABEL, ownPackages = setOf(ownPackage))) {
-                    runPlaybook(id, args)
-                }
+        val r = withTimeoutOrNull(deadline - clock()) {
+            withContext(RemoteToolOrigin(label = REMOTE_LABEL, ownPackages = setOf(ownPackage))) {
+                runPlaybook(id, args)
             }
-        } finally {
-            ownRun.end(elapsed())
         } ?: return finish(id, "timeout", "deadline", STATUS_DENIED)
         val elapsed = clock() - start
         return when (r) {
@@ -296,24 +295,45 @@ class JarvisPlaybookTaskHandler(
         private val OK_KEYS = setOf("verified", "steps", "elapsed_ms", "mode")
         private val FAIL_KEYS = setOf("failed_step", "failed_op", "reason", "steps_done", "steps_total")
 
-        /** Production [OwnerActivity]: screen off / locked / recent UI events that were not ours → busy. */
-        fun deviceOwnerActivity(context: Context, ownRun: OwnRunTracker, lastEventAt: () -> Long): OwnerActivity = OwnerActivity {
+        /** Production [OwnerActivity]: screen off / locked / recent owner-like UI events that were not ours → busy. */
+        fun deviceOwnerActivity(
+            context: Context,
+            ownRun: OwnRunTracker,
+            lastInputAt: () -> Long,
+            lastAnyAt: () -> Long
+        ): OwnerActivity = OwnerActivity {
             val pm = context.getSystemService(PowerManager::class.java)
             val km = context.getSystemService(KeyguardManager::class.java)
             busyReason(
                 interactive = pm?.isInteractive == true,
                 locked = km == null || km.isKeyguardLocked,
                 nowElapsed = SystemClock.elapsedRealtime(),
-                lastEventAt = lastEventAt(),
+                lastInputAt = lastInputAt(),
+                lastAnyAt = lastAnyAt(),
                 ownRun = ownRun
             )
         }
 
-        /** Pure decision (unit-tested): events caused by our own run (and its 20 s tail) are ignored (gate R3). */
-        fun busyReason(interactive: Boolean, locked: Boolean, nowElapsed: Long, lastEventAt: Long, ownRun: OwnRunTracker): String? = when {
+        /**
+         * Pure decision (unit-tested), gate rev 3 R3:
+         * - an input-like event (window change / scroll / focus) in the last 20 s that is not inside the mask of one
+         *   of our own actions → the owner is using the phone;
+         * - a passive event (content change: video, animation) in the last 20 s → the owner too, unless our own last
+         *   action ended less than [OwnRunTracker.SETTLE_MS] ago (the app is still settling after our tap).
+         */
+        fun busyReason(
+            interactive: Boolean,
+            locked: Boolean,
+            nowElapsed: Long,
+            lastInputAt: Long,
+            lastAnyAt: Long,
+            ownRun: OwnRunTracker
+        ): String? = when {
             !interactive -> "screen_off"
             locked -> "screen_locked"
-            lastEventAt > 0 && nowElapsed - lastEventAt < OWNER_IDLE_MS && !ownRun.isOwn(lastEventAt) -> "owner_active"
+            lastInputAt > 0 && nowElapsed - lastInputAt < OWNER_IDLE_MS && !ownRun.isOwn(lastInputAt) -> "owner_active"
+            lastAnyAt > 0 && nowElapsed - lastAnyAt < OWNER_IDLE_MS && !ownRun.isOwn(lastAnyAt) &&
+                ownRun.sinceLastAction(nowElapsed) >= OwnRunTracker.SETTLE_MS -> "owner_active"
             else -> null
         }
     }

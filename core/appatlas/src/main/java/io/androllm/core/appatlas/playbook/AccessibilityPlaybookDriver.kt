@@ -22,23 +22,37 @@ import kotlinx.coroutines.withTimeoutOrNull
 class AccessibilityPlaybookDriver @Inject constructor(
     @ApplicationContext private val context: Context,
     private val controller: AccessibilityController,
-    private val confirmationManager: ToolConfirmationManager
+    private val confirmationManager: ToolConfirmationManager,
+    private val ownRun: OwnRunTracker
 ) : PlaybookDriver {
+
+    /** Branch W3: our own actions of a Jarvis run are marked so `owner_active` can ignore their events. */
+    private suspend inline fun <T> own(block: () -> T): T {
+        val remote = io.androllm.core.tools.origin.currentRemoteOrigin() != null
+        if (remote) ownRun.actionStart(android.os.SystemClock.elapsedRealtime())
+        try {
+            return block()
+        } finally {
+            if (remote) ownRun.actionEnd(android.os.SystemClock.elapsedRealtime())
+        }
+    }
 
     override suspend fun snapshot(): NodeSnapshot? = controller.nodeSnapshot()
 
     override val uiEvents: StateFlow<Long> get() = controller.uiEvents
 
-    override suspend fun tap(ref: NodeRef, approval: RiskApproval?): UiActionResult = controller.clickNodeRef(ref, approval)
+    override suspend fun tap(ref: NodeRef, approval: RiskApproval?): UiActionResult = own { controller.clickNodeRef(ref, approval) }
 
     override suspend fun type(ref: NodeRef?, text: String): UiActionResult =
-        if (ref != null) controller.typeIntoNodeRef(ref, text) else controller.type(text, null)
+        own { if (ref != null) controller.typeIntoNodeRef(ref, text) else controller.type(text, null) }
 
-    override suspend fun scroll(direction: String): UiActionResult = controller.scroll(direction)
+    override suspend fun scroll(direction: String): UiActionResult = own { controller.scroll(direction) }
 
-    override suspend fun back(): UiActionResult = controller.navigate("back")
+    override suspend fun back(): UiActionResult = own { controller.navigate("back") }
 
-    override suspend fun openDeeplink(pkg: String, uri: String): String? {
+    override suspend fun openDeeplink(pkg: String, uri: String): String? = own { openDeeplinkNow(pkg, uri) }
+
+    private fun openDeeplinkNow(pkg: String, uri: String): String? {
         val u = runCatching { Uri.parse(uri) }.getOrNull() ?: return "bad uri"
         val intent = Intent(Intent.ACTION_VIEW, u).setPackage(pkg)
         val resolvable = runCatching { intent.resolveActivity(context.packageManager) != null }.getOrDefault(false)
@@ -46,7 +60,9 @@ class AccessibilityPlaybookDriver @Inject constructor(
         return if (ToolIntents.launch(context, intent)) null else "launch blocked"
     }
 
-    override suspend fun launch(pkg: String): String? {
+    override suspend fun launch(pkg: String): String? = own { launchNow(pkg) }
+
+    private fun launchNow(pkg: String): String? {
         val intent = runCatching { context.packageManager.getLaunchIntentForPackage(pkg) }.getOrNull() ?: return "no launcher activity"
         return if (ToolIntents.launch(context, intent)) null else "launch blocked"
     }
