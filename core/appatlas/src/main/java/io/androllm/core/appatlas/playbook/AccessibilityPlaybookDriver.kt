@@ -26,14 +26,17 @@ class AccessibilityPlaybookDriver @Inject constructor(
     private val ownRun: OwnRunTracker
 ) : PlaybookDriver {
 
+    /** Monotonic clock (elapsedRealtime); replaceable in unit tests. */
+    internal var elapsed: () -> Long = { android.os.SystemClock.elapsedRealtime() }
+
     /** Branch W3: our own actions of a Jarvis run are marked so `owner_active` can ignore their events. */
     private suspend inline fun <T> own(block: () -> T): T {
         val remote = io.androllm.core.tools.origin.currentRemoteOrigin() != null
-        if (remote) ownRun.actionStart(android.os.SystemClock.elapsedRealtime())
+        if (remote) ownRun.actionStart(elapsed())
         try {
             return block()
         } finally {
-            if (remote) ownRun.actionEnd(android.os.SystemClock.elapsedRealtime())
+            if (remote) ownRun.actionEnd(elapsed())
         }
     }
 

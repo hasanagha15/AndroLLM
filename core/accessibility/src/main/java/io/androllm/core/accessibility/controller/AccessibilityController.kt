@@ -97,10 +97,13 @@ class AccessibilityController @Inject constructor(
     fun onAccessibilityEvent(event: AccessibilityEvent) {
         // Branch W (gate N3): any UI event = the screen is alive (someone may be using it).
         lastEventAtElapsedMs = android.os.SystemClock.elapsedRealtime()
-        // Branch W3: input-like events (a new window, a scroll, a focus change) vs passive content changes.
+        // Branch W3/W4: input-like events (a new window, a scroll, a focus change, a click, a long click,
+        // typed text, a touch start) vs passive content changes. Only the time is kept.
         when (event.eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED, AccessibilityEvent.TYPE_WINDOWS_CHANGED,
-            AccessibilityEvent.TYPE_VIEW_SCROLLED, AccessibilityEvent.TYPE_VIEW_FOCUSED ->
+            AccessibilityEvent.TYPE_VIEW_SCROLLED, AccessibilityEvent.TYPE_VIEW_FOCUSED,
+            AccessibilityEvent.TYPE_VIEW_CLICKED, AccessibilityEvent.TYPE_VIEW_LONG_CLICKED,
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED, AccessibilityEvent.TYPE_TOUCH_INTERACTION_START ->
                 lastInputEventAtElapsedMs = lastEventAtElapsedMs
             else -> Unit
         }
@@ -117,7 +120,7 @@ class AccessibilityController @Inject constructor(
     @Volatile var lastEventAtElapsedMs: Long = 0L
         private set
 
-    /** Branch W3: elapsedRealtime of the last input-like event (window state / windows / scroll / focus). */
+    /** Branch W3/W4: elapsedRealtime of the last input-like event (window / scroll / focus / click / long click / text / touch). */
     @Volatile var lastInputEventAtElapsedMs: Long = 0L
         private set
 

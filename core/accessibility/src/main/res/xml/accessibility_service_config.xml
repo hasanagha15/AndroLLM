@@ -4,9 +4,12 @@
     content, performs gestures and takes screenshots. It listens for window
     state / content changes, scrolls and focus moves so the UI state tracker
     stays fresh without polling (keeps CPU usage low).
+    Branch W4: clicks, long clicks, text changes and touch starts are also
+    received - only their time is kept, as a sign that the owner is using
+    the phone (owner_active); their content is never read.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged|typeViewScrolled|typeViewFocused"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged|typeViewScrolled|typeViewFocused|typeViewClicked|typeViewLongClicked|typeViewTextChanged|typeTouchInteractionStart"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows"
     android:canPerformGestures="true"
