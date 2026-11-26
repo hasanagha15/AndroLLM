@@ -22,6 +22,10 @@ import io.androllm.core.appatlas.tools.AppOpenActionTool
 import io.androllm.core.appatlas.playbook.PlaybookListTool
 import io.androllm.core.appatlas.playbook.PlaybookRunTool
 import io.androllm.core.appatlas.playbook.PlaybookSyncHandler
+import io.androllm.core.appatlas.timing.RoomTimingStore
+import io.androllm.core.appatlas.timing.TimingDatabase
+import io.androllm.core.appatlas.timing.TimingSyncHandler
+import io.androllm.core.appatlas.timing.TransitionTimingModel
 import io.androllm.core.tools.api.Tool
 import io.androllm.core.tools.remote.RemoteDataTaskHandler
 import java.io.File
@@ -42,6 +46,8 @@ abstract class AppAtlasModule {
     @Binds @IntoSet abstract fun bindPlaybookList(tool: PlaybookListTool): Tool
     @Binds @IntoSet abstract fun bindPlaybookRun(tool: PlaybookRunTool): Tool
     @Binds @IntoSet abstract fun bindPlaybookSync(handler: PlaybookSyncHandler): RemoteDataTaskHandler
+    // Branch T: learned transition timing for Jarvis (playbooks.timings, read-only).
+    @Binds @IntoSet abstract fun bindTimingSync(handler: TimingSyncHandler): RemoteDataTaskHandler
 
     @Binds abstract fun bindPackageSource(source: AndroidPackageSource): PackageSource
 
@@ -74,5 +80,22 @@ abstract class AppAtlasModule {
         @Provides
         @Singleton
         fun providePlaybookStore(db: AtlasDatabase): PlaybookStore = RoomPlaybookStore(db.playbookDao())
+
+        // Branch T: transition timing in its own small DB (no atlas schema bump).
+        @Provides
+        @Singleton
+        fun provideTimingDatabase(@ApplicationContext context: Context): TimingDatabase =
+            Room.databaseBuilder(
+                context,
+                TimingDatabase::class.java,
+                File(context.noBackupFilesDir, TimingDatabase.FILE_NAME).absolutePath
+            )
+                .fallbackToDestructiveMigration(dropAllTables = true)
+                .build()
+
+        @Provides
+        @Singleton
+        fun provideTransitionTimingModel(db: TimingDatabase): TransitionTimingModel =
+            TransitionTimingModel(RoomTimingStore(db.dao()))
     }
 }

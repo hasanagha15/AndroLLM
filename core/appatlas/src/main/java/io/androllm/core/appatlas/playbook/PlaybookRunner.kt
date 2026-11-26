@@ -36,13 +36,16 @@ class PlaybookRunner(
     private val fallback: (suspend (String) -> FallbackOutcome)?,
     private val enabled: () -> Boolean = { true },
     /** Gate N-B3: the atlas flag (guard list, name heuristic, payment-scheme handlers). */
-    private val atlasSensitive: suspend (String) -> Boolean = { false }
+    private val atlasSensitive: suspend (String) -> Boolean = { false },
+    /** Branch T: waits calibrated to the phone's load (FixedStepTiming = branch N behaviour). */
+    private val timing: StepTimingPolicy = FixedStepTiming
 ) {
     @Inject constructor(
         repository: PlaybookRepository,
         driver: AccessibilityPlaybookDriver,
         atlas: AppAtlasRepository,
-        executor: AutomationExecutor
+        executor: AutomationExecutor,
+        timing: io.androllm.core.appatlas.timing.AdaptiveStepTiming
     ) : this(
         repository = repository,
         driver = driver,
@@ -54,10 +57,11 @@ class PlaybookRunner(
             FallbackOutcome(r.success, r.summary, r.retryable)
         },
         enabled = { atlas.isEnabled },
-        atlasSensitive = { pkg -> atlas.entry(pkg)?.sensitive == true }
+        atlasSensitive = { pkg -> atlas.entry(pkg)?.sensitive == true },
+        timing = timing
     )
 
-    private val engine = PlaybookEngine(driver)
+    private val engine = PlaybookEngine(driver, timing = timing)
     private val mutex = Mutex()
 
     suspend fun run(id: String, args: Map<String, String?>, allowFallback: Boolean): ToolResult {

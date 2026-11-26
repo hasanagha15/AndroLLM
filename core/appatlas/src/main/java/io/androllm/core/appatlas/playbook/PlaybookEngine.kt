@@ -105,10 +105,15 @@ data class PlaybookRunResult(
  */
 class PlaybookEngine(
     private val driver: PlaybookDriver,
-    private val clock: () -> Long = System::currentTimeMillis
+    private val clock: () -> Long = System::currentTimeMillis,
+    /** Branch T: how long / how carefully to wait for each transition. */
+    private val timing: StepTimingPolicy = FixedStepTiming
 ) {
 
-    suspend fun run(playbook: Playbook, slots: SlotValues, strict: Boolean): PlaybookRunResult {
+    suspend fun run(playbook: Playbook, slots: SlotValues, strict: Boolean): PlaybookRunResult =
+        try { runSteps(playbook, slots, strict) } finally { runCatching { timing.end() } }
+
+    private suspend fun runSteps(playbook: Playbook, slots: SlotValues, strict: Boolean): PlaybookRunResult {
         val start = clock()
         val stats = mutableListOf<String>()
         fun fail(f: StepFailure, done: Int) = PlaybookRunResult(
@@ -118,11 +123,17 @@ class PlaybookEngine(
 
         val first = driver.snapshot() ?: return fail(StepFailure(0, playbook.steps.first().op, FailureKind.SERVICE_OFF), 0)
         if (first.blockedReason != null) return fail(StepFailure(0, playbook.steps.first().op, FailureKind.BLOCKED, seenPackage = first.packageName), 0)
+        timing.begin(playbook, first)
+        var launched = false
         if (first.packageName != playbook.packageName && playbook.steps.first().op != "open_deeplink") {
             driver.launch(playbook.packageName)?.let {
                 return fail(StepFailure(0, playbook.steps.first().op, FailureKind.ACTION_FAILED, seenPackage = first.packageName), 0)
             }
+            launched = true
         }
+        // Branch T: transition time is measured from the end of the previous action.
+        var actionEnd = clock()
+        var prevOp: String? = null
 
         for ((i, step) in playbook.steps.withIndex()) {
             val minScore = step.minScore ?: Locator.DEFAULT_MIN_SCORE
@@ -132,10 +143,14 @@ class PlaybookEngine(
             // 1. Expected screen (+ the right app, + in strict mode the target itself).
             var resolution: Resolution? = null
             if (needsApp || step.expect != null) {
-                val snap = awaitScreen(step.timeoutMs) { s ->
+                // Branch T: the target is part of "expected screen" in both modes, so the
+                // adaptive timeout + stability window cover the whole transition.
+                val transition = Transition(playbook.packageName, playbook.id, i, kindFor(i, prevOp, launched, step))
+                val plan = timing.plan(transition, step)
+                val snap = awaitWithRetry(transition, plan, actionEnd) { s ->
                     (!needsApp || s.packageName == playbook.packageName) &&
                         (step.expect == null || expectSatisfied(step.expect, s.nodes)) &&
-                        (!(strict && needsTarget) || resolve(step, s.nodes, minScore, strict) != null)
+                        (!needsTarget || resolve(step, s.nodes, minScore, strict) != null)
                 }
                 if (snap == null || snap.blockedReason != null) {
                     val last = driver.snapshot()
@@ -156,7 +171,9 @@ class PlaybookEngine(
                 "tap", "type" -> {
                     if (needsTarget && resolution == null) {
                         // Target may still be appearing: wait for it within the step timeout.
-                        val snap = awaitScreen(step.timeoutMs) { s -> resolve(step, s.nodes, minScore, strict) != null }
+                        val snap = awaitScreen(timing.plan(Transition(playbook.packageName, playbook.id, i, TransitionKind.IN_APP), step)) { s ->
+                            resolve(step, s.nodes, minScore, strict) != null
+                        }
                         resolution = snap?.let { resolve(step, it.nodes, minScore, strict) }
                         if (resolution == null) {
                             val last = driver.snapshot() ?: return fail(StepFailure(i, step.op, FailureKind.SERVICE_OFF), i)
@@ -196,13 +213,18 @@ class PlaybookEngine(
                 val kind = if (!result.retryable && result.risky == null) FailureKind.BLOCKED else FailureKind.ACTION_FAILED
                 return fail(StepFailure(i, step.op, kind, seenPackage = driver.snapshot()?.packageName), i)
             }
+            actionEnd = clock()
+            prevOp = step.op
             settle()
         }
 
         // 3. Cheap verifier.
         val post = playbook.postcondition
         val verified = if (post == null) false else {
-            awaitScreen(POSTCONDITION_TIMEOUT_MS) { s -> s.packageName == playbook.packageName && expectSatisfied(post, s.nodes) } != null
+            val postStep = PlaybookStep(op = "wait", expect = post, timeoutMs = POSTCONDITION_TIMEOUT_MS)
+            val transition = Transition(playbook.packageName, playbook.id, playbook.steps.size, kindFor(playbook.steps.size, prevOp, false, postStep))
+            val plan = timing.plan(transition, postStep)
+            awaitWithRetry(transition, plan, actionEnd) { s -> s.packageName == playbook.packageName && expectSatisfied(post, s.nodes) } != null
         }
         return PlaybookRunResult(
             success = true, stepsDone = playbook.steps.size, verified = verified, hasPostcondition = post != null,
@@ -281,48 +303,102 @@ class PlaybookEngine(
         bestScore = if (step.locators.isNotEmpty()) LocatorResolver.bestScore(step.locators, snap.nodes) else null
     )
 
+    /** Branch T: which default applies when nothing is learned for this transition. */
+    private fun kindFor(i: Int, prevOp: String?, launched: Boolean, step: PlaybookStep): TransitionKind = when {
+        i == 0 && launched -> TransitionKind.LAUNCH
+        prevOp == "open_deeplink" -> TransitionKind.DEEPLINK
+        step.expect?.ids?.any { DIALOG_RE.containsMatchIn(it) } == true -> TransitionKind.DIALOG
+        else -> TransitionKind.IN_APP
+    }
+
     /**
-     * Polls the tree until [cond] holds or [timeoutMs] passes. Wakes on UI
-     * events (debounced) and at least every [POLL_MS]. Null = timed out.
+     * Branch T: waits per [plan]; when the first wait times out (and nothing
+     * protected is on screen) waits once more with [WaitPlan.retryTimeoutMs].
+     * Reports the observed time to the policy.
      */
-    private suspend fun awaitScreen(timeoutMs: Long, cond: (NodeSnapshot) -> Boolean): NodeSnapshot? {
+    private suspend fun awaitWithRetry(t: Transition, plan: WaitPlan, since: Long, cond: (NodeSnapshot) -> Boolean): NodeSnapshot? {
+        var snap = awaitScreen(plan, cond)
+        var retried = false
+        if (snap == null && plan.retryTimeoutMs > 0) {
+            val peek = driver.snapshot()
+            if (peek != null && peek.blockedReason == null) {
+                retried = true
+                snap = awaitScreen(plan.copy(timeoutMs = plan.retryTimeoutMs), cond)
+            }
+        }
+        val ok = snap != null && snap.blockedReason == null
+        runCatching { timing.observe(t, (clock() - since).coerceAtLeast(0L), ok, retried, snap) }
+        return snap
+    }
+
+    /**
+     * Polls the tree until [cond] holds or the plan's timeout passes. Wakes on
+     * UI events (debounced) and at least every [POLL_MS]. With a stability
+     * window (branch T) the condition must also hold with no UI event for
+     * [WaitPlan.stableMs], bounded by [WaitPlan.maxStableWaitMs] because
+     * animated screens never go quiet. Null = timed out.
+     */
+    private suspend fun awaitScreen(plan: WaitPlan, cond: (NodeSnapshot) -> Boolean): NodeSnapshot? {
         var last: NodeSnapshot? = null
-        val ok = withTimeoutOrNull(timeoutMs) {
+        // Last snapshot that met the condition while the stability wait was running.
+        var held: NodeSnapshot? = null
+        var stableSpent = 0L
+        val ok = withTimeoutOrNull(plan.timeoutMs) {
             var res: Boolean? = null
             while (res == null) {
-                val tick = driver.uiEvents?.value
+                val events = driver.uiEvents
+                val tick = events?.value
                 val s = driver.snapshot()
                 last = s
                 res = when {
                     s != null && s.blockedReason != null -> false
-                    s != null && cond(s) -> true
-                    else -> { waitForChange(tick); null }
+                    s != null && cond(s) -> {
+                        if (plan.stableMs <= 0 || events == null || tick == null) {
+                            true
+                        } else {
+                            held = s
+                            if (withTimeoutOrNull(plan.stableMs) { events.first { it != tick } } == null) {
+                                true
+                            } else {
+                                delay(plan.debounceMs)
+                                stableSpent += plan.debounceMs
+                                if (stableSpent >= plan.maxStableWaitMs) true else null
+                            }
+                        }
+                    }
+                    else -> { held = null; stableSpent = 0L; waitForChange(tick, plan.debounceMs); null }
                 }
             }
             res
         }
-        return if (ok == true) last else null
+        return when (ok) {
+            true -> last
+            null -> held
+            else -> null
+        }
     }
 
-    private suspend fun waitForChange(tick: Long?) {
+    private suspend fun waitForChange(tick: Long?, debounceMs: Long) {
         val events = driver.uiEvents
         if (events == null || tick == null) {
             delay(POLL_MS)
             return
         }
         val changed = withTimeoutOrNull(POLL_MS) { events.first { it != tick } } != null
-        if (changed) delay(DEBOUNCE_MS)
+        if (changed) delay(debounceMs)
     }
 
     /** After an action: wait (bounded) for the UI to start changing, then a short debounce. */
     private suspend fun settle() {
+        val p = timing.settle()
         val events = driver.uiEvents
-        if (events == null) { delay(DEBOUNCE_MS); return }
+        if (events == null) { delay(p.debounceMs); return }
         val tick = events.value
-        if (withTimeoutOrNull(SETTLE_MS) { events.first { it != tick } } != null) delay(DEBOUNCE_MS)
+        if (withTimeoutOrNull(p.settleMs) { events.first { it != tick } } != null) delay(p.debounceMs)
     }
 
     companion object {
+        private val DIALOG_RE = Regex("dialog|alert|sheet|popup|picker", RegexOption.IGNORE_CASE)
         const val POLL_MS = 150L
         const val DEBOUNCE_MS = 60L
         const val SETTLE_MS = 250L

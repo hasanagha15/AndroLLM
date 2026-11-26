@@ -53,8 +53,14 @@ class AutomationExecutor @Inject constructor(
     private val llmPlanner: LlmActionPlanner,
     private val heuristicPlanner: HeuristicActionPlanner,
     private val confirmationManager: ToolConfirmationManager,
-    private val debug: AccessibilityDebugStore
+    private val debug: AccessibilityDebugStore,
+    /** Branch T: fixed waits scale with the phone's load factor k. */
+    private val load: io.androllm.core.accessibility.timing.DeviceLoadMonitor =
+        io.androllm.core.accessibility.timing.DeviceLoadMonitor.fixed()
 ) {
+
+    /** Branch T: [baseMs] x k (1.0 ... 3.0). */
+    private fun scaled(baseMs: Long): Long = (baseMs * load.loadFactor()).toLong()
 
     private val cancelled = AtomicBoolean(false)
 
@@ -85,14 +91,14 @@ class AutomationExecutor @Inject constructor(
             // an unknown active window (app switching) is waited out like loading.
             screen.hiddenReason?.let {
                 if (screen.hiddenRetryable) {
-                    delay(600)
+                    delay(scaled(600))
                     continue
                 }
                 return AutomationResult(false, it, steps.size, retryable = false)
             }
             // App transitions / loading spinners: wait, don't burn a step.
             if (screen.loading || (screen.isEmpty && step > 0)) {
-                delay(600)
+                delay(scaled(600))
                 continue
             }
 
@@ -147,7 +153,7 @@ class AutomationExecutor @Inject constructor(
                     var approval = if (riskyTarget) RiskApproval(action.target) else null
                     var result = controller.click(selector, approval = approval)
                     if (!result.success && result.retryable) {
-                        delay(500) // let the UI settle, then one retry
+                        delay(scaled(500)) // let the UI settle, then one retry
                         result = controller.click(selector, approval = approval)
                     }
                     // Branch M (gate B1): the element actually found is risky ("Отпра" →
