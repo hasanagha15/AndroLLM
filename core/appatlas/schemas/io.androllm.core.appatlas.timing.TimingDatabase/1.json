@@ -1,0 +1,80 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "98d79cea7e96d3d0fc8a2e7c9badc594",
+    "entities": [
+      {
+        "tableName": "transition_timing",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`packageName` TEXT NOT NULL, `transitionKey` TEXT NOT NULL, `kind` TEXT NOT NULL, `uiType` TEXT NOT NULL, `n` INTEGER NOT NULL, `p50Ms` REAL NOT NULL, `devMs` REAL NOT NULL, `fails` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`packageName`, `transitionKey`))",
+        "fields": [
+          {
+            "fieldPath": "packageName",
+            "columnName": "packageName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transitionKey",
+            "columnName": "transitionKey",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uiType",
+            "columnName": "uiType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "n",
+            "columnName": "n",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "p50Ms",
+            "columnName": "p50Ms",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "devMs",
+            "columnName": "devMs",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fails",
+            "columnName": "fails",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "packageName",
+            "transitionKey"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '98d79cea7e96d3d0fc8a2e7c9badc594')"
+    ]
+  }
+}
