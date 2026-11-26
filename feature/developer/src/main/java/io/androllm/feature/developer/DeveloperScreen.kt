@@ -30,6 +30,9 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -360,6 +363,13 @@ fun DeveloperScreen(
                     }
                 }
 
+                // Branch U it.3 (B3): reset the resident-share memory evidence.
+                item {
+                    StaggeredEntrance(index = 9) {
+                        ResidentShareResetCard(onReset = { viewModel.resetResidentShare() })
+                    }
+                }
+
                 // Memory Inspector
                 item {
                     StaggeredEntrance(index = 10) {
@@ -646,6 +656,33 @@ internal fun benchmarkRunLabel(results: List<BackendBenchmarkResult>?, isBenchma
     isBenchmarking -> null
     results == null -> "Run"
     else -> "Run again"
+}
+
+@Composable
+private fun ResidentShareResetCard(onReset: () -> Unit) {
+    var done by remember { mutableStateOf(false) }
+    CloudGlassCard(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Model memory estimate",
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.ledger.deskPaper
+                    )
+                )
+                Text(
+                    text = if (done) "Reset — applies on the next model load"
+                    else "Forget memory events that switched Gemma E-models to the full RAM estimate",
+                    style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.ledger.deskInk)
+                )
+            }
+            Button(onClick = { onReset(); done = true }) { Text("Reset") }
+        }
+    }
 }
 
 @Composable

@@ -72,6 +72,15 @@ object MemoryEstimator {
     fun estimateWeightsMemory(fileSizeBytes: Long): Long =
         fileSizeBytes * 105 / 100
 
+    /**
+     * Branch U it.3 (B3): memory of this process WITHOUT file-backed pages —
+     * Debug.MemoryInfo total private dirty (KB) + the "summary.graphics" stat (KB,
+     * GPU buffers). Unparseable / missing graphics counts as 0.
+     */
+    fun nonFileBytes(totalPrivateDirtyKb: Int, graphicsKbStat: String?): Long =
+        (totalPrivateDirtyKb.coerceAtLeast(0).toLong() +
+            (graphicsKbStat?.trim()?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L)) * 1024L
+
     /** Branch U: [estimateWeightsMemory] scaled by the resident share of the file. */
     fun estimateResidentWeights(fileSizeBytes: Long, fraction: Double): Long =
         (estimateWeightsMemory(fileSizeBytes) * fraction.coerceIn(0.1, 1.0)).toLong()

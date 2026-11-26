@@ -65,6 +65,14 @@ class DeveloperViewModel @Inject constructor(
      * CPU) and stores the comparison. The repository reloads the currently
      * loaded model per backend and restores the original backend afterwards.
      */
+    /**
+     * Branch U it.3 (B3): forgets the memory evidence that switched Gemma "E"
+     * models to the full resident share (takes effect on the next model load).
+     */
+    fun resetResidentShare() {
+        io.androllm.engine.utils.ResidentShareMemory.reset()
+    }
+
     fun runBackendBenchmark() {
         if (_isBenchmarking.value) return
         viewModelScope.launch {

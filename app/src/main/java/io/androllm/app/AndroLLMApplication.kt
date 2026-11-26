@@ -98,6 +98,7 @@ class AndroLLMApplication : Application(), WorkConfiguration.Provider {
                     }
                     ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL -> {
                         Timber.w("[Engine] Memory pressure: RUNNING_CRITICAL — unloading model")
+                        noteResidentSharePressure(io.androllm.engine.utils.ResidentShareMemory.Pressure.RUNNING_CRITICAL)
                         appScope.launch { engineRepository.unloadForMemoryPressure() }
                     }
                     ComponentCallbacks2.TRIM_MEMORY_COMPLETE -> {
@@ -113,6 +114,7 @@ class AndroLLMApplication : Application(), WorkConfiguration.Provider {
             @Deprecated("Deprecated in API level 1")
             override fun onLowMemory() {
                 Timber.w("[Engine] onLowMemory — unloading model")
+                noteResidentSharePressure(io.androllm.engine.utils.ResidentShareMemory.Pressure.LOW_MEMORY)
                 appScope.launch { engineRepository.unloadForMemoryPressure() }
             }
 
@@ -158,6 +160,22 @@ class AndroLLMApplication : Application(), WorkConfiguration.Provider {
             Timber.d("[NPU] ADSP_LIBRARY_PATH=$joined")
         }.onFailure { e ->
             Timber.w("[NPU] Could not seed ADSP_LIBRARY_PATH: ${e.message}")
+        }
+    }
+
+    /**
+     * Branch U it.3 (B3): a foreground RUNNING_CRITICAL / onLowMemory soon after a
+     * reduced-share Gemma "E" load is ONE event toward the full resident share.
+     * TRIM_MEMORY_COMPLETE (cached in the background) is never reported.
+     */
+    private fun noteResidentSharePressure(pressure: io.androllm.engine.utils.ResidentShareMemory.Pressure) {
+        runCatching {
+            val state = android.app.ActivityManager.RunningAppProcessInfo()
+            android.app.ActivityManager.getMyMemoryState(state)
+            val foreground = state.importance <= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+            if (io.androllm.engine.utils.ResidentShareMemory.onMemoryPressure(pressure, foreground, System.currentTimeMillis())) {
+                Timber.w("[Engine] memory pressure soon after load — 1 event toward the full resident share")
+            }
         }
     }
 }

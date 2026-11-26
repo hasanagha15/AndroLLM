@@ -52,4 +52,14 @@ class SettingsFallbackExclusionTest {
         assertThat(AppLabelResolver.settingsFallbackAllowed("com.android.settings", "search", emptySet())).isFalse()
         assertThat(AppLabelResolver.settingsFallbackAllowed("com.example.app", "open", emptySet())).isFalse()
     }
+
+    @Test
+    fun `unreadable exclusion list refuses the fallback - fail closed`() = runTest {
+        setUp(emptySet())
+        every { repository.excludedPackages() } throws IllegalStateException("prefs unavailable")
+        val r = tool.execute(buildJsonObject { put("package", "Settings"); put("action_id", "open") })
+        assertThat(r).isInstanceOf(ToolResult.Failure::class.java)
+        assertThat(r.summary).contains("is not in the App Atlas")
+        verify(exactly = 0) { context.startActivity(any()) }
+    }
 }

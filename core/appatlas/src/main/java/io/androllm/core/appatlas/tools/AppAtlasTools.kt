@@ -175,8 +175,9 @@ class AppOpenActionTool @Inject constructor(
         // Branch U it.2 (B2): the owner's exclusion wins over the Settings
         // fallback (also for remote tasks): an excluded Settings app gets the
         // usual "not in the App Atlas" refusal below.
-        val excluded = runCatching { repository.excludedPackages() }.getOrDefault(emptySet())
-        if (resolvedEntry == null && AppLabelResolver.settingsFallbackAllowed(resolvedPkg, actionId, excluded)) {
+        // Branch U it.3 (Z11): an unreadable exclusion list refuses the fallback (fail closed).
+        val excluded: Set<String>? = runCatching { repository.excludedPackages() }.getOrNull()
+        if (resolvedEntry == null && excluded != null && AppLabelResolver.settingsFallbackAllowed(resolvedPkg, actionId, excluded)) {
             // The system Settings app is not always indexed (not a regular launcher
             // entry on every ROM): open it with the platform intent instead.
             return openSystemSettings()

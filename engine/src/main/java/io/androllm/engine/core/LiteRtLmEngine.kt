@@ -882,17 +882,24 @@ class LiteRtLmEngine @Inject constructor(
             )
             // Release transient warmup buffers early — spec: free transient buffers as early as possible
             runCatching { System.gc() }
-            // Branch U it.2 (Z7): measured PSS against the estimate; a reduced share
-            // that proved too optimistic falls back to the full share next time.
+            // Branch U it.3 (B3): measured memory WITHOUT file-backed pages (private
+            // dirty + graphics) against the estimate. One overshoot is one event;
+            // the full share needs two events (see ResidentShareMemory).
             runCatching {
-                val pss = android.os.Debug.getPss() * 1024L
+                val mi = android.os.Debug.MemoryInfo()
+                android.os.Debug.getMemoryInfo(mi)
+                val pss = mi.totalPss * 1024L
+                val nonFile = io.androllm.engine.utils.MemoryEstimator.nonFileBytes(
+                    mi.totalPrivateDirty, mi.getMemoryStat("summary.graphics")
+                )
                 val estimate = lastFitDiagnostics?.estimatedTotalBytes ?: 0L
-                val over = io.androllm.engine.utils.ResidentShareMemory.afterLoad(
-                    loadShareKey, loadWeightFraction, pss, estimate, System.currentTimeMillis()
+                val event = io.androllm.engine.utils.ResidentShareMemory.afterLoad(
+                    loadShareKey, loadWeightFraction, nonFile, estimate, System.currentTimeMillis()
                 )
                 logger.i(
-                    "MEM AFTER LOAD: pss=${pss / 1_048_576}MB estimate=${estimate / 1_048_576}MB " +
-                        "share=$loadWeightFraction${if (over) " — PSS above estimate, full share from the next load" else ""}"
+                    "MEM AFTER LOAD: privateDirty+graphics=${nonFile / 1_048_576}MB pss=${pss / 1_048_576}MB " +
+                        "estimate=${estimate / 1_048_576}MB share=$loadWeightFraction" +
+                        (if (event) " — above estimate x${io.androllm.engine.utils.ResidentShareMemory.TOLERANCE} (1 event)" else "")
                 )
             }
             loadedModel!!

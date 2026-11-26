@@ -23,17 +23,21 @@ class ContentLogGateTest {
         "unit|fragment|sample|detail)"
     private val safe = """(?!\s*\.(length|size|id|first|isBlank|isEmpty|name)\b)"""
     private val interpolation = Regex("""\$\{?""" + vars + """\b""" + safe)
-    /** Branch U it.2 (Z9): `${guard.detail}` / `${x.sample}` — member access to a content-carrying property. */
-    private val memberContent = Regex("""\$\{\w+\.(detail|sample|fragment)\}""")
     /**
-     * Format args: member access (`x.summary`) counts for the original names; the
-     * branch U names count only as bare variables (`unit`, `fragment`) — a
-     * `problem.detail` file-check reason is not conversation content.
+     * Branch U it.2/it.3 (Z9): member access to a content-carrying property inside
+     * a template — `${guard.detail}`, `${x.sample.take(48)}`, `${f.fragment.trim()}`
+     * (only `.length` / `.size` and the other [safe] accessors are fine).
      */
-    private val formatArg = Regex(
-        """,\s*((\w+\.)?""" + vars.replace("|unit|fragment|sample|detail", "") +
-            """|(unit|fragment|sample|detail))\b""" + safe
-    )
+    private val memberContent = Regex("""\$\{\w+\.(unit|detail|sample|fragment)\b""" + safe)
+    /** Format args: bare names and member access (`x.summary`, `guard.sample`) both count. */
+    private val formatArg = Regex(""",\s*(\w+\.)?""" + vars + """\b""" + safe)
+
+    /**
+     * Branch U it.3 (Z9): exact expressions reviewed as NOT conversation content.
+     * `partialProblem.detail` (ModelDownloadWorker) is a file-integrity reason
+     * ("Insufficient storage space.", "Gated model — HTTP 401…").
+     */
+    private val allowedExpressions = setOf("partialProblem.detail")
     private val exempt = setOf("MemoryRepository.kt")
 
     private fun repoRoot(): File {
@@ -57,7 +61,7 @@ class ContentLogGateTest {
                     j++
                 }
             }
-            val text = call.toString()
+            val text = allowedExpressions.fold(call.toString()) { acc, expr -> acc.replace(expr, "allowedExpr") }
             if ("ContentLog" in text) continue
             val args = text.substring(text.lastIndexOf('"') + 1)
             if (interpolation.containsMatchIn(text) || memberContent.containsMatchIn(text) ||
@@ -113,5 +117,21 @@ class ContentLogGateTest {
             Timber.d("fragment chars=${'$'}{fragment.length}")
         """.trimIndent()
         assertTrue(scan("clean.kt", clean).isEmpty())
+    }
+
+    @Test
+    fun `gate closes the member-access loopholes and honours the allowlist`() {
+        val leaky = """
+            logger.w("loop: ${'$'}{guard.sample.take(48)}")
+            logger.w("frag: ${'$'}{x.fragment.trim()}")
+            Timber.w("%s", guard.sample)
+            Timber.w("%s", other.detail)
+        """.trimIndent()
+        assertTrue(scan("leaky.kt", leaky).toString(), scan("leaky.kt", leaky).size == 4)
+        val clean = """
+            Timber.w("Resume check %s: %s — truncating partial and restarting", modelName, partialProblem.detail)
+            logger.w("loop sample chars=${'$'}{guard.sample.length}")
+        """.trimIndent()
+        assertTrue(scan("clean.kt", clean).toString(), scan("clean.kt", clean).isEmpty())
     }
 }
