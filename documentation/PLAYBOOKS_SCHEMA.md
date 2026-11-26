@@ -234,6 +234,45 @@ The inner (encrypted) task JSON carries a `type` instead of `text`:
   (`failedStep` = -1 for `version_update` and `app_updated`), always < 8000 chars; only the records
   that fit are marked delivered — pull again while `more` is true.
 
+### Jarvis planner tasks (branch W)
+
+Two more typed tasks let Claude on the Jarvis host list and run playbooks **without an agent turn**
+(no local model in the loop, slot values never pass through a prompt).
+
+```json
+{"id":"pl-1","type":"playbooks.list","body":{"package":"com.example.video"},"from":"jarvis","ts":…,"ttl_s":60}
+{"id":"pr-1","type":"playbook.run","body":{"id":"com.example.video/search","args":{"query":"cats"},"deadline_ms":…},"from":"jarvis","ts":…,"ttl_s":60}
+```
+
+- `playbooks.list` (`package` optional; needs "Accept playbooks from Jarvis") →
+  `{"playbooks":[{"id","package","name","description","params":[{"name","type","required","values"?}],
+  "status":"ok|unverified|stale","risky","verified","trusted","source","installedVc","versionMin","versionMax"}…],"more":bool}`
+  (< 7500 chars). Protected and not-installed apps are never listed.
+- `playbook.run` needs its **own** setting "Jarvis may run verified playbooks" (`allowJarvisPlaybookRun`,
+  **off by default**; the import flag never enables runs). `ttl_s` ≤ 300 for this type (protocol). `deadline_ms`
+  (epoch ms) is required; the phone caps it at now + 330 s, starts nothing after it and cancels the whole replay —
+  every step and every card wait — at the deadline. Jarvis waits longer than the deadline, so it always gets the
+  final answer.
+- Runs only a playbook **trusted on this device** with effective status **OK**, re-checked under the runner mutex.
+  Trust semantics: `source` = file (the owner imported it — trusted without a run), or `verifiedCount > 0`
+  (one owner run with the postcondition seen). Once trusted, Jarvis may run it with **any** slot values; a remote run
+  never adds trust; a changed re-sync resets trust.
+- The replay happens inside `RemoteToolOrigin`: no ui_run fallback, every risky step raises the remote-labelled
+  **tap-only** card (heads-up notification); nothing is auto-approved.
+- Result text (ids, counts, machine codes only), `{"outcome", "reason"?, "playbook", …}`:
+
+| status | outcome | reason codes |
+|---|---|---|
+| `ok` | `ok` | + `verified`, `steps`, `elapsed_ms`, `mode` |
+| `denied` | `refused` | `disabled`, `playbook_not_found`, `protected`, `not_installed`, `not_trusted`, `status_stale`, `status_unverified` |
+| `denied` | `denied` / `timeout` | `declined` / `card_timeout`, `deadline` |
+| `busy` | `busy` | `owner_active` (UI events in the last 20 s), `screen_locked`, `screen_off` |
+| `error` | `failed` | the replay failure kind (`target_not_found`, `screen_changed`, `expect_timeout`, `blocked`, …) + `failed_step`, `steps_done`, `steps_total` |
+| `invalid` | `invalid` | `missing id`, `missing deadline_ms`, `bad_args` … |
+
+- `RemoteDataResult.status` (core:tools) lets a typed handler name the final status (`denied` / `error` / `invalid` / `busy`);
+  `ok` / `accepted` are never taken from it for a failure.
+
 ## App updates (branch R1)
 
 The phone notices an app install / update / removal itself (`AppUpdateWatcher`,

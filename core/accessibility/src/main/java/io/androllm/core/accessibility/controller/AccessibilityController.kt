@@ -95,6 +95,8 @@ class AccessibilityController @Inject constructor(
     }
 
     fun onAccessibilityEvent(event: AccessibilityEvent) {
+        // Branch W (gate N3): any UI event = the screen is alive (someone may be using it).
+        lastEventAtElapsedMs = android.os.SystemClock.elapsedRealtime()
         windowMonitor.onEvent(event)
         uiState.onEvent(event)
         // Branch N: playbook replay waits on these instead of fixed sleeps.
@@ -103,6 +105,10 @@ class AccessibilityController @Inject constructor(
             _uiEvents.value = _uiEvents.value + 1
         }
     }
+
+    /** Branch W: elapsedRealtime of the last accessibility event of any type (0 = none yet). */
+    @Volatile var lastEventAtElapsedMs: Long = 0L
+        private set
 
     private val _uiEvents = kotlinx.coroutines.flow.MutableStateFlow(0L)
 

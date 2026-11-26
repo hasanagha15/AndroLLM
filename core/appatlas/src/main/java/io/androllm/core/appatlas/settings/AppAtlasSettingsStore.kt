@@ -19,7 +19,12 @@ data class AppAtlasSettings(
     /** Branch N: accept playbook bundles pushed by Jarvis (playbooks.sync). */
     val acceptRemotePlaybooks: Boolean = true,
     /** Branch N: zero-LLM fast path — matching commands run a non-risky playbook without the model. */
-    val fastPlaybookCommands: Boolean = true
+    val fastPlaybookCommands: Boolean = true,
+    /**
+     * Branch W (gate B1): Jarvis may RUN trusted playbooks over the link (`playbook.run`, no agent turn).
+     * Separate from [acceptRemotePlaybooks] (import only) and OFF by default — the owner turns it on.
+     */
+    val allowJarvisPlaybookRun: Boolean = false
 )
 
 /**
@@ -50,7 +55,8 @@ class AppAtlasSettingsStore @Inject constructor(
                 recordPaths = prefs.getBoolean(KEY_RECORD, true),
                 exclusions = SensitiveAppGuard.parsePackages(prefs.getString(KEY_EXCLUSIONS, "")),
                 acceptRemotePlaybooks = prefs.getBoolean(KEY_ACCEPT_REMOTE_PB, true),
-                fastPlaybookCommands = prefs.getBoolean(KEY_FAST_PB, true)
+                fastPlaybookCommands = prefs.getBoolean(KEY_FAST_PB, true),
+                allowJarvisPlaybookRun = prefs.getBoolean(KEY_JARVIS_RUN, false)
             )
         }
         loaded = true
@@ -60,6 +66,7 @@ class AppAtlasSettingsStore @Inject constructor(
     fun setRecordPaths(v: Boolean) = update { it.copy(recordPaths = v) }
     fun setAcceptRemotePlaybooks(v: Boolean) = update { it.copy(acceptRemotePlaybooks = v) }
     fun setFastPlaybookCommands(v: Boolean) = update { it.copy(fastPlaybookCommands = v) }
+    fun setAllowJarvisPlaybookRun(v: Boolean) = update { it.copy(allowJarvisPlaybookRun = v) }
 
     /** Parses a comma/space separated package list; invalid entries are dropped. Returns the saved set. */
     fun setExclusions(raw: String): Set<String> {
@@ -78,6 +85,7 @@ class AppAtlasSettingsStore @Inject constructor(
                 .putString(KEY_EXCLUSIONS, next.exclusions.joinToString(", "))
                 .putBoolean(KEY_ACCEPT_REMOTE_PB, next.acceptRemotePlaybooks)
                 .putBoolean(KEY_FAST_PB, next.fastPlaybookCommands)
+                .putBoolean(KEY_JARVIS_RUN, next.allowJarvisPlaybookRun)
                 .apply()
         }
     }
@@ -108,6 +116,7 @@ class AppAtlasSettingsStore @Inject constructor(
         private const val KEY_LAST_SWEEP = "last_sweep_at"
         private const val KEY_SENS_FP = "sensitivity_fingerprint"
         private const val KEY_ACCEPT_REMOTE_PB = "accept_remote_playbooks"
+        private const val KEY_JARVIS_RUN = "allow_jarvis_playbook_run"
         private const val KEY_FAST_PB = "fast_playbook_commands"
     }
 }

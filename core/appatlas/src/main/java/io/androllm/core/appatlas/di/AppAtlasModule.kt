@@ -48,6 +48,8 @@ abstract class AppAtlasModule {
     @Binds @IntoSet abstract fun bindPlaybookSync(handler: PlaybookSyncHandler): RemoteDataTaskHandler
     // Branch T: learned transition timing for Jarvis (playbooks.timings, read-only).
     @Binds @IntoSet abstract fun bindTimingSync(handler: TimingSyncHandler): RemoteDataTaskHandler
+    // Branch W: Jarvis planner — playbooks.list / playbook.run without an agent turn.
+    @Binds @IntoSet abstract fun bindJarvisPlaybookTasks(handler: io.androllm.core.appatlas.playbook.JarvisPlaybookTaskHandler): RemoteDataTaskHandler
 
     @Binds abstract fun bindPackageSource(source: AndroidPackageSource): PackageSource
 

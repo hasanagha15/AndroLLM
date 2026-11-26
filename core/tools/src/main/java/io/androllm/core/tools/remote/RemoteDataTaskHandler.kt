@@ -2,8 +2,12 @@ package io.androllm.core.tools.remote
 
 import kotlinx.serialization.json.JsonObject
 
-/** Outcome of a typed (data) task from Jarvis. [text] goes back in the encrypted result. */
-data class RemoteDataResult(val ok: Boolean, val text: String)
+/**
+ * Outcome of a typed (data) task from Jarvis. [text] goes back in the encrypted result.
+ * Branch W: [status] optionally names the final link status for a non-ok result
+ * (`denied` / `error` / `invalid` / `busy`); null keeps the branch N mapping (ok → `ok`, else `invalid`).
+ */
+data class RemoteDataResult(val ok: Boolean, val text: String, val status: String? = null)
 
 /**
  * Branch N: a typed, non-agent task received over the Jarvis link (same

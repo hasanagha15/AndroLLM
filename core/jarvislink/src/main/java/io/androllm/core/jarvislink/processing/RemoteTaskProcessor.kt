@@ -165,7 +165,10 @@ class RemoteTaskProcessor(
         val handler = dataHandlers.firstOrNull { type in it.types }
             ?: return TaskOutcome(ResultStatus.INVALID, "unknown task type '$type'")
         val r = handler.handle(type, task.body)
-        return TaskOutcome(if (r.ok) ResultStatus.OK else ResultStatus.INVALID, r.text)
+        if (r.ok) return TaskOutcome(ResultStatus.OK, r.text)
+        // Branch W: a handler may name the final status (denied / error / invalid / busy); never ok/accepted here.
+        val named = ResultStatus.fromWire(r.status)?.takeIf { it.isFinal && it != ResultStatus.OK }
+        return TaskOutcome(named ?: ResultStatus.INVALID, r.text)
     }
 
     /** Re-sends final results that failed to publish (call after reconnect). */

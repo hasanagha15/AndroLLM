@@ -89,4 +89,48 @@ class DataTaskTest {
         assertThat(published.last { it.id == "d1" }.text).isEqualTo("imported 1, rejected 0")
         assertThat(published.last { it.id == "d2" }.status).isEqualTo(ResultStatus.INVALID)
     }
+
+    @Test
+    fun `branch W - a handler may name the final status, never ok or accepted for a failure`() = runTest {
+        val published = mutableListOf<ResultMessage>()
+        val handler = object : RemoteDataTaskHandler {
+            override val types = setOf("playbook.run")
+            override suspend fun handle(type: String, body: JsonObject?): RemoteDataResult {
+                val st = (body?.get("st") as? kotlinx.serialization.json.JsonPrimitive)?.content
+                return RemoteDataResult(false, "{\"outcome\":\"x\"}", status = st)
+            }
+        }
+        val p = RemoteTaskProcessor(
+            runner = { TaskOutcome(ResultStatus.OK, "agent") },
+            publisher = ResultPublisher { published += JarvisProtocol.decodeResult(it, TestTasks.KEY)!! },
+            deduplicator = TaskDeduplicator(),
+            tracker = RemoteTaskTracker(),
+            signingKey = { TestTasks.KEY },
+            clock = { now },
+            queueCapacity = 8,
+            dataHandlers = setOf(handler)
+        ).also { it.start(backgroundScope) }
+        val cases = listOf("w1" to "denied", "w2" to "error", "w3" to "ok", "w4" to "accepted", "w5" to "bogus")
+        for ((id, st) in cases) {
+            val b = kotlinx.serialization.json.buildJsonObject { put("st", kotlinx.serialization.json.JsonPrimitive(st)) }
+            p.onPayload(JarvisProtocol.encodeTask(TestTasks.KEY, id, "", now, ttl = 60, type = "playbook.run", body = b))
+        }
+        runCurrent()
+        fun final(id: String) = published.last { it.id == id }.status
+        assertThat(final("w1")).isEqualTo(ResultStatus.DENIED)
+        assertThat(final("w2")).isEqualTo(ResultStatus.ERROR)
+        assertThat(final("w3")).isEqualTo(ResultStatus.INVALID)
+        assertThat(final("w4")).isEqualTo(ResultStatus.INVALID)
+        assertThat(final("w5")).isEqualTo(ResultStatus.INVALID)
+    }
+
+    @Test
+    fun `branch W - playbook run tasks may not live longer than 300 s`() {
+        val long = JarvisProtocol.encodeTask(TestTasks.KEY, "t1", "", now, ttl = 600, type = "playbook.run", body = body)
+        assertThat(JarvisProtocol.parseTask(long, now, TestTasks.KEY)).isInstanceOf(TaskParse.Invalid::class.java)
+        val ok = JarvisProtocol.encodeTask(TestTasks.KEY, "t2", "", now, ttl = 300, type = "playbook.run", body = body)
+        assertThat(JarvisProtocol.parseTask(ok, now, TestTasks.KEY)).isInstanceOf(TaskParse.Valid::class.java)
+        val sync = JarvisProtocol.encodeTask(TestTasks.KEY, "t3", "", now, ttl = 600, type = "playbooks.sync", body = body)
+        assertThat(JarvisProtocol.parseTask(sync, now, TestTasks.KEY)).isInstanceOf(TaskParse.Valid::class.java)
+    }
 }
