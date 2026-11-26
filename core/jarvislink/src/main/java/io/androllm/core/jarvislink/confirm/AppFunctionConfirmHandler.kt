@@ -48,8 +48,8 @@ class AppFunctionConfirmHandler @Inject constructor(
         val req = parse(body, System.currentTimeMillis()) ?: return RemoteDataResult(false, "invalid appfunction.confirm body")
         val summary = cardText(req) ?: return RemoteDataResult(false, "too long to show")
         val card = PendingToolConfirmation(
-            id = "afc_" + req.nonce,
-            toolName = "appfunction_" + req.fn.substringAfterLast('#').substringAfterLast('_'),
+            id = CARD_ID_PREFIX + req.nonce,
+            toolName = TOOL_PREFIX + req.fn.substringAfterLast('#').substringAfterLast('_'),
             toolDisplayName = "AppFunction · " + escape(req.pkg.substringAfterLast('.')),
             actionSummary = summary,
             speakableQuestion = "",
@@ -65,6 +65,16 @@ class AppFunctionConfirmHandler @Inject constructor(
 
     companion object {
         const val TYPE = "appfunction.confirm"
+        const val CARD_ID_PREFIX = "afc_"
+        const val TOOL_PREFIX = "appfunction_"
+
+        /** True for cards raised by this handler (approval only on the full in-app card). */
+        fun isAppFunctionCard(c: PendingToolConfirmation): Boolean =
+            c.id.startsWith(CARD_ID_PREFIX) || c.toolName.startsWith(TOOL_PREFIX)
+
+        /** SHA-256 of the public key, hex — shown in Settings so the owner can compare it with the Acer. */
+        fun fingerprint(spki: ByteArray): String =
+            MessageDigest.getInstance("SHA-256").digest(spki).toHex()
         const val MAX_AGE_MS = 10 * 60 * 1000L
         private const val MAX_CANON = 16 * 1024
         const val MAX_LINES = 60

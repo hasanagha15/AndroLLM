@@ -56,7 +56,12 @@ class RemoteConfirmationRouter @Inject constructor(
         notifier.cancel()
     }
 
-    fun approve(id: String): Boolean = decide(id) { confirmationManager.confirm(it) }
+    /** Gate V rev2 N1: AppFunction cards are approved only on the in-app card, never via the notification. */
+    fun approve(id: String): Boolean {
+        val pending = confirmationManager.pending.value
+        if (pending != null && pending.id == id && AppFunctionConfirmHandler.isAppFunctionCard(pending)) return false
+        return decide(id) { confirmationManager.confirm(it) }
+    }
 
     fun deny(id: String): Boolean = decide(id) { confirmationManager.deny(it) }
 

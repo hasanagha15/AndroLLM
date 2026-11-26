@@ -54,7 +54,10 @@ class NotificationConfirmationNotifier @Inject constructor(
                 if (task.text.length > 200) append("…")
                 append("»")
             }
-            append("\nПолный текст — в карточке в приложении.")
+            append(
+                if (AppFunctionConfirmHandler.isAppFunctionCard(confirmation)) "\nОдобрить можно только в карточке в приложении."
+                else "\nПолный текст — в карточке в приложении."
+            )
         }
         val notification = NotificationCompat.Builder(context, CONFIRM_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)
@@ -70,9 +73,15 @@ class NotificationConfirmationNotifier @Inject constructor(
             .addAction(
                 NotificationCompat.Action.Builder(0, "Deny", deny).setAuthenticationRequired(true).build()
             )
-            .addAction(
-                NotificationCompat.Action.Builder(0, "Approve", approve).setAuthenticationRequired(true).build()
-            )
+            .apply {
+                // Gate V rev2 N1: an AppFunction approval is given only on the FULL in-app card, never from the
+                // notification (it may not show every field); the notification only opens the app or denies.
+                if (!AppFunctionConfirmHandler.isAppFunctionCard(confirmation)) {
+                    addAction(
+                        NotificationCompat.Action.Builder(0, "Approve", approve).setAuthenticationRequired(true).build()
+                    )
+                }
+            }
             .build()
         runCatching { NotificationManagerCompat.from(context).notify(CONFIRM_NOTIFICATION_ID, notification) }
             .onFailure { Timber.w(it, "JarvisLink: could not post confirmation notification") }

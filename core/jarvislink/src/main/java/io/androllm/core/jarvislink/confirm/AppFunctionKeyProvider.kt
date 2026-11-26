@@ -5,7 +5,10 @@ import android.content.ContentValues
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
-import java.security.MessageDigest
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.components.SingletonComponent
 import java.util.Base64
 
 /**
@@ -16,13 +19,22 @@ import java.util.Base64
  * Read-only: insert/update/delete are refused.
  */
 class AppFunctionKeyProvider : ContentProvider() {
+
+    /** Gate V rev2 N3: the same @Singleton signer the handler uses (one key, one lock). */
+    @EntryPoint
+    @InstallIn(SingletonComponent::class)
+    interface SignerEntryPoint {
+        fun confirmSigner(): ConfirmSigner
+    }
+
     override fun onCreate(): Boolean = true
 
     override fun query(uri: Uri, projection: Array<out String>?, selection: String?,
                        selectionArgs: Array<out String>?, sortOrder: String?): Cursor? {
         if (uri.lastPathSegment != "pub") return null
-        val spki = KeystoreConfirmSigner().publicKeySpki()
-        val fp = MessageDigest.getInstance("SHA-256").digest(spki).joinToString("") { "%02x".format(it) }
+        val ctx = context?.applicationContext ?: return null
+        val spki = EntryPointAccessors.fromApplication(ctx, SignerEntryPoint::class.java).confirmSigner().publicKeySpki()
+        val fp = AppFunctionConfirmHandler.fingerprint(spki)
         return MatrixCursor(arrayOf("spki", "sha256")).apply {
             addRow(arrayOf<Any>(Base64.getEncoder().encodeToString(spki), fp))
         }

@@ -29,7 +29,12 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import dagger.hilt.android.lifecycle.HiltViewModel
+import androidx.lifecycle.viewModelScope
+import io.androllm.core.jarvislink.confirm.AppFunctionConfirmHandler
+import io.androllm.core.jarvislink.confirm.ConfirmSigner
 import io.androllm.core.jarvislink.mqtt.LinkState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import io.androllm.core.jarvislink.service.JarvisLinkController
 import io.androllm.core.jarvislink.service.JarvisLinkStatus
 import io.androllm.core.jarvislink.settings.JarvisLinkSettings
@@ -44,8 +49,21 @@ import kotlinx.coroutines.flow.StateFlow
 class JarvisLinkViewModel @Inject constructor(
     private val store: JarvisLinkSettingsStore,
     private val controller: JarvisLinkController,
-    status: JarvisLinkStatus
+    status: JarvisLinkStatus,
+    private val confirmSigner: ConfirmSigner
 ) : ViewModel() {
+    /** Gate V rev2 N2: SHA-256 of the AppFunction confirmation PUBLIC key (compare with the Acer). */
+    private val _confirmKeyFp = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+    val confirmKeyFingerprint: StateFlow<String?> = _confirmKeyFp
+
+    fun loadConfirmKeyFingerprint() {
+        if (_confirmKeyFp.value != null) return
+        viewModelScope.launch(Dispatchers.Default) {
+            _confirmKeyFp.value = runCatching { AppFunctionConfirmHandler.fingerprint(confirmSigner.publicKeySpki()) }
+                .getOrElse { "unavailable (${it.javaClass.simpleName})" }
+        }
+    }
+
     val settings: StateFlow<JarvisLinkSettings> = store.settings
     val state: StateFlow<LinkState> = status.state
 
@@ -90,6 +108,8 @@ fun JarvisLinkSection(viewModel: JarvisLinkViewModel = hiltViewModel()) {
     var password by remember { mutableStateOf("") }
     var signingKey by remember { mutableStateOf("") }
     val message by viewModel.message.collectAsState()
+    val confirmFp by viewModel.confirmKeyFingerprint.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(Unit) { viewModel.loadConfirmKeyFingerprint() }
 
     CloudGlassCard(modifier = Modifier.fillMaxWidth().padding(top = 12.dp)) {
         Column(
@@ -123,6 +143,12 @@ fun JarvisLinkSection(viewModel: JarvisLinkViewModel = hiltViewModel()) {
                     is LinkState.Refused -> "not connecting: ${s.reason}"
                     is LinkState.ConfigError -> s.reason
                 },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.ledger.deskInk
+            )
+            Text(
+                "AppFunction confirm key SHA-256 (must match the Acer):\n" +
+                    (confirmFp?.chunked(4)?.joinToString(" ") ?: "…"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.ledger.deskInk
             )

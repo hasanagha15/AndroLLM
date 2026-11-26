@@ -3,6 +3,11 @@ package io.androllm.core.jarvislink
 import com.google.common.truth.Truth.assertThat
 import io.androllm.core.jarvislink.confirm.AppFunctionConfirmHandler
 import io.androllm.core.jarvislink.confirm.ConfirmSigner
+import io.androllm.core.jarvislink.confirm.ConfirmationNotifier
+import io.androllm.core.jarvislink.confirm.RemoteConfirmationRouter
+import io.androllm.core.jarvislink.processing.RemoteTaskTracker
+import io.androllm.core.jarvislink.protocol.JarvisTask
+import io.androllm.core.tools.confirmation.PendingToolConfirmation
 import io.androllm.core.tools.confirmation.ToolConfirmationManager
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
@@ -139,5 +144,34 @@ class AppFunctionConfirmTest {
         val res = r.await()
         assertThat(res.ok).isTrue()
         assertThat(res.text).contains("\"approved\":true")
+    }
+
+    @Test
+    fun `notification receiver can deny but never approve an AppFunction card`() = runTest {
+        val manager = ToolConfirmationManager()
+        val notifier = object : ConfirmationNotifier {
+            override fun show(confirmation: PendingToolConfirmation, task: JarvisTask?) {}
+            override fun cancel() {}
+        }
+        val router = RemoteConfirmationRouter(manager, RemoteTaskTracker(), notifier)
+        val handler = AppFunctionConfirmHandler(manager, JcaSigner())
+        val fresh = buildJsonObject {
+            put("canon", canon); put("nonce", "abcdefghijklmnop"); put("exp", System.currentTimeMillis() + 120_000)
+        }
+        val r = async { handler.handle(AppFunctionConfirmHandler.TYPE, fresh) }
+        runCurrent()
+        val card = manager.pending.value!!
+        assertThat(AppFunctionConfirmHandler.isAppFunctionCard(card)).isTrue()
+        assertThat(router.approve(card.id)).isFalse()
+        assertThat(manager.pending.value).isNotNull()          // still waiting for the in-app tap
+        assertThat(router.deny(card.id)).isTrue()
+        assertThat(r.await().text).contains("\"approved\":false")
+    }
+
+    @Test
+    fun `fingerprint is sha256 hex of the public key`() {
+        val s = JcaSigner()
+        val fp = AppFunctionConfirmHandler.fingerprint(s.publicKeySpki())
+        assertThat(fp).matches("[0-9a-f]{64}")
     }
 }
