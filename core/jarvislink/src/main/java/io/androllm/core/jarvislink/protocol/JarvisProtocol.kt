@@ -34,6 +34,9 @@ import kotlinx.serialization.json.put
  * data task  {"id","type","body"?,"from","ts","ttl_s"}  (branch N: e.g. "playbooks.sync" / "playbooks.relearn";
  *            same keys and AAD, no agent turn; payload up to MAX_DATA_PAYLOAD_BYTES)
  * result     {"id","status","text","ts"}              key = HKDF(k, "androllm-jarvislink", "result-v2"), AAD "androllm/v2/result"
+ * event      {"id","type","body","ts"}                key = HKDF(k, "androllm-jarvislink", "event-v2"),  AAD "androllm/v2/event"
+ *            (branch R1: phone → Jarvis on `jarvis/phone/event`, envelope kind "event", e.g. "apps.changed";
+ *            not an answer to any task, never parsed as a task or result)
  * status     retained plaintext {"v":2,"state":"online|offline","ts"}
  * ```
  * `accepted` is an ack; every other status is final except `duplicate`.
@@ -42,6 +45,8 @@ object JarvisTopics {
     const val TASK = "jarvis/phone/task"
     const val RESULT = "jarvis/phone/result"
     const val STATUS = "jarvis/phone/status"
+    /** Branch R1: phone-originated events (`apps.changed`), phone → Jarvis. */
+    const val EVENT = "jarvis/phone/event"
 }
 
 /** A validated, authenticated task received from Jarvis. */
@@ -79,6 +84,9 @@ enum class ResultStatus {
         fun fromWire(s: String?): ResultStatus? = entries.firstOrNull { it.wire == s }
     }
 }
+
+/** Branch R1: decrypted event (tests / tooling; the Jarvis side decodes the same in Python). */
+data class EventMessage(val id: String, val type: String, val body: JsonObject, val ts: Long)
 
 /** Decrypted result (tests / tooling). */
 data class ResultMessage(val id: String, val status: ResultStatus, val text: String, val ts: Long)
@@ -161,6 +169,9 @@ object JarvisProtocol {
     const val KEY_BYTES = 32
     const val AAD_TASK = "androllm/v2/task"
     const val AAD_RESULT = "androllm/v2/result"
+    /** Branch R1: phone-originated events. */
+    const val AAD_EVENT = "androllm/v2/event"
+    const val MAX_EVENT_BYTES = 4_096
 
     private val ID_RE = Regex("^[A-Za-z0-9._:-]{1,$MAX_ID_LENGTH}$")
     private val FROM_RE = Regex("^[A-Za-z0-9._-]{1,32}$")
@@ -170,6 +181,11 @@ object JarvisProtocol {
 
     fun taskKey(master: ByteArray) = JarvisCrypto.hkdf(master, "task-v2")
     fun resultKey(master: ByteArray) = JarvisCrypto.hkdf(master, "result-v2")
+    fun eventKey(master: ByteArray) = JarvisCrypto.hkdf(master, "event-v2")
+
+    /** Branch R1: event id / type rules (same alphabet as task ids and types). */
+    fun isValidEventId(id: String) = ID_RE.matches(id)
+    fun isValidEventType(type: String) = TYPE_RE.matches(type)
 
     /** Parses the 64-hex-char shared key; null when malformed. */
     fun parseKeyHex(hex: String): ByteArray? {
@@ -239,6 +255,39 @@ object JarvisProtocol {
             put("id", id); put("status", status.wire); put("text", clipped); put("ts", nowMs)
         }.toString().toByteArray(Charsets.UTF_8)
         return envelope("result", JarvisCrypto.seal(resultKey(master), AAD_RESULT, inner))
+    }
+
+    /**
+     * Branch R1: encrypts a phone-originated event (own key + AAD: an event can
+     * never be replayed as a task or taken for a result). [body] carries ids /
+     * package names / numbers only.
+     */
+    fun encodeEvent(
+        id: String, type: String, body: JsonObject, ts: Long, master: ByteArray,
+        /** Tests only (cross-language vector); null = a fresh random nonce. */
+        nonce: ByteArray? = null
+    ): ByteArray {
+        require(isValidEventId(id)) { "malformed event id" }
+        require(isValidEventType(type)) { "malformed event type" }
+        val inner = buildJsonObject {
+            put("id", id); put("type", type); put("body", body); put("ts", ts)
+        }.toString().toByteArray(Charsets.UTF_8)
+        require(inner.size <= MAX_EVENT_BYTES) { "event too large" }
+        val sealed = if (nonce != null) JarvisCrypto.seal(eventKey(master), AAD_EVENT, inner, nonce)
+        else JarvisCrypto.seal(eventKey(master), AAD_EVENT, inner)
+        return envelope("event", sealed)
+    }
+
+    /** Branch R1: decrypts an event envelope; null when not authentic or malformed. */
+    fun decodeEvent(payload: ByteArray, master: ByteArray): EventMessage? {
+        val inner = openEnvelope(payload, "event", eventKey(master), AAD_EVENT) ?: return null
+        val obj = runCatching { json.parseToJsonElement(inner.toString(Charsets.UTF_8)).jsonObject }.getOrNull() ?: return null
+        fun str(name: String) = (obj[name] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+        val id = str("id")?.takeIf(::isValidEventId) ?: return null
+        val type = str("type")?.takeIf(::isValidEventType) ?: return null
+        val body = obj["body"] as? JsonObject ?: return null
+        val ts = (obj["ts"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull ?: return null
+        return EventMessage(id, type, body, ts)
     }
 
     /** Decrypts a result envelope; null when not authentic. */

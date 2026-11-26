@@ -15,6 +15,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import dagger.hilt.android.AndroidEntryPoint
 import io.androllm.core.jarvislink.confirm.RemoteConfirmationRouter
+import io.androllm.core.jarvislink.events.JarvisEventOutbox
 import io.androllm.core.jarvislink.mqtt.HiveMqJarvisLink
 import io.androllm.core.jarvislink.mqtt.LinkConfig
 import io.androllm.core.jarvislink.mqtt.LinkState
@@ -50,6 +51,8 @@ class JarvisLinkService : Service() {
     @Inject lateinit var status: JarvisLinkStatus
     // Branch N: typed data tasks (playbooks.sync / playbooks.relearn).
     @Inject lateinit var dataHandlers: Set<@JvmSuppressWildcards RemoteDataTaskHandler>
+    // Branch R1: phone → Jarvis events (apps.changed), flushed while connected.
+    @Inject lateinit var eventOutbox: JarvisEventOutbox
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var link: HiveMqJarvisLink? = null
@@ -96,7 +99,12 @@ class JarvisLinkService : Service() {
         val newLink = HiveMqJarvisLink(
             scope = scope,
             onTask = { payload -> scope.launch { newProcessor.onPayload(payload) } },
-            onConnected = { scope.launch { newProcessor.flushPending() } },
+            onConnected = {
+                scope.launch {
+                    newProcessor.flushPending()
+                    eventOutbox.flushNow()
+                }
+            },
             routeCheck = { host -> checkRoute(applicationContext, host) }
         )
         newProcessor = RemoteTaskProcessor(
@@ -109,6 +117,7 @@ class JarvisLinkService : Service() {
         )
         processor = newProcessor
         link = newLink
+        eventOutbox.attach { bytes -> newLink.publishEvent(bytes) }
         newProcessor.start(scope)
         router.start(scope)
         scope.launch {
@@ -131,6 +140,7 @@ class JarvisLinkService : Service() {
 
     override fun onDestroy() {
         router.stop()
+        eventOutbox.detach()
         processor?.stop()
         val l = link
         link = null

@@ -19,7 +19,10 @@ Protocol v2 (MQTT v5, QoS 1) — see core/jarvislink/protocol/JarvisProtocol.kt:
   envelope {"v":2,"kind":"task"|"result","n":b64(nonce12),"c":b64(AES-256-GCM ct||tag)}
   task key   = HKDF-SHA256(task.key, salt="androllm-jarvislink", info="task-v2"),   AAD "androllm/v2/task"
   result key = HKDF-SHA256(task.key, salt="androllm-jarvislink", info="result-v2"), AAD "androllm/v2/result"
+  event key  = HKDF-SHA256(task.key, salt="androllm-jarvislink", info="event-v2"),  AAD "androllm/v2/event"
   task body {"id","text","from","ts","ttl_s"}; result body {"id","status","text","ts"}
+  event body {"id","type","body","ts"} on jarvis/phone/event, envelope kind "event" (branch R1, phone-originated,
+    e.g. type "apps.changed" with body {"pkg","oldVc","newVc","kind","ts","sensitive"}; this script ignores events)
   Broker clients see neither task nor answer text; anything that does not decrypt is ignored.
   "accepted" and "duplicate" are not final. On "busy" retry later with a NEW id.
 

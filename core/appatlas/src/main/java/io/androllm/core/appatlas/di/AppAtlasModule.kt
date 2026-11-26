@@ -45,6 +45,9 @@ abstract class AppAtlasModule {
 
     @Binds abstract fun bindPackageSource(source: AndroidPackageSource): PackageSource
 
+    /** Branch R1: `apps.changed` goes to Jarvis when core:jarvislink binds a sink (absent → not reported). */
+    @dagger.BindsOptionalOf abstract fun optionalEventSink(): io.androllm.core.tools.remote.JarvisEventSink
+
     companion object {
         @Provides
         @Singleton
@@ -59,6 +62,8 @@ abstract class AppAtlasModule {
                 .addMigrations(AtlasMigrations.MIGRATION_2_3)
                 // Branch Q: v3 → v4 adds playbooks.verifiedCount (fast-path trust).
                 .addMigrations(AtlasMigrations.MIGRATION_3_4)
+                // Branch R1: v4 → v5 adds playbooks.staleReason (stale after an app update).
+                .addMigrations(AtlasMigrations.MIGRATION_4_5)
                 .fallbackToDestructiveMigration(dropAllTables = true)
                 .build()
 

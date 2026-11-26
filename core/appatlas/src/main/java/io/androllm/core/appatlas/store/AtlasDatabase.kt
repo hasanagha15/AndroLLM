@@ -86,7 +86,7 @@ abstract class AtlasDao {
 
 // v3 (branch N): + playbooks, playbook_relearn (AtlasMigrations.MIGRATION_2_3). Schema exported to core/appatlas/schemas.
 // v4 (branch Q): + playbooks.verifiedCount (AtlasMigrations.MIGRATION_3_4).
-@Database(entities = [AtlasAppRow::class, LearnedPathRow::class, PlaybookRow::class, RelearnRow::class], version = 4, exportSchema = true)
+@Database(entities = [AtlasAppRow::class, LearnedPathRow::class, PlaybookRow::class, RelearnRow::class], version = 5, exportSchema = true)
 abstract class AtlasDatabase : RoomDatabase() {
     abstract fun dao(): AtlasDao
     abstract fun playbookDao(): PlaybookDao

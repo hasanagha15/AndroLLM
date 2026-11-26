@@ -172,8 +172,22 @@ data class StoredPlaybook(
      * seen. Reset when an import changes the playbook. A Jarvis-synced
      * playbook is routed by the zero-LLM fast path only once this is > 0.
      */
-    val verifiedCount: Int = 0
-)
+    val verifiedCount: Int = 0,
+    /**
+     * Branch R1: why [status] is STALE. [STALE_APP_UPDATED] = the app was
+     * updated (AppUpdateWatcher) — not replayed by the fast path, replayed
+     * strict by playbook_run until a verified owner run clears it. Null = a
+     * replay mismatch on [flaggedVersion] (branch N meaning).
+     */
+    val staleReason: String? = null
+) {
+    /** Branch R1: stale because the app was updated (see [staleReason]). */
+    val isAppUpdatedStale: Boolean get() = status == PlaybookStatus.STALE && staleReason == STALE_APP_UPDATED
+
+    companion object {
+        const val STALE_APP_UPDATED = "app_updated"
+    }
+}
 
 /** Small record Jarvis pulls over the link to re-crawl a playbook. Ids only, no user text. */
 @Serializable
@@ -183,7 +197,7 @@ data class RelearnRequest(
     val playbookId: String,
     /** Failing step index, -1 = app update outside the learned range. */
     val failedStep: Int,
-    /** Short machine reason: expect_timeout | target_not_found | wrong_app | version_update | postcondition. */
+    /** Short machine reason: expect_timeout | target_not_found | wrong_app | version_update | postcondition | app_updated. */
     val reason: String,
     val createdAt: Long
 )

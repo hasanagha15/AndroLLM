@@ -36,7 +36,9 @@ data class PlaybookRow(
     val source: String,
     /** Branch Q: runs that succeeded with the postcondition seen on this device. */
     @ColumnInfo(defaultValue = "0")
-    val verifiedCount: Int = 0
+    val verifiedCount: Int = 0,
+    /** Branch R1: why the row is STALE (`app_updated`); null = replay mismatch / not stale. */
+    val staleReason: String? = null
 )
 
 /** Branch N: a pending relearn request for Jarvis (one per playbook + app version). Ids only. */
@@ -134,7 +136,8 @@ class RoomPlaybookStore(private val dao: PlaybookDao) : PlaybookStore {
             lastRunAt = r.lastRunAt,
             importedAt = r.importedAt,
             source = r.source,
-            verifiedCount = r.verifiedCount
+            verifiedCount = r.verifiedCount,
+            staleReason = r.staleReason
         )
     }.getOrNull()
 
@@ -153,7 +156,8 @@ class RoomPlaybookStore(private val dao: PlaybookDao) : PlaybookStore {
         lastRunAt = s.lastRunAt,
         importedAt = s.importedAt,
         source = s.source,
-        verifiedCount = s.verifiedCount
+        verifiedCount = s.verifiedCount,
+        staleReason = s.staleReason
     )
 }
 
@@ -195,6 +199,21 @@ object AtlasMigrations {
     val MIGRATION_3_4 = object : Migration(3, 4) {
         override fun migrate(db: SupportSQLiteDatabase) {
             SQL_3_4.forEach(db::execSQL)
+        }
+    }
+
+    /**
+     * v4 → v5 (branch R1): playbooks.staleReason — `app_updated` when the
+     * AppUpdateWatcher saw the app update (fast path off until a verified
+     * owner run). Existing rows keep their state (null = branch N meaning).
+     */
+    val SQL_4_5: List<String> = listOf(
+        "ALTER TABLE `playbooks` ADD COLUMN `staleReason` TEXT"
+    )
+
+    val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            SQL_4_5.forEach(db::execSQL)
         }
     }
 }

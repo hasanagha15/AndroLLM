@@ -151,7 +151,10 @@ for apps that handle payment schemes: upi, venmo, metamask, wc, …).
     required, a unique best node before any clickable preference); a relearn
     request `version_update` is queued once;
   - **stale** for this version (an earlier mismatch) → not replayed; `playbook_run`
-    goes straight to the ui_run fallback (if allowed).
+    goes straight to the ui_run fallback (if allowed);
+  - **stale(app_updated)** (branch R1, see *App updates* below) → never taken by the
+    fast path; `playbook_run` replays it **strict** (like unverified) until a verified
+    owner run clears the mark.
 - On mismatch (`expect_timeout`, `target_not_found`, `wrong_app`,
   `ambiguous_target`) the run stops with a structured failure — step index,
   expected ids, seen package + seen ids (no screen text) — the playbook is
@@ -163,6 +166,50 @@ for apps that handle payment schemes: upi, venmo, metamask, wc, …).
 - Postcondition not seen → `verified=false` + relearn request `postcondition` (not stale).
 
 ## Jarvis link
+
+### Phone → Jarvis events (branch R1)
+
+Phone-originated messages use their own topic, key and AAD, so an event can never be
+replayed as a task or taken for a result:
+
+```
+topic      jarvis/phone/event   (QoS 1, not retained)
+envelope   {"v":2,"kind":"event","n":b64(nonce12),"c":b64(ct||tag)}
+key        HKDF-SHA256(task.key, salt="androllm-jarvislink", info="event-v2"), AAD "androllm/v2/event"
+inner      {"id":"ev-<ms>-<hex12>","type":"apps.changed","body":{…},"ts":<ms>}   (≤ 4 KiB)
+```
+
+`apps.changed` body — exactly these fields:
+
+```json
+{"pkg":"com.example.video","oldVc":150,"newVc":151,"kind":"updated","ts":1795000000000,"sensitive":false}
+```
+
+| field | type | meaning |
+|---|---|---|
+| `pkg` | string | package name |
+| `oldVc` | long \| null | versionCode before; `null` when `kind` = `added` |
+| `newVc` | long \| null | versionCode now; `null` when `kind` = `removed` |
+| `kind` | `added` \| `updated` \| `removed` | `updated` also covers a downgrade |
+| `ts` | long | ms since epoch, when the phone saw the change |
+| `sensitive` | bool | protected app: report only — never pull, decode or crawl it |
+
+- Queued only while the link is enabled in Settings (off → dropped). The outbox
+  (SharedPreferences `jarvis_event_outbox`, excluded from backup) keeps ≤ 200 events,
+  ≤ 7 days, oldest first; it is flushed on connect and after each new event, and a
+  failed publish stops the flush (retried on the next connect).
+- Receivers dedup by `id` (redelivery) and by `pkg` + `newVc` (the design's relearn queue).
+- Consumer (branch R2, pi-brain `apps_changed_sub.py`, decoder `event-v2`) maps `kind`
+  `added` / `updated` / `removed` to `ADDED` / `REPLACED` / `REMOVED` and appends the change
+  to the relearn queue. It re-checks sensitivity on its side (fail closed), so `sensitive`
+  is advisory. Its legacy fallback (a result-key envelope on `jarvis/phone/result` carrying
+  `"type":"apps.changed"`) is not used by the phone. A cross-language test vector
+  (`JarvisEventTest`) pins the exact bytes.
+- Broker: the phone user needs `topic write jarvis/phone/event`, the Jarvis reader
+  `topic read jarvis/phone/event` (core/jarvislink/broker/mosquitto-acl-snippet.conf).
+  Until then the broker refuses the publish and the events wait in the outbox.
+
+### Jarvis → phone typed tasks
 
 Same envelope, keys and AAD as text tasks (`jarvis/phone/task`, protocol v2).
 The inner (encrypted) task JSON carries a `type` instead of `text`:
@@ -180,8 +227,45 @@ The inner (encrypted) task JSON carries a `type` instead of `text`:
 - `playbooks.sync` result text: `imported N, rejected M: <id>: <reason>; …` (status `ok`, or `invalid` when nothing was imported).
 - `playbooks.relearn` (`limit` default 30, max 100) result text:
   `{"requests":[{"package","versionCode","playbookId","failedStep","reason","createdAt"}…],"more":bool}`
-  (`failedStep` = -1 for `version_update`), always < 8000 chars; only the records
+  (`failedStep` = -1 for `version_update` and `app_updated`), always < 8000 chars; only the records
   that fit are marked delivered — pull again while `more` is true.
+
+## App updates (branch R1)
+
+The phone notices an app install / update / removal itself (`AppUpdateWatcher`,
+core/appatlas `update/`), within seconds, with zero network:
+
+- a runtime receiver for `PACKAGE_ADDED` / `PACKAGE_REPLACED` / `PACKAGE_REMOVED`
+  (scheme `package`) while the app process lives (an update's REMOVED/ADDED with
+  `EXTRA_REPLACING` are skipped, REPLACED is used);
+- `PackageManager.getChangedPackages(seq)` with the sequence number persisted
+  (SharedPreferences `app_update_watcher`, excluded from backup), at start-up and from
+  a periodic WorkManager job every 15 minutes (`app_update_check`). After a reboot
+  (`Settings.Global.BOOT_COUNT` changed) the sequence restarts at 0. The first run only
+  records a baseline;
+- dedup by package + versionCode: one update is handled once, however many
+  broadcasts / polls see it. "Installed" means launchable, as in the atlas;
+- off while the App Atlas is off (the baseline is then forgotten).
+
+Per change:
+
+1. **Protected package** (`SensitiveAppGuard` list, the owner's list, the atlas
+   heuristic / flag): reported to Jarvis with `"sensitive": true` — nothing else (no
+   stale mark, no relearn request, no pull, no crawl).
+2. Otherwise, installed or updated: **every** playbook of the package becomes
+   `STALE` with `staleReason = "app_updated"` and `flaggedVersion` = the new versionCode
+   (Room `app_atlas.db` v5, column `playbooks.staleReason`). The fast path stops
+   matching them immediately (whatever version the atlas cache still shows), and one
+   relearn request `{"failedStep":-1,"reason":"app_updated"}` per playbook is queued
+   (once per version). `verifiedCount` is kept; the status alone keeps the fast path off.
+   - `playbook_run` still replays the playbook strict (weighted locators often still find
+     the element under a new id). A success with the postcondition seen on an **owner**
+     run (not a Jarvis turn, gate Q N2) clears the mark → `OK` (self-heal). A mismatch
+     makes it stale for that version in the branch N sense (ui_run fallback).
+   - The atlas sync never clears the mark; an unchanged `playbooks.sync` re-import keeps
+     it, a changed playbook starts `OK` with `verifiedCount = 0` as before.
+3. An `apps.changed` event goes to Jarvis (below). Logs carry package name, kind and
+   version numbers only.
 
 ## Tools for the model
 

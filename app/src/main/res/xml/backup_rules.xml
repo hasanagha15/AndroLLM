@@ -10,4 +10,7 @@
     <exclude domain="file" path="datastore/sensitive_app_guard_prefs.preferences_pb" />
     <!-- Branch L: App Atlas settings (exclusion list names installed apps); the atlas DB itself lives in no_backup -->
     <exclude domain="sharedpref" path="app_atlas_settings.xml" />
+    <!-- Branch R1: app update watcher (versionCode per installed app) and the Jarvis event outbox (package names) -->
+    <exclude domain="sharedpref" path="app_update_watcher.xml" />
+    <exclude domain="sharedpref" path="jarvis_event_outbox.xml" />
 </full-backup-content>

@@ -8,8 +8,10 @@
     Only the "file" domain is included. SharedPreferences are therefore NOT
     backed up or transferred at all on Android 12+ - this keeps
     sensitive_app_guard.xml (F1 legacy) and app_atlas_settings.xml (branch L,
-    the exclusion list names installed apps) on the device. Do not add an
-    <include domain="sharedpref"> here without excluding both files. The App
+    the exclusion list names installed apps) on the device, as well as
+    app_update_watcher.xml and jarvis_event_outbox.xml (branch R1, installed
+    package names). Do not add an <include domain="sharedpref"> here without
+    excluding these files. The App
     Atlas database lives in no_backup/ (never part of any domain).
 -->
 <data-extraction-rules>

@@ -45,7 +45,9 @@ class AppAtlasStarter @Inject constructor(
     private val repository: AppAtlasRepository,
     private val recorder: LearnedPathRecorder,
     // Branch N: zero-LLM playbook commands for chat + voice (lazy: built on first start()).
-    private val fastPath: dagger.Lazy<io.androllm.core.appatlas.playbook.PlaybookFastPath>
+    private val fastPath: dagger.Lazy<io.androllm.core.appatlas.playbook.PlaybookFastPath>,
+    // Branch R1: app install / update / removal → stale playbooks + apps.changed to Jarvis.
+    private val appUpdates: dagger.Lazy<io.androllm.core.appatlas.update.AppUpdateWatcher>
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val pending = LinkedHashSet<String>()
@@ -59,6 +61,8 @@ class AppAtlasStarter @Inject constructor(
         runCatching { fastPath.get().attach() }
         repository.watchSensitiveApps()
         registerPackageReceiver()
+        runCatching { appUpdates.get().start() }
+            .onFailure { Timber.w("AppAtlas: app update watcher not started (%s)", it.javaClass.simpleName) }
         scheduleWeeklySweep()
         scope.launch {
             delay(STARTUP_DELAY_MS) // stay off the cold-start critical path

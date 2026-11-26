@@ -331,7 +331,11 @@ class PlaybookFastPath(
     fun attach() = io.androllm.core.tools.remote.UtteranceFastPaths.register(this)
 
     suspend fun match(utterance: String): RouteMatch? =
-        PlaybookRouter.match(utterance, routable().filter { PlaybookPolicy.fastPathTrusted(it) }.map { it.playbook })
+        PlaybookRouter.match(
+            utterance,
+            // Branch R1: never a playbook whose app was updated since it was verified.
+            routable().filter { PlaybookPolicy.fastPathTrusted(it) && !it.isAppUpdatedStale }.map { it.playbook }
+        )
 
     override suspend fun tryHandle(utterance: String): String? = handle(utterance).reply
 
@@ -369,7 +373,7 @@ class PlaybookFastPath(
     suspend fun run(m: RouteMatch): ToolResult {
         val sp = lookup(m.playbook.id) ?: return ToolResult.Failure("playbook gone", retryable = false)
         // Branch Q: re-check at run time (the library may have changed since routing).
-        if (!PlaybookPolicy.fastPathTrusted(sp) || sp.playbook.isRisky) {
+        if (!PlaybookPolicy.fastPathTrusted(sp) || sp.playbook.isRisky || sp.isAppUpdatedStale) {
             return ToolResult.Failure("playbook not eligible for the fast path", retryable = false)
         }
         return runPlaybook(sp, m.slots)

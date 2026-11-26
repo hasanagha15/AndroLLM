@@ -89,7 +89,9 @@ class PlaybookRunner(
             return fallbackOr(p, slots, allowFallback, "Playbook ${p.id} is stale on this app version (relearn requested).")
         }
         // Update seen before the atlas sync did: flag + queue the relearn request once.
-        if (status == PlaybookStatus.UNVERIFIED && (sp.status != PlaybookStatus.UNVERIFIED || sp.flaggedVersion != version)) {
+        if (status == PlaybookStatus.UNVERIFIED && !sp.isAppUpdatedStale &&
+            (sp.status != PlaybookStatus.UNVERIFIED || sp.flaggedVersion != version)
+        ) {
             repository.onAppVersion(p.packageName, version)
         }
 
@@ -104,7 +106,8 @@ class PlaybookRunner(
                 summary = buildString {
                     append("Done: ").append(p.id).append(" (").append(r.stepsDone).append(" steps, ").append(r.elapsedMs).append(" ms")
                     append(if (r.hasPostcondition) ", verified=${r.verified}" else ", no postcondition").append(").")
-                    if (status == PlaybookStatus.UNVERIFIED) append(" App version is outside the learned range; ran in strict mode.")
+                    if (sp.isAppUpdatedStale) append(" The app was updated since the playbook was checked; ran in strict mode.")
+                    else if (status == PlaybookStatus.UNVERIFIED) append(" App version is outside the learned range; ran in strict mode.")
                     if (r.hasPostcondition && !r.verified) append(" The final screen was not confirmed - check with ui_read_screen.")
                 },
                 data = buildJsonObject {

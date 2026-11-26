@@ -23,6 +23,9 @@ object PlaybookPolicy {
      * - otherwise OK.
      */
     fun effectiveStatus(sp: StoredPlaybook, installedVersion: Long?): PlaybookStatus {
+        // Branch R1: stale after an app update → never OK (the fast path stops at once, whatever
+        // version the atlas cache still shows); playbook_run replays it strict until a verified owner run.
+        if (sp.isAppUpdatedStale) return PlaybookStatus.UNVERIFIED
         val v = installedVersion ?: return if (sp.status == PlaybookStatus.STALE) PlaybookStatus.STALE else PlaybookStatus.OK
         if (sp.status == PlaybookStatus.STALE && sp.flaggedVersion == v) return PlaybookStatus.STALE
         return if (v < sp.playbook.versionMin || v > sp.playbook.versionMax) PlaybookStatus.UNVERIFIED else PlaybookStatus.OK
@@ -43,12 +46,31 @@ object PlaybookPolicy {
     fun onAppVersion(items: List<StoredPlaybook>, versionCode: Long): List<StoredPlaybook> = items.map { sp ->
         val inRange = versionCode in sp.playbook.versionMin..sp.playbook.versionMax
         when {
+            // Branch R1: the atlas sync never clears an app-update stale mark (only a verified owner run does).
+            sp.isAppUpdatedStale -> sp
             inRange && sp.status != PlaybookStatus.OK -> sp.copy(status = PlaybookStatus.OK, flaggedVersion = null)
             !inRange && !(sp.status == PlaybookStatus.STALE && sp.flaggedVersion == versionCode) ->
                 sp.copy(status = PlaybookStatus.UNVERIFIED, flaggedVersion = versionCode)
             else -> sp
         }
     }
+
+    /**
+     * Branch R1: the app was updated (AppUpdateWatcher). Every playbook of the
+     * package becomes STALE(app_updated) for [versionCode]: the fast path stops
+     * at once. Already marked for this version → unchanged.
+     */
+    fun onAppUpdated(items: List<StoredPlaybook>, versionCode: Long): List<StoredPlaybook> = items.map { sp ->
+        if (sp.isAppUpdatedStale && sp.flaggedVersion == versionCode) sp
+        else sp.copy(status = PlaybookStatus.STALE, flaggedVersion = versionCode, staleReason = StoredPlaybook.STALE_APP_UPDATED)
+    }
+
+    /**
+     * Branch R1 (design §2.3): a verified run of the OWNER (postcondition seen,
+     * not a remote turn) heals an app-update stale mark — back to OK.
+     */
+    fun afterVerifiedRun(sp: StoredPlaybook): StoredPlaybook =
+        if (sp.isAppUpdatedStale) sp.copy(status = PlaybookStatus.OK, flaggedVersion = null, staleReason = null) else sp
 }
 
 /**
@@ -106,6 +128,8 @@ class PlaybookRepository(
                     playbook = p,
                     status = if (same) prev!!.status else PlaybookStatus.OK,
                     flaggedVersion = if (same) prev!!.flaggedVersion else null,
+                    // Branch R1: an unchanged re-import keeps the app-update stale mark too.
+                    staleReason = if (same) prev!!.staleReason else null,
                     successCount = prev?.successCount ?: 0, failCount = prev?.failCount ?: 0,
                     lastRunAt = prev?.lastRunAt ?: 0L, importedAt = now,
                     source = if (same) prev!!.source else source,
@@ -143,11 +167,13 @@ class PlaybookRepository(
 
     /** Successful run: counters only. */
     suspend fun recordSuccess(id: String, verified: Boolean = false) = update(id) {
-        it.copy(
+        val counted = it.copy(
             successCount = it.successCount + 1,
             verifiedCount = it.verifiedCount + if (verified) 1 else 0,
             lastRunAt = clock()
         )
+        // Branch R1: self-heal after an app update (owner-verified runs only — the caller decides).
+        if (verified) PlaybookPolicy.afterVerifiedRun(counted) else counted
     }
 
     /**
@@ -156,7 +182,12 @@ class PlaybookRepository(
      */
     suspend fun recordMismatch(id: String, versionCode: Long, failure: StepFailure) {
         val sp = get(id) ?: return
-        update(id) { it.copy(status = PlaybookStatus.STALE, flaggedVersion = versionCode, failCount = it.failCount + 1, lastRunAt = clock()) }
+        update(id) {
+            it.copy(
+                status = PlaybookStatus.STALE, flaggedVersion = versionCode, staleReason = null,
+                failCount = it.failCount + 1, lastRunAt = clock()
+            )
+        }
         // A mismatch is new information: it replaces a pending / delivered record of the same version.
         queueRelearn(sp.playbook, versionCode, failure.stepIndex, failure.kind.wire, replace = true)
     }
@@ -183,6 +214,26 @@ class PlaybookRepository(
             changed.filter { it.status == PlaybookStatus.UNVERIFIED && it.flaggedVersion == versionCode }.forEach {
                 addRelearnLocked(it.playbook, versionCode, -1, "version_update")
             }
+        }
+    }
+
+    /**
+     * Branch R1: AppUpdateWatcher saw [pkg] change to [versionCode]. All its
+     * playbooks become STALE(app_updated) — the fast path stops matching them
+     * immediately — and one relearn request `app_updated` per playbook is
+     * queued (once per version). Returns how many playbooks were newly marked.
+     * The caller never calls this for protected packages.
+     */
+    suspend fun onAppUpdated(pkg: String, versionCode: Long): Int = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val items = store.forPackage(pkg)
+            if (items.isEmpty()) return@withLock 0
+            val updated = PlaybookPolicy.onAppUpdated(items, versionCode)
+            val changed = updated.filterIndexed { i, sp -> sp != items[i] }
+            store.upsert(changed)
+            cache = null
+            changed.forEach { addRelearnLocked(it.playbook, versionCode, -1, StoredPlaybook.STALE_APP_UPDATED) }
+            changed.size
         }
     }
 

@@ -19,6 +19,10 @@ abstract class JarvisLinkModule {
     @Singleton
     abstract fun bindConfirmationNotifier(impl: NotificationConfirmationNotifier): ConfirmationNotifier
 
+    /** Branch R1: phone → Jarvis events (`apps.changed`) through the persisted outbox. */
+    @Binds
+    abstract fun bindEventSink(impl: io.androllm.core.jarvislink.events.JarvisEventOutbox): io.androllm.core.tools.remote.JarvisEventSink
+
     /** Branch N: typed data task handlers (may be empty). */
     @dagger.multibindings.Multibinds
     abstract fun dataTaskHandlers(): Set<io.androllm.core.tools.remote.RemoteDataTaskHandler>

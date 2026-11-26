@@ -186,13 +186,18 @@ class HiveMqJarvisLink(
      * [PUBLISH_TIMEOUT_MS] — never a CancellationException, so a slow network
      * cannot cancel the caller's worker loop.
      */
-    suspend fun publishResult(payload: ByteArray) {
+    suspend fun publishResult(payload: ByteArray) = publish(JarvisTopics.RESULT, payload)
+
+    /** Branch R1: publishes an encrypted phone event on `jarvis/phone/event` (QoS 1). Same failure contract. */
+    suspend fun publishEvent(payload: ByteArray) = publish(JarvisTopics.EVENT, payload)
+
+    private suspend fun publish(topic: String, payload: ByteArray) {
         val c = client ?: throw IOException("not connected")
         if (_state.value != LinkState.Connected) throw IOException("not connected")
         val result = withTimeoutOrNull(PUBLISH_TIMEOUT_MS) {
             runCatching {
                 c.publishWith()
-                    .topic(JarvisTopics.RESULT)
+                    .topic(topic)
                     .payload(payload)
                     .qos(MqttQos.AT_LEAST_ONCE)
                     .send()
