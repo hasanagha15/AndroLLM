@@ -60,7 +60,7 @@ class PlaybookRunner(
     private val engine = PlaybookEngine(driver)
     private val mutex = Mutex()
 
-    suspend fun run(id: String, args: Map<String, String?>, allowFallback: Boolean): ToolResult {
+    suspend fun run(id: String, args: Map<String, String?>, allowFallback: Boolean, requireTrustedOk: Boolean = false): ToolResult {
         if (!enabled()) return ToolResult.Failure("The App Atlas is turned off in Settings.", retryable = false)
         val sp = repository.get(id)
             ?: return ToolResult.Failure("No playbook '$id'. Call playbook_list first.", retryable = false)
@@ -68,10 +68,25 @@ class PlaybookRunner(
             is SlotFill.Ok -> f.slots
             is SlotFill.Error -> return ToolResult.Failure("${f.reason}. Params: ${PlaybookFormat.signature(sp.playbook)}", retryable = true)
         }
-        return runResolved(sp, slots, allowFallback)
+        return runResolved(sp, slots, allowFallback, requireTrustedOk)
     }
 
-    suspend fun runResolved(sp: StoredPlaybook, slots: SlotValues, allowFallback: Boolean): ToolResult = mutex.withLock {
+    /**
+     * [requireTrustedOk] (branch W, gate N2): re-check under the run mutex that the CURRENT stored
+     * playbook is trusted and has effective status OK (it may have changed while waiting for the mutex).
+     */
+    suspend fun runResolved(
+        snapshot: StoredPlaybook,
+        slots: SlotValues,
+        allowFallback: Boolean,
+        requireTrustedOk: Boolean = false
+    ): ToolResult = mutex.withLock {
+        val sp = if (requireTrustedOk) {
+            repository.get(snapshot.playbook.id)
+                ?: return ToolResult.Failure("playbook gone", data = notEligible("playbook_not_found"), retryable = false)
+        } else {
+            snapshot
+        }
         val p = sp.playbook
         // Live protection: the owner's list / guard / heuristic may have changed since import.
         val label = appLabel(p.packageName)
@@ -84,6 +99,14 @@ class PlaybookRunner(
         val version = installedVersion(p.packageName)
             ?: return ToolResult.Failure("${p.packageName} is not installed (or excluded from the atlas).", retryable = false)
         val status = PlaybookPolicy.effectiveStatus(sp, version)
+        if (requireTrustedOk) {
+            if (!PlaybookPolicy.fastPathTrusted(sp)) {
+                return ToolResult.Failure("not trusted on this device", data = notEligible("not_trusted"), retryable = false)
+            }
+            if (status != PlaybookStatus.OK) {
+                return ToolResult.Failure("status ${status.name.lowercase()}", data = notEligible("status_${status.name.lowercase()}"), retryable = false)
+            }
+        }
         if (status == PlaybookStatus.STALE) {
             Timber.i("Playbooks: %s stale on v%d — not replayed", p.id, version)
             return fallbackOr(p, slots, allowFallback, "Playbook ${p.id} is stale on this app version (relearn requested).")
@@ -184,6 +207,11 @@ class PlaybookRunner(
         } else {
             ToolResult.Failure("$why Fallback ui_run failed: ${out.summary}", data = data, retryable = false)
         }
+    }
+
+    /** Branch W: refused before any step (no screen change); [reason] is a machine code. */
+    private fun notEligible(reason: String) = buildJsonObject {
+        put("status", "refused"); put("reason", reason); put("steps_done", 0)
     }
 
     /** Structured failure data: ids, counts and op types only. */

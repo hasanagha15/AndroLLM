@@ -164,6 +164,9 @@ object JarvisProtocol {
     const val DEFAULT_TTL_S = 600L
     /** Short ttl + the persisted dedupe window make replay of a captured task useless. */
     const val MAX_TTL_S = 3_600L
+    /** Branch W: max ttl_s of UI-driving typed tasks ([SHORT_TTL_TYPES]). */
+    const val MAX_RUN_TTL_S = 300L
+    val SHORT_TTL_TYPES: Set<String> = setOf("playbook.run")
     /** Clock skew tolerated between Jarvis and the phone (both NTP-synced). */
     const val CLOCK_SKEW_MS = 120_000L
     const val KEY_BYTES = 32
@@ -243,6 +246,8 @@ object JarvisProtocol {
         if (text.isEmpty() && type == null) return TaskParse.Invalid("missing text", id)
         if (text.length > MAX_TEXT_LENGTH) return TaskParse.Invalid("text longer than $MAX_TEXT_LENGTH chars", id)
         if (ttl < 1 || ttl > MAX_TTL_S) return TaskParse.Invalid("ttl_s must be 1..$MAX_TTL_S", id)
+        // Branch W (gate N4): a task that drives the UI must start soon after it was sent, whatever Jarvis asks.
+        if (type in SHORT_TTL_TYPES && ttl > MAX_RUN_TTL_S) return TaskParse.Invalid("ttl_s must be 1..$MAX_RUN_TTL_S for $type", id)
         if (ts - nowMs > CLOCK_SKEW_MS) return TaskParse.Invalid("ts is in the future", id)
         val task = JarvisTask(id = id, text = text, from = from, sentAtMs = ts, ttlSeconds = ttl, type = type, body = body)
         if (nowMs > task.expiresAtMs()) return TaskParse.Expired(id, nowMs - ts)

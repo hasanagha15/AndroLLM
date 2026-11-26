@@ -61,6 +61,7 @@ class AppAtlasSettingsViewModel @Inject constructor(
     }
     fun setRecordPaths(v: Boolean) = store.setRecordPaths(v)
     fun setAcceptRemotePlaybooks(v: Boolean) = store.setAcceptRemotePlaybooks(v)
+    fun setAllowJarvisPlaybookRun(v: Boolean) = store.setAllowJarvisPlaybookRun(v)
     fun setFastPlaybookCommands(v: Boolean) = store.setFastPlaybookCommands(v)
     fun clearPaths() { viewModelScope.launch { repository.clearPaths() } }
 
@@ -112,6 +113,12 @@ fun AppAtlasSettingsCard(viewModel: AppAtlasSettingsViewModel = hiltViewModel())
             // Branch N: playbooks.
             ToggleRow("Fast playbook commands (no model for matching, non-risky commands)", settings.fastPlaybookCommands) { viewModel.setFastPlaybookCommands(it) }
             ToggleRow("Accept playbooks from Jarvis", settings.acceptRemotePlaybooks) { viewModel.setAcceptRemotePlaybooks(it) }
+            // Branch W (gate B1, N9): separate, off by default.
+            ToggleRow(
+                "Jarvis may run verified playbooks (no confirmation for safe steps; risky steps still ask on a tap-only card; " +
+                    "a playbook you imported from a file or ran once yourself counts as verified for any values)",
+                settings.allowJarvisPlaybookRun
+            ) { viewModel.setAllowJarvisPlaybookRun(it) }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(onClick = { viewModel.reindex(); note = "Re-indexing in the background…" }, enabled = settings.enabled && !status.running) {

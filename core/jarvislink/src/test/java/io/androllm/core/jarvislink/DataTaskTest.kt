@@ -122,4 +122,14 @@ class DataTaskTest {
         assertThat(final("w4")).isEqualTo(ResultStatus.INVALID)
         assertThat(final("w5")).isEqualTo(ResultStatus.INVALID)
     }
+
+    @Test
+    fun `branch W - playbook run tasks may not live longer than 300 s`() {
+        val long = JarvisProtocol.encodeTask(TestTasks.KEY, "t1", "", now, ttl = 600, type = "playbook.run", body = body)
+        assertThat(JarvisProtocol.parseTask(long, now, TestTasks.KEY)).isInstanceOf(TaskParse.Invalid::class.java)
+        val ok = JarvisProtocol.encodeTask(TestTasks.KEY, "t2", "", now, ttl = 300, type = "playbook.run", body = body)
+        assertThat(JarvisProtocol.parseTask(ok, now, TestTasks.KEY)).isInstanceOf(TaskParse.Valid::class.java)
+        val sync = JarvisProtocol.encodeTask(TestTasks.KEY, "t3", "", now, ttl = 600, type = "playbooks.sync", body = body)
+        assertThat(JarvisProtocol.parseTask(sync, now, TestTasks.KEY)).isInstanceOf(TaskParse.Valid::class.java)
+    }
 }
