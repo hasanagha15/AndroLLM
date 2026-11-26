@@ -749,6 +749,32 @@ class ToolRunCoordinator @Inject constructor(
                 .map { ChatPromptMessage(role = "system", content = it) }
     }
 
+    /**
+     * Branch U (step 5): the native tool loop's round as STRUCTURED turns — the
+     * assistant message carrying the executed calls, then one `tool` message per
+     * result (tool output as untrusted data, the registered app header kept apart
+     * as a trusted note). The engine lays them out per family: Gemma 4 natively
+     * (`tool_calls` + `<|tool_response>`), Qwen as official `<tool_call>` /
+     * `<tool_response>` blocks, others as framed data in the user turn.
+     */
+    fun buildToolTurns(assistantText: String, records: List<ToolExecutionRecord>): List<ChatPromptMessage> {
+        if (records.isEmpty()) return emptyList()
+        val calls = records.map {
+            io.androllm.engine.models.ChatPromptToolCall(canonicalName(it.call.name), it.call.arguments.toString())
+        }
+        val assistant = ChatPromptMessage(role = "assistant", content = assistantText, toolCalls = calls)
+        val results = records.map { record ->
+            val (header, data) = ToolAppNotes.split(record.call.name, record.result.summary)
+            ChatPromptMessage(
+                role = ChatPromptMessage.ROLE_TOOL,
+                content = if (record.result.isSuccess) data else "Error: $data",
+                toolName = canonicalName(record.call.name),
+                toolNote = header
+            )
+        }
+        return listOf(assistant) + results
+    }
+
     /** Branch M: the registry's canonical tool name (never the model's casing / padding) for app notes. */
     private fun canonicalName(name: String): String =
         runCatching { registry.get(name)?.spec?.name }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: name.trim()
@@ -790,20 +816,24 @@ class ToolRunCoordinator @Inject constructor(
         // NEVER retry tools that run behind the confirmation gate (a retry
         // would re-ask the user who already approved), nor outcomes a retry
         // cannot fix (declined, settings-blocked).
-        while (result is ToolResult.Failure && result.retryable && !requiresConfirmation &&
+        // Branch U: a failure that cannot succeed on a re-run (missing runtime
+        // permission, unsupported hardware, declined) is never retried.
+        while (result is ToolResult.Failure && isRetryableFailure(result) && !requiresConfirmation &&
             retries < TOOL_MAX_ATTEMPTS - 1
         ) {
             retries++
             Timber.i("ToolRunCoordinator: retrying '${call.name}' (%d/%d) after failure", retries, TOOL_MAX_ATTEMPTS - 1)
-            onEvent(ToolEvent.Started(call.name, "retry $retries"))
-            logger.logRetry(call.name, retries, result.summary.take(80))
+            // Branch U: no extra Started event per retry — every Started opened a
+            // new "Running…" card that no terminal event ever closed. The call's
+            // single card stays Running until the caller reports the outcome.
+            logger.logRetry(call.name, retries, "[${result.summary.length} chars]")
             kotlinx.coroutines.delay(TOOL_RETRY_POLICY.delayMsForAttempt(retries))
             result = executor.execute(call)
             // Automatic recovery: handle transient network / rate limit / timeout without restarting entire execution
             // Each retry is an attempt to recover; backoff helps with rate limits.
         }
         // ── Alternative tool fallback (retry engine: Alternative Tool) ─────
-        if (result is ToolResult.Failure && result.retryable && !requiresConfirmation) {
+        if (result is ToolResult.Failure && isRetryableFailure(result) && !requiresConfirmation) {
             val alternative = findAlternativeTool(call.name, call)
             if (alternative != null) {
                 Timber.i("ToolRunCoordinator: trying alternative tool '${alternative.name}' for failed '${call.name}'")
@@ -814,9 +844,12 @@ class ToolRunCoordinator @Inject constructor(
                 val outVal = outputValidator.validate(alternative.name, altResult)
                 if (outVal is ToolOutputValidator.OutputValidation.Valid && altResult.isSuccess) {
                     Timber.i("ToolRunCoordinator: alternative tool '${alternative.name}' succeeded")
+                    onEvent(ToolEvent.Succeeded(alternative.name, altResult.summary))
                     return Triple(altResult, false, retries)
                 } else {
                     Timber.w("ToolRunCoordinator: alternative tool '${alternative.name}' also failed")
+                    // Branch U: close the alternative's own card (never left "Running…").
+                    onEvent(ToolEvent.Failed(alternative.name, altResult.summary))
                 }
             }
         }
@@ -829,22 +862,34 @@ class ToolRunCoordinator @Inject constructor(
 
     /**
      * Finds an alternative tool that can achieve the same goal as [failedTool] — used by the retry engine.
-     * Ranks candidates with same permission/category and health, preferring local and healthier tools.
+     *
+     * Branch U (step 5): the old filter was `a && b && c && healthy || total < 5`, so
+     * ANY rarely-used tool (the failed one itself, or set_flashlight for a failed
+     * open_clock) became the "alternative" and was re-run with the SAME arguments.
+     * An alternative is now chosen only when ALL of these hold:
+     *  - it is a DIFFERENT tool;
+     *  - both the failed tool and the candidate are read-only ([isReadOnlyTool]):
+     *    a side-effecting tool (confirmation, device state, send/call/delete) is
+     *    never picked automatically, and a failed side-effecting call is never
+     *    re-routed;
+     *  - the candidate's schema accepts the call's arguments unchanged
+     *    ([isSchemaCompatible]);
+     *  - same permission or category, and healthy (or not yet sampled).
      */
-    private fun findAlternativeTool(failedTool: String, failedCall: ToolCall): ToolCall? {
+    internal fun findAlternativeTool(failedTool: String, failedCall: ToolCall): ToolCall? {
         val failedSpec = registry.get(failedTool)?.spec ?: return null
+        if (!isReadOnlyTool(failedSpec)) return null
         val candidates = registry.all().map { it.spec }.filter { spec ->
-            spec.name != failedTool &&
-            spec.isAvailable &&
-            // Same logical capability or same category indicates similar function
-            (spec.permission == failedSpec.permission || spec.category == failedSpec.category) &&
-            // Health check: unhealthy tools not tried
-            healthMonitor.isHealthy(spec.name) || healthMonitor.getStats(spec.name).total < 5
+            !spec.name.trim().equals(failedSpec.name.trim(), ignoreCase = true) &&
+                spec.isAvailable &&
+                isReadOnlyTool(spec) &&
+                (spec.permission == failedSpec.permission || spec.category == failedSpec.category) &&
+                isSchemaCompatible(spec, failedCall.arguments) &&
+                (healthMonitor.isHealthy(spec.name) || healthMonitor.getStats(spec.name).total < 5)
         }
         if (candidates.isEmpty()) return null
         val ranked = ranker.rank(candidates, query = failedCall.arguments.toString())
         val best = ranked.firstOrNull()?.spec ?: return null
-        // Adapt arguments: for alternative, reuse same arguments (tools share similar param names via ToolArgs aliasing)
         return ToolCall(
             id = "alt_${best.name}_${System.currentTimeMillis().toString().takeLast(4)}",
             name = best.name,
@@ -899,6 +944,43 @@ class ToolRunCoordinator @Inject constructor(
 
         /** A tool result larger than this is delivered to the model in chunks. */
         const val TOOL_RESULT_CHUNK_CHARS = 8_000
+
+        /**
+         * Branch U: `ToolResult.Failure.data["status"]` values that mark an outcome no
+         * re-run can fix (missing runtime permission, unsupported hardware/OS).
+         */
+        val PERMANENT_FAILURE_STATUSES: Set<String> = setOf(
+            "permission_denied", "permission_required", "unsupported", "not_available", "declined"
+        )
+
+        /** Branch U: true when a failed call may be retried / re-routed at all. */
+        fun isRetryableFailure(result: ToolResult.Failure): Boolean {
+            if (!result.retryable) return false
+            val status = runCatching {
+                (result.data["status"] as? kotlinx.serialization.json.JsonPrimitive)?.content
+            }.getOrNull()
+            return status == null || status !in PERMANENT_FAILURE_STATUSES
+        }
+
+        /**
+         * Branch U: read-only = a pure read whose output may be cached (spec contract:
+         * never true for tools that send, write or change device state) and that needs
+         * no confirmation. Only such tools take part in automatic alternatives.
+         */
+        fun isReadOnlyTool(spec: io.androllm.core.tools.api.ToolSpec): Boolean =
+            spec.cacheable && !spec.requiresConfirmation
+
+        /**
+         * Branch U: the candidate accepts [arguments] unchanged — every argument is a
+         * declared property and every required property is present.
+         */
+        fun isSchemaCompatible(spec: io.androllm.core.tools.api.ToolSpec, arguments: JsonObject): Boolean {
+            val props = (spec.parameters["properties"] as? JsonObject)?.keys.orEmpty()
+            val required = (spec.parameters["required"] as? kotlinx.serialization.json.JsonArray)
+                ?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                .orEmpty()
+            return arguments.keys.all { it in props } && required.all { it in arguments.keys }
+        }
 
         /** Local feedback system messages are split at this size. */
         private const val LOCAL_FEEDBACK_CHUNK_CHARS = 6_000

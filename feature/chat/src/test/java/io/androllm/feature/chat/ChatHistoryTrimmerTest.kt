@@ -154,4 +154,44 @@ class ChatHistoryTrimmerTest {
         val mixedEstimate = ChatHistoryTrimmer.estimateTokens(mixed)
         assertTrue("mixed CJK must not be under-estimated: $mixedEstimate", mixedEstimate >= 11)
     }
+
+    @Test
+    fun `step 5 - short reply keeps the exchange it answers when the reserve can shrink`() {
+        val history = listOf(
+            user("выключи блютуз", 1),
+            assistant("Я могу выключить Bluetooth. Выполнить действие?", 2),
+            user("да", 3)
+        )
+        // nCtx 4096 after the auto-reload, large system overhead: the normal
+        // budget is exhausted and the old policy kept only "да".
+        val old = ChatHistoryTrimmer.trim(history, contextLength = 4096, reservedOutputTokens = 1365, systemTokenOverhead = 2800)
+        assertEquals(listOf(history[2]), old)
+        val kept = ChatHistoryTrimmer.trim(
+            history, contextLength = 4096, reservedOutputTokens = 1365,
+            systemTokenOverhead = 2800, minOutputTokens = 256
+        )
+        assertEquals(history, kept)
+    }
+
+    @Test
+    fun `exchange guarantee never overflows the context`() {
+        val history = listOf(
+            user("x".repeat(20_000), 1),
+            assistant("y".repeat(20_000), 2),
+            user("да", 3)
+        )
+        val kept = ChatHistoryTrimmer.trim(
+            history, contextLength = 4096, reservedOutputTokens = 1365,
+            systemTokenOverhead = 1000, minOutputTokens = 256
+        )
+        assertEquals(listOf(history[2]), kept)
+    }
+
+    @Test
+    fun `cyrillic is charged like an alphabetic script, not like CJK`() {
+        val ru = "привет как дела".repeat(10) // 150 chars
+        val estimate = ChatHistoryTrimmer.estimateTokens(ru)
+        // ~2 chars/token (conservative vs real ~3) + overhead, far below 1 token/char.
+        assertTrue("estimate=$estimate", estimate in 60..90)
+    }
 }

@@ -12,10 +12,11 @@ class ToolConfirmationManagerTest {
 
     private fun confirmation(id: String) = PendingToolConfirmation(
         id = id,
-        toolName = "send_sms",
-        toolDisplayName = "SMS",
-        actionSummary = "Run SMS — phone=+91…",
-        speakableQuestion = "Do you want me to send the SMS? Say yes or no."
+        // Branch U: a voice-answerable tool (outward-communication tools are tap-only).
+        toolName = "set_brightness",
+        toolDisplayName = "System",
+        actionSummary = "Run System — percent=40",
+        speakableQuestion = "Do you want me to set the brightness? Say yes or no."
     )
 
     @Test
@@ -203,7 +204,10 @@ class ToolConfirmationManagerTest {
 
     @Test
     fun `car messaging and glasses tools are tap-only and ignore a spoken yes`() = runBlocking {
-        for (tool in listOf("tesla_command", "whatsapp_reply", "glasses_show_text")) {
+        for (tool in listOf(
+            "tesla_command", "whatsapp_reply", "glasses_show_text",
+            "send_sms", "make_call", "send_email", "note_delete", "share_text"
+        )) {
             val manager = ToolConfirmationManager()
             var asked = false
             manager.setVoiceResponder { asked = true; true }
@@ -228,6 +232,23 @@ class ToolConfirmationManagerTest {
         assertThat(ToolConfirmationManager.isTapOnly(confirmation("c").copy(remoteOrigin = "Jarvis"))).isTrue()
         for (n in listOf("Tesla_Command", "TESLA_COMMAND", " tesla_command ", "Glasses_Show_Text", "WhatsApp_Reply")) {
             assertThat(ToolConfirmationManager.isTapOnly(confirmation("n").copy(toolName = n))).isTrue()
+        }
+    }
+
+    @Test
+    fun `step 5 - sms and calls can never be approved by voice`() {
+        for (n in listOf("send_sms", "make_call", "Send_Email", "note_delete", "share_text")) {
+            assertThat(ToolConfirmationManager.isTapOnly(confirmation("n").copy(toolName = n))).isTrue()
+        }
+    }
+
+    @Test
+    fun `future outward tools are tap-only by name, read and device tools are not`() {
+        for (n in listOf("mcp.slack_post_message", "telegram_send", "gmail_forward", "files_delete", "bank_transfer", "dial_number", "instagram_reply")) {
+            assertThat(ToolConfirmationManager.isTapOnlyToolName(n)).isTrue()
+        }
+        for (n in listOf("calculate", "get_location", "set_brightness", "record_voice", "find_contacts", "read_notifications", "calendar")) {
+            assertThat(ToolConfirmationManager.isTapOnlyToolName(n)).isFalse()
         }
     }
 
@@ -262,5 +283,20 @@ class ToolConfirmationManagerTest {
         }
         assertThat(manager.recentOutcomes.value).hasSize(ToolConfirmationManager.OUTCOME_LOG_SIZE)
         assertThat(manager.recentOutcomes.value.last().id).isEqualTo("c${ToolConfirmationManager.OUTCOME_LOG_SIZE + 4}")
+    }
+
+    @Test
+    fun `cancelIds denies only the listed cards - tool loop timeout of one turn`() = runTest {
+        val manager = ToolConfirmationManager()
+        val result = CompletableDeferred<Boolean>()
+        val job = launch { result.complete(manager.awaitDecision(confirmation("turn-card"))) }
+        while (manager.pending.value == null) kotlinx.coroutines.yield()
+        assertThat(manager.cancelIds(listOf("other-turn"))).isEqualTo(0)
+        kotlinx.coroutines.yield()
+        assertThat(result.isCompleted).isFalse()
+        assertThat(manager.cancelIds(listOf("turn-card", "other-turn"))).isEqualTo(1)
+        job.join()
+        assertThat(result.await()).isFalse()
+        assertThat(manager.pending.value).isNull()
     }
 }

@@ -11,8 +11,30 @@ import io.androllm.engine.models.ChatPromptMessage
 internal data class ChatTurnPlan(
     val systemInstruction: String?,
     val seed: List<ChatPromptMessage>,
-    val prompt: String
+    val prompt: String,
+    /**
+     * Branch U: when non-empty the turn is sent as these TOOL responses
+     * (Gemma 4 native `Message.tool`) instead of a user message with [prompt].
+     */
+    val promptTools: List<ChatPromptMessage> = emptyList(),
+    val layout: ToolTurnLayout = ToolTurnLayout.LEGACY
 )
+
+/**
+ * Branch U (step 5): how tool calls and results of the native tool loop are
+ * laid out for the loaded family.
+ *
+ * - [GEMMA_NATIVE]: Gemma 4's own format. The model turn carries `tool_calls`
+ *   and each result is a `tool` message (`<|tool_response>` in the container
+ *   template). Folding them into the user turn (the old layout) made Gemma 4
+ *   degrade (invented tools, garbage, loops).
+ * - [QWEN]: the official Qwen3 template layout ([QwenToolLayout]): the
+ *   assistant turn carries `<tool_call>` blocks and the results come back in
+ *   ONE user turn of `<tool_response>` blocks.
+ * - [LEGACY]: every other family. Results are framed untrusted data inside
+ *   the user-role transcript (previous behaviour).
+ */
+internal enum class ToolTurnLayout { LEGACY, QWEN, GEMMA_NATIVE }
 
 /** What the resident LiteRT conversation was seeded with (reuse key). */
 internal data class ResidentSession(
@@ -74,7 +96,8 @@ internal object ChatTurnPlanner {
 
     fun plan(
         messages: List<ChatPromptMessage>,
-        dataBudgetChars: Int = Int.MAX_VALUE
+        dataBudgetChars: Int = Int.MAX_VALUE,
+        layout: ToolTurnLayout = ToolTurnLayout.LEGACY
     ): ChatTurnPlan {
         require(messages.isNotEmpty()) { "Empty message history" }
         val leadingCount = messages.indexOfFirst { it.role != "system" }
@@ -90,19 +113,136 @@ internal object ChatTurnPlanner {
         }
 
         val dataTexts = capData(rest, dataBudgetChars)
-        val turns = mergeSameRole(rest.mapIndexed { i, m ->
-            when (m.role) {
-                "assistant", "model" -> ChatPromptMessage("assistant", m.content)
-                "user" -> ChatPromptMessage("user", m.content)
-                ChatPromptMessage.ROLE_APP_NOTE -> ChatPromptMessage("user", APP_NOTE_PREFIX + m.content)
+        // F1 gate B1: SystemPromptMerger joins ONLY the leading block.
+        val system = SystemPromptMerger.merge(messages)
+        if (layout == ToolTurnLayout.GEMMA_NATIVE) return planNative(system, rest, dataTexts)
+        val mapped = ArrayList<ChatPromptMessage>(rest.size)
+        var i = 0
+        while (i < rest.size) {
+            val m = rest[i]
+            when {
+                m.role == "assistant" || m.role == "model" -> {
+                    val content = if (layout == ToolTurnLayout.QWEN && m.toolCalls.isNotEmpty()) {
+                        QwenToolLayout.assistantWithCalls(m.content, m.toolCalls)
+                    } else {
+                        m.content
+                    }
+                    // A tool-call-only round has no text: nothing to keep in LEGACY.
+                    if (content.isNotBlank() || m.toolCalls.isEmpty()) mapped += ChatPromptMessage("assistant", content)
+                }
+                m.role == "user" -> mapped += ChatPromptMessage("user", m.content)
+                m.role == ChatPromptMessage.ROLE_APP_NOTE -> mapped += ChatPromptMessage("user", APP_NOTE_PREFIX + m.content)
+                m.role == ChatPromptMessage.ROLE_TOOL && layout == ToolTurnLayout.QWEN -> {
+                    // Consecutive results form ONE user turn (official template).
+                    val group = ArrayList<Int>()
+                    while (i < rest.size && rest[i].role == ChatPromptMessage.ROLE_TOOL) {
+                        group += i
+                        i++
+                    }
+                    mapped += ChatPromptMessage(
+                        "user",
+                        QwenToolLayout.responses(group.map { rest[it] to wrapData(dataTexts.getValue(it)) }, APP_NOTE_PREFIX)
+                    )
+                    continue
+                }
+                m.role == ChatPromptMessage.ROLE_TOOL -> mapped += ChatPromptMessage("user", legacyToolText(m, dataTexts.getValue(i)))
                 // Any other non-leading role (system = tool output): untrusted.
-                else -> ChatPromptMessage("user", wrapData(dataTexts.getValue(i)))
+                else -> mapped += ChatPromptMessage("user", wrapData(dataTexts.getValue(i)))
             }
-        })
+            i++
+        }
+        val turns = mergeSameRole(mapped)
         val prompt = turns.last().content
         val seed = sanitizeSeed(turns.dropLast(1))
-        // F1 gate B1: SystemPromptMerger joins ONLY the leading block.
-        return ChatTurnPlan(SystemPromptMerger.merge(messages), seed, prompt)
+        return ChatTurnPlan(system, seed, prompt, layout = layout)
+    }
+
+    /** Branch U: native tool responses re-framed as one legacy user prompt (overflow fallback). */
+    fun toolResponsesAsUserPrompt(tools: List<ChatPromptMessage>): String =
+        tools.joinToString(JOIN) { legacyToolText(it, it.content, alreadyWrapped = true) }
+
+    /** Branch U: a tool result in the legacy user-turn framing (app note + untrusted data). */
+    private fun legacyToolText(m: ChatPromptMessage, data: String, alreadyWrapped: Boolean = false): String =
+        APP_NOTE_PREFIX + "Result of tool '" + (m.toolName ?: "tool") + "'." +
+            (m.toolNote?.let { " $it" } ?: "") + "\n" + (if (alreadyWrapped) data else wrapData(data))
+
+    /**
+     * Branch U: Gemma 4 native layout. Assistant turns keep their tool calls,
+     * results stay `tool` messages (content framed as untrusted data, the app
+     * note kept apart in [ChatPromptMessage.toolNote]). When the turn ENDS with
+     * tool results they are sent as the turn itself ([ChatTurnPlan.promptTools]);
+     * the model then continues its own turn, as the container template expects.
+     */
+    private fun planNative(
+        system: String?,
+        rest: List<ChatPromptMessage>,
+        dataTexts: Map<Int, String>
+    ): ChatTurnPlan {
+        val turns = ArrayList<ChatPromptMessage>(rest.size)
+        rest.forEachIndexed { i, m ->
+            val t = when (m.role) {
+                "assistant", "model" -> ChatPromptMessage("assistant", m.content, toolCalls = m.toolCalls)
+                "user" -> ChatPromptMessage("user", m.content)
+                ChatPromptMessage.ROLE_APP_NOTE -> ChatPromptMessage("user", APP_NOTE_PREFIX + m.content)
+                ChatPromptMessage.ROLE_TOOL -> ChatPromptMessage(
+                    ChatPromptMessage.ROLE_TOOL, wrapData(dataTexts.getValue(i)),
+                    toolName = m.toolName ?: "tool", toolNote = m.toolNote
+                )
+                else -> ChatPromptMessage("user", wrapData(dataTexts.getValue(i)))
+            }
+            val prev = turns.lastOrNull()
+            // Join consecutive user turns (owner text + app note + framed data);
+            // assistant / tool messages are never merged (each call is its own unit).
+            if (prev != null && prev.role == "user" && t.role == "user") {
+                turns[turns.size - 1] = prev.copy(content = joinNonBlank(prev.content, t.content))
+            } else {
+                turns += t
+            }
+        }
+        val trailingTools = turns.takeLastWhile { it.role == ChatPromptMessage.ROLE_TOOL }
+        if (trailingTools.isNotEmpty()) {
+            val before = turns.dropLast(trailingTools.size)
+            val seed = sanitizeNativeSeed(before, endWithToolCall = true)
+            if (seed.lastOrNull()?.toolCalls?.isNotEmpty() == true) {
+                return ChatTurnPlan(system, seed, "", promptTools = trailingTools, layout = ToolTurnLayout.GEMMA_NATIVE)
+            }
+            // No tool-calling model turn survived: degrade to the legacy user-turn
+            // framing rather than send orphan tool responses.
+            val legacyPrompt = trailingTools.joinToString(JOIN) { legacyToolText(it, it.content, alreadyWrapped = true) }
+            val lastUser = before.lastOrNull()?.takeIf { it.role == "user" }
+            val prompt = if (lastUser != null) joinNonBlank(lastUser.content, legacyPrompt) else legacyPrompt
+            val seedBase = if (lastUser != null) before.dropLast(1) else before
+            return ChatTurnPlan(system, sanitizeNativeSeed(seedBase, endWithToolCall = false), prompt, layout = ToolTurnLayout.GEMMA_NATIVE)
+        }
+        val prompt = turns.last().content
+        return ChatTurnPlan(system, sanitizeNativeSeed(turns.dropLast(1), endWithToolCall = false), prompt, layout = ToolTurnLayout.GEMMA_NATIVE)
+    }
+
+    /**
+     * Branch U: seed normalization for the native layout. Starts with user;
+     * `tool` messages only directly after a tool-calling assistant turn (or
+     * another tool message); never ends with a user turn. With
+     * [endWithToolCall] the seed must END on a tool-calling assistant turn
+     * (the one the prompt's tool responses answer), else it is empty.
+     */
+    fun sanitizeNativeSeed(turns: List<ChatPromptMessage>, endWithToolCall: Boolean): List<ChatPromptMessage> {
+        val out = ArrayList<ChatPromptMessage>(turns.size)
+        for (m in turns) {
+            val prev = out.lastOrNull()
+            val ok = when (m.role) {
+                "user" -> prev == null || prev.role != "user"
+                "assistant" -> prev != null && prev.role != "assistant"
+                ChatPromptMessage.ROLE_TOOL -> prev != null &&
+                    (prev.role == ChatPromptMessage.ROLE_TOOL || (prev.role == "assistant" && prev.toolCalls.isNotEmpty()))
+                else -> false
+            }
+            if (ok) out.add(m)
+        }
+        if (endWithToolCall) {
+            return if (out.lastOrNull()?.let { it.role == "assistant" && it.toolCalls.isNotEmpty() } == true) out else emptyList()
+        }
+        while (out.isNotEmpty() && out.last().role == "user") out.removeAt(out.size - 1)
+        return out
     }
 
     /**
@@ -112,7 +252,11 @@ internal object ChatTurnPlanner {
      */
     fun mirrorMessages(plan: ChatTurnPlan): List<ChatPromptMessage> =
         listOfNotNull(plan.systemInstruction?.takeIf { it.isNotBlank() }?.let { ChatPromptMessage("system", it) }) +
-            plan.seed + ChatPromptMessage("user", plan.prompt)
+            plan.seed + promptTurns(plan)
+
+    /** Branch U: what is sent as the turn: the tool responses, or the user prompt. */
+    fun promptTurns(plan: ChatTurnPlan): List<ChatPromptMessage> =
+        plan.promptTools.ifEmpty { listOf(ChatPromptMessage("user", plan.prompt)) }
 
     /**
      * Transcript the conversation holds after answering [plan] with [reply]
@@ -126,11 +270,12 @@ internal object ChatTurnPlanner {
      * a remote task) can reuse a session holding text it does not know about.
      */
     fun transcriptAfterReply(plan: ChatTurnPlan, reply: String): List<ChatPromptMessage> {
-        val withPrompt = plan.seed + ChatPromptMessage("user", plan.prompt)
-        return if (reply.isNotBlank()) {
-            sanitizeSeed(withPrompt + ChatPromptMessage("assistant", reply))
+        val withPrompt = plan.seed + promptTurns(plan)
+        if (reply.isBlank()) return withPrompt
+        return if (plan.layout == ToolTurnLayout.GEMMA_NATIVE) {
+            sanitizeNativeSeed(withPrompt + ChatPromptMessage("assistant", reply), endWithToolCall = false)
         } else {
-            withPrompt
+            sanitizeSeed(withPrompt + ChatPromptMessage("assistant", reply))
         }
     }
 
@@ -147,8 +292,21 @@ internal object ChatTurnPlanner {
      * Context-overflow reseed: keeps only the newest [keepTurns] turns
      * (prompt included), so the seed gets at most `keepTurns - 1` turns.
      */
-    fun overflowSeed(plan: ChatTurnPlan, keepTurns: Int): List<ChatPromptMessage> =
-        sanitizeSeed(plan.seed.takeLast((keepTurns - 1).coerceAtLeast(0)))
+    fun overflowSeed(plan: ChatTurnPlan, keepTurns: Int): List<ChatPromptMessage> {
+        val tail = plan.seed.takeLast((keepTurns - 1).coerceAtLeast(0))
+        if (plan.layout != ToolTurnLayout.GEMMA_NATIVE) return sanitizeSeed(tail)
+        // Native: start at a user turn and never cut off the tool-calling turn
+        // the prompt's tool responses answer.
+        val start = tail.indexOfFirst { it.role == "user" }
+        val trimmed = if (start < 0) emptyList() else tail.drop(start)
+        if (plan.promptTools.isNotEmpty() && trimmed.lastOrNull()?.toolCalls.isNullOrEmpty()) {
+            // Keep at least the turn that made the calls (and the user turn before it).
+            val callIdx = plan.seed.indexOfLast { it.role == "assistant" && it.toolCalls.isNotEmpty() }
+            val userIdx = (callIdx - 1 downTo 0).firstOrNull { plan.seed[it].role == "user" } ?: return emptyList()
+            return sanitizeNativeSeed(plan.seed.subList(userIdx, callIdx + 1), endWithToolCall = true)
+        }
+        return sanitizeNativeSeed(trimmed, endWithToolCall = plan.promptTools.isNotEmpty())
+    }
 
     /**
      * Hard cap for the prompt itself on an overflow reseed (the seed alone

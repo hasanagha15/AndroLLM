@@ -13,8 +13,10 @@ import kotlinx.serialization.json.JsonObject
  *   SAME tool back to back.
  * - **Dedupe** — a (name, arguments) pair that already executed this turn is
  *   never executed again.
- * - **Disable on failure** — a tool that fails twice in a row (or fails with a
- *   non-retryable outcome) is disabled for the rest of the turn.
+ * - **Disable on failure** — a tool whose calls failed twice (with different
+ *   arguments), or that failed with an argument-independent outcome (declined,
+ *   permanent status), is disabled for the rest of the turn. A single failed
+ *   call blocks only that exact (name, arguments) pair.
  *
  * The chat pipeline asks [canExecute] before every call and calls [record]
  * after execution; when a call is rejected the pipeline injects [stopReason]
@@ -81,10 +83,15 @@ class ToolLoopGuard(
         if (result is ToolResult.Failure) {
             val failures = (failuresByTool[name] ?: 0) + 1
             failuresByTool[name] = failures
-            // A hard failure (non-retryable) or two failures of the same tool
-            // disable it for the rest of the turn — the spec's "repeatedly
-            // fails → disable for the remainder of the request".
-            if (!result.retryable || failures >= 2) disable(name)
+            // Branch U (step 5): failures are counted per (name, arguments). The
+            // failed call itself can never re-run (its key is in executedKeys),
+            // but a CORRECTED call — the model fixed the arguments the error
+            // message pointed at (app_open_action package="Settings" →
+            // "com.android.settings") — may run once. The whole tool is disabled
+            // only when the outcome is independent of the arguments (the user
+            // declined, a permanent status such as a missing permission) or when
+            // two different calls of it failed this turn.
+            if (isArgumentIndependent(result) || failures >= 2) disable(name)
         }
     }
 
@@ -110,6 +117,11 @@ class ToolLoopGuard(
         }
         return null
     }
+
+    /** Failures no other arguments can fix: declined by the user, permanent status. */
+    private fun isArgumentIndependent(result: ToolResult.Failure): Boolean =
+        result.summary.startsWith("The user declined") ||
+            (!result.retryable && !ToolRunCoordinator.isRetryableFailure(result.copy(retryable = true)))
 
     private fun key(name: String, arguments: JsonObject): String =
         "$name|${arguments.toString().replace(" ", "")}"

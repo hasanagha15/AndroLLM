@@ -187,9 +187,25 @@ data class NativeToolSpec(
 @Serializable
 data class ChatPromptMessage(
     val role: String,
-    val content: String
+    val content: String,
+    /**
+     * Branch U: tool calls the assistant made in this turn (native tool loop).
+     * Rendered per family by the engine — Gemma 4 natively (`tool_calls`),
+     * Qwen as official `<tool_call>` blocks.
+     */
+    val toolCalls: List<ChatPromptToolCall> = emptyList(),
+    /** Branch U: for [ROLE_TOOL] messages — the tool whose result [content] is. */
+    val toolName: String? = null,
+    /** Branch U: for [ROLE_TOOL] messages — app-authored hint for that result (trusted). */
+    val toolNote: String? = null
 ) {
     companion object {
+        /**
+         * Branch U: a tool result (untrusted data) answering a call in the
+         * preceding assistant message's [toolCalls].
+         */
+        const val ROLE_TOOL = "tool"
+
         /**
          * Trusted app-authored note inside the turn (loop-guard stop note,
          * plain-text retry instruction). The local engine labels it as an
@@ -199,6 +215,14 @@ data class ChatPromptMessage(
         const val ROLE_APP_NOTE = "app_note"
     }
 }
+
+/** Branch U: one tool call inside an assistant [ChatPromptMessage]. */
+@Serializable
+data class ChatPromptToolCall(
+    val name: String,
+    /** JSON object with the call's arguments. */
+    val argumentsJson: String = "{}"
+)
 
 /**
  * A single token chunk produced during streaming generation.

@@ -72,6 +72,32 @@ object MemoryEstimator {
     fun estimateWeightsMemory(fileSizeBytes: Long): Long =
         fileSizeBytes * 105 / 100
 
+    /** Branch U: [estimateWeightsMemory] scaled by the resident share of the file. */
+    fun estimateResidentWeights(fileSizeBytes: Long, fraction: Double): Long =
+        (estimateWeightsMemory(fileSizeBytes) * fraction.coerceIn(0.1, 1.0)).toLong()
+
+    /**
+     * Branch U (step 4/5): Gemma 4 E2B on GPU was refused with avail=3163 MB,
+     * need=2892 MB although it runs in far less. Gemma 3n / Gemma 4 "E" (effective)
+     * models keep their per-layer-embedding (PLE) tables memory-mapped from the
+     * file and read rows on demand; those pages are clean, file-backed and
+     * reclaimable by the kernel, so they are not resident model memory. Counting
+     * the whole file as resident counted reclaimable memory as used.
+     *
+     * Effective / total parameters: Gemma 4 E2B 2.3B / 5.1B, E4B 4.5B / 8B
+     * (Gemma 3n: 2B / 5B, 4B / 8B). A 0.1 margin is added on top. Every other
+     * model keeps 1.0.
+     */
+    fun residentWeightFraction(modelName: String?, parameters: String? = null): Double {
+        val text = listOfNotNull(modelName, parameters).joinToString(" ").lowercase()
+        if (!text.contains("gemma")) return 1.0
+        return when {
+            Regex("(^|[^a-z0-9])e2b([^a-z0-9]|$)").containsMatchIn(text) -> 0.55
+            Regex("(^|[^a-z0-9])e4b([^a-z0-9]|$)").containsMatchIn(text) -> 0.66
+            else -> 1.0
+        }
+    }
+
     /**
      * Fallback KV bytes per token when the GGUF header does not expose the
      * transformer geometry (block count / heads / head dim). Size-aware: KV

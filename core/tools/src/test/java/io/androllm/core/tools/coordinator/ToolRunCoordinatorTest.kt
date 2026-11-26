@@ -16,6 +16,7 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.junit.Test
 
 class ToolRunCoordinatorTest {
@@ -212,5 +213,102 @@ class ToolRunCoordinatorTest {
         coordinator().executeCloudToolCalls(listOf(call))
 
         assertThat(executed).containsExactly("ui_click")
+    }
+
+    // ── Branch U: alternative-tool selection + retry policy ─────────────────
+
+    private fun schema(vararg required: String, optional: List<String> = emptyList()) = buildJsonObject {
+        put("type", "object")
+        put("properties", buildJsonObject {
+            (required.toList() + optional).forEach { put(it, buildJsonObject { put("type", "string") }) }
+        })
+        put("required", kotlinx.serialization.json.JsonArray(required.map { kotlinx.serialization.json.JsonPrimitive(it) }))
+    }
+
+    private fun register(spec: ToolSpec): Tool {
+        val tool = mockk<Tool>()
+        every { tool.spec } returns spec
+        every { registry.get(spec.name) } returns tool
+        return tool
+    }
+
+    @Test
+    fun `failed side-effecting tool is never re-routed - step 5 open_clock to set_flashlight`() = runTest {
+        val clock = register(ToolSpec(name = "open_clock", description = "clock",
+            permission = io.androllm.core.tools.api.ToolPermission.APPS, category = io.androllm.core.tools.api.ToolCategory.MEDIA))
+        val torch = register(ToolSpec(name = "set_flashlight", description = "torch", parameters = schema("on"),
+            permission = io.androllm.core.tools.api.ToolPermission.FLASHLIGHT, category = io.androllm.core.tools.api.ToolCategory.MEDIA))
+        every { registry.all() } returns listOf(clock, torch)
+        val executed = mutableListOf<String>()
+        coEvery { executor.execute(any()) } answers {
+            executed += firstArg<io.androllm.core.tools.api.ToolCall>().name
+            ToolResult.Failure("Could not open the clock app.", retryable = true)
+        }
+        val coord = coordinator()
+        assertThat(coord.findAlternativeTool("open_clock", io.androllm.core.tools.api.ToolCall("c", "open_clock", buildJsonObject { }))).isNull()
+        coord.executeCalls(listOf(io.androllm.core.tools.api.ToolCall("c", "open_clock", buildJsonObject { })))
+        assertThat(executed.toSet()).containsExactly("open_clock")
+    }
+
+    @Test
+    fun `alternative is never the failed tool itself`() = runTest {
+        val weather = register(ToolSpec(name = "get_weather", description = "w", parameters = schema("location"), cacheable = true))
+        every { registry.all() } returns listOf(weather)
+        val call = io.androllm.core.tools.api.ToolCall("c", "get_weather", buildJsonObject { put("location", "Baku") })
+        assertThat(coordinator().findAlternativeTool("get_weather", call)).isNull()
+    }
+
+    @Test
+    fun `alternative must be read-only and schema-compatible`() {
+        val search = register(ToolSpec(name = "search_web", description = "s", parameters = schema("query"),
+            category = io.androllm.core.tools.api.ToolCategory.INFORMATION, cacheable = true))
+        val sideEffect = register(ToolSpec(name = "note_save", description = "n", parameters = schema("query"),
+            category = io.androllm.core.tools.api.ToolCategory.INFORMATION, cacheable = false))
+        val confirmRead = register(ToolSpec(name = "read_notifications", description = "r", parameters = schema("query"),
+            category = io.androllm.core.tools.api.ToolCategory.INFORMATION, cacheable = true, requiresConfirmation = true))
+        val otherSchema = register(ToolSpec(name = "get_weather", description = "w", parameters = schema("location"),
+            category = io.androllm.core.tools.api.ToolCategory.INFORMATION, cacheable = true))
+        val compatible = register(ToolSpec(name = "github", description = "g", parameters = schema("query", optional = listOf("type")),
+            category = io.androllm.core.tools.api.ToolCategory.INFORMATION, cacheable = true))
+        val call = io.androllm.core.tools.api.ToolCall("c", "search_web", buildJsonObject { put("query", "kotlin") })
+
+        every { registry.all() } returns listOf(search, sideEffect, confirmRead, otherSchema)
+        assertThat(coordinator().findAlternativeTool("search_web", call)).isNull()
+
+        every { registry.all() } returns listOf(search, sideEffect, confirmRead, otherSchema, compatible)
+        assertThat(coordinator().findAlternativeTool("search_web", call)?.name).isEqualTo("github")
+    }
+
+    @Test
+    fun `permanent failure status is not retried`() = runTest {
+        registerReadTool("get_battery")
+        var calls = 0
+        coEvery { executor.execute(any()) } answers {
+            calls++
+            ToolResult.Failure("unsupported", data = buildJsonObject { put("status", "unsupported") }, retryable = true)
+        }
+        coordinator().executeCalls(listOf(io.androllm.core.tools.api.ToolCall("c", "get_battery", buildJsonObject { })))
+        assertThat(calls).isEqualTo(1)
+    }
+
+    @Test
+    fun `retries never open extra Running cards`() = runTest {
+        registerReadTool("get_weather")
+        var calls = 0
+        coEvery { executor.execute(any()) } answers {
+            calls++
+            ToolResult.Failure("network timeout", retryable = true)
+        }
+        val events = mutableListOf<io.androllm.core.tools.api.ToolEvent>()
+        coordinator().executeCalls(
+            listOf(io.androllm.core.tools.api.ToolCall("c", "get_weather", buildJsonObject { put("location", "Baku") })),
+            onEvent = { events += it }
+        )
+        assertThat(calls).isEqualTo(3)
+        val started = events.count { it is io.androllm.core.tools.api.ToolEvent.Started }
+        val terminal = events.count { it !is io.androllm.core.tools.api.ToolEvent.Started }
+        // Every Started has a matching terminal event, so no card stays "Running…".
+        assertThat(started).isEqualTo(terminal)
+        assertThat(started).isEqualTo(1)
     }
 }

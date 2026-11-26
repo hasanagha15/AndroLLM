@@ -136,4 +136,48 @@ class ModelResourceGuardTest {
         val weights = MemoryEstimator.estimateWeightsMemory(smallModelBytes)
         assertTrue("footprint must exceed weights alone", footprint > weights)
     }
+
+    // ── Branch U: step 5 Gemma 4 E2B on GPU refused without `am kill-all` ──
+
+    private val mib = 1024L * 1024L
+    private val gemma4E2bFile = 2_468L * mib // weights estimate 2591 MB, as logged on the phone
+
+    @Test
+    fun `step 5 numbers - whole file counted as resident is refused`() {
+        val r = ModelResourceGuard().attemptAggressiveFit(
+            fileSizeBytes = gemma4E2bFile, contextLength = 8192, availableBytes = 3_163L * mib,
+            lowMemory = false, requestedBackend = io.androllm.engine.models.BackendType.GPU
+        )
+        assertTrue(r is AggressiveFitResult.NoFit)
+    }
+
+    @Test
+    fun `gemma E2B with mmapped PLE tables fits the same free RAM on GPU`() {
+        val fraction = MemoryEstimator.residentWeightFraction("Gemma 4 E2B IT LiteRT", "E2B")
+        val r = ModelResourceGuard().attemptAggressiveFit(
+            fileSizeBytes = gemma4E2bFile, contextLength = 8192, availableBytes = 3_163L * mib,
+            lowMemory = false, requestedBackend = io.androllm.engine.models.BackendType.GPU,
+            weightFraction = fraction
+        )
+        assertTrue(r is AggressiveFitResult.Fit)
+        r as AggressiveFitResult.Fit
+        assertEquals(io.androllm.engine.models.BackendType.GPU, r.effectiveBackend)
+        assertTrue(r.effectiveContext >= 4096)
+        // Still refuses when there is genuinely no room.
+        val tight = ModelResourceGuard().attemptAggressiveFit(
+            fileSizeBytes = gemma4E2bFile, contextLength = 8192, availableBytes = 1_200L * mib,
+            lowMemory = false, requestedBackend = io.androllm.engine.models.BackendType.GPU,
+            weightFraction = fraction
+        )
+        assertTrue(tight is AggressiveFitResult.NoFit)
+    }
+
+    @Test
+    fun `resident fraction applies only to gemma effective models`() {
+        assertEquals(0.55, MemoryEstimator.residentWeightFraction("Gemma 4 E2B IT LiteRT"), 1e-9)
+        assertEquals(0.66, MemoryEstimator.residentWeightFraction("gemma-3n-E4B-it-int4"), 1e-9)
+        assertEquals(1.0, MemoryEstimator.residentWeightFraction("Qwen3 0.6B"), 1e-9)
+        assertEquals(1.0, MemoryEstimator.residentWeightFraction("Gemma 3 1B IT"), 1e-9)
+        assertEquals(1.0, MemoryEstimator.residentWeightFraction(null), 1e-9)
+    }
 }

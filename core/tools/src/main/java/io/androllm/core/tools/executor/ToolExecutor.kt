@@ -216,10 +216,23 @@ class ToolExecutor @Inject constructor(
         } else {
             settings.shouldConfirm(spec.requiresConfirmation)
         }
-        if (mustConfirm) {
+        // Branch U (step 5): a tool that cannot run without a runtime permission
+        // (set_flashlight → CAMERA) asks for it through the card's
+        // requiredPermissions path instead of failing (and being retried) three times.
+        val missingPermissions = runCatching { tool.missingRuntimePermissions() }
+            .getOrDefault(emptyList())
+        if (mustConfirm || missingPermissions.isNotEmpty()) {
             // Canonical name: the registry also resolves other-case / padded
             // names, and tap-only checks must see the real tool name.
-            val built = buildConfirmation(call.copy(name = spec.name), spec)
+            val confirmed = buildConfirmation(call.copy(name = spec.name), spec)
+            val built = when {
+                missingPermissions.isEmpty() -> confirmed
+                // A confirmation card anyway: it also requests the missing permission.
+                mustConfirm -> confirmed.copy(
+                    requiredPermissions = (confirmed.requiredPermissions + missingPermissions).distinct()
+                )
+                else -> PermissionPrompt.card(confirmed, missingPermissions)
+            }
             val base = if (risky == null) built else built.copy(
                 actionSummary = "⚠ $risky\n${built.actionSummary}",
                 speakableQuestion = "Please confirm on the screen: $risky.",

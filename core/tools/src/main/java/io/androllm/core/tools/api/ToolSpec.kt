@@ -58,6 +58,8 @@ fun ToolPermission.runtimePermissions(): List<String> = when (this) {
     ToolPermission.CALLS -> listOf(Manifest.permission.CALL_PHONE)
     ToolPermission.CALENDAR -> listOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)
     ToolPermission.VOICE_RECORDER -> listOf(Manifest.permission.RECORD_AUDIO)
+    // Branch U: CameraManager.setTorchMode needs CAMERA on this app's targetSdk.
+    ToolPermission.FLASHLIGHT -> listOf(Manifest.permission.CAMERA)
     ToolPermission.LOCATION -> listOf(
         Manifest.permission.ACCESS_FINE_LOCATION,
         Manifest.permission.ACCESS_COARSE_LOCATION

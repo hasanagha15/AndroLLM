@@ -161,6 +161,10 @@ class LiteRtLmEngine @Inject constructor(
     @Volatile
     private var nativeToolApi: Boolean = false
 
+    /** Branch U: how tool calls / results are laid out for the loaded family. */
+    @Volatile
+    private var toolTurnLayout: ToolTurnLayout = ToolTurnLayout.LEGACY
+
     /** Branch P: debug builds log the rendered prompt (length-capped). */
     private val isDebugBuild: Boolean by lazy {
         runCatching {
@@ -433,7 +437,9 @@ class LiteRtLmEngine @Inject constructor(
                     contextLength = requestedCtxForGuard,
                     availableBytes = availableBefore,
                     lowMemory = lowMemBefore,
-                    requestedBackend = footprintBackend
+                    requestedBackend = footprintBackend,
+                    // Branch U: PLE tables of Gemma "E" models stay mmapped (reclaimable).
+                    weightFraction = io.androllm.engine.utils.MemoryEstimator.residentWeightFraction(model.name, model.parameters)
                 )
                 // Surface detailed diagnostics for UI / logs (see MemoryFitDiagnostics)
                 lastFitDiagnostics = when (fitResult) {
@@ -702,6 +708,12 @@ class LiteRtLmEngine @Inject constructor(
             )
             templateSelection = selection
             nativeToolApi = io.androllm.engine.compat.ToolCallSyntax.usesNativeToolApi(family.family, selection.effective)
+            toolTurnLayout = when {
+                nativeToolApi -> ToolTurnLayout.GEMMA_NATIVE
+                family.family == ModelFamily.QWEN3 || family.family == ModelFamily.QWEN2P5 ||
+                    family.family == ModelFamily.QWEN2 -> ToolTurnLayout.QWEN
+                else -> ToolTurnLayout.LEGACY
+            }
             logger.i(
                 "TEMPLATE SELECTED: ${selection.source.label} (override=${selection.override != null}, " +
                     "embedded=${embeddedTemplate?.length ?: 0} chars, nativeToolApi=$nativeToolApi)"
@@ -1157,7 +1169,7 @@ class LiteRtLmEngine @Inject constructor(
                             // Pathological repetition: stop safely, keep the
                             // text produced so far and the conversation intact.
                             stopDetected.set(true)
-                            logger.w("loop detected: ${loopGuard.detail} — terminating generation after $tokenCount fragments")
+                            logger.w("loop detected: ${loopGuard.describe(config.debugTokenLogging)} — terminating generation after $tokenCount fragments")
                             unwindAndFinish("loop_detected")
                             return
                         }
@@ -1327,7 +1339,7 @@ class LiteRtLmEngine @Inject constructor(
             withContext(Dispatchers.Default) {
                 outputDecoder?.reset()
                 if (messages.isEmpty()) throw EngineException("Empty message history")
-                val plan = ChatTurnPlanner.plan(messages, normalDataBudget())
+                val plan = ChatTurnPlanner.plan(messages, normalDataBudget(), toolTurnLayout)
                 overflowPlanThisTurn = null
                 val conv = ensureConversationForHistory(eng, plan, config)
                 val startedAt = System.currentTimeMillis()
@@ -1380,7 +1392,7 @@ class LiteRtLmEngine @Inject constructor(
         }
         // Seed / system instruction / prompt for this turn (tool results stay
         // in the user-role transcript, never in the system instruction).
-        val plan = ChatTurnPlanner.plan(messages, normalDataBudget())
+        val plan = ChatTurnPlanner.plan(messages, normalDataBudget(), toolTurnLayout)
         overflowPlanThisTurn = null
 
         var conv: Conversation
@@ -1435,7 +1447,8 @@ class LiteRtLmEngine @Inject constructor(
             val info = loadedModel
             logger.i(
                 "chat prompt: model=${info?.generalName} family=${info?.family} " +
-                    "template=${info?.chatTemplate} src=${info?.templateSource} " +
+                    // Branch U: the full Jinja template (~12 KB) was logged every turn.
+                    "templateChars=${info?.chatTemplate?.length ?: 0} src=${info?.templateSource} " +
                     "tokenizer=${info?.tokenizerModel} messages=${messages.size} " +
                     "addAssistant=$addAssistant nCtx=${info?.contextLength} " +
                     "maxTokens=${config.maxTokens} temp=${config.temperature} " +
@@ -1644,7 +1657,7 @@ class LiteRtLmEngine @Inject constructor(
                     conv = freshConv
                     logger.i("PREFILL START: fresh reseeded session after recovery ($reason)")
                     conv.sendMessageAsync(
-                        Message.user(retryPrompt),
+                        retryPrompt,
                         cb,
                         maxOutputToken = streamingMaxOutputTokens(config),
                         thinkingConfig = thinkingConfig()
@@ -1721,7 +1734,7 @@ class LiteRtLmEngine @Inject constructor(
                             // so far is preserved and the turn still completes as
                             // a normal answer — the history stays intact.
                             stopDetected.set(true)
-                            logger.w("chat loop detected: ${loopGuard.detail} — terminating generation after $tokenCount fragments")
+                            logger.w("chat loop detected: ${loopGuard.describe(config.debugTokenLogging)} — terminating generation after $tokenCount fragments")
                             unwindAndFinish("loop_detected")
                             return
                         }
@@ -1831,7 +1844,7 @@ class LiteRtLmEngine @Inject constructor(
                     "messages=${messages.size} delegate=${activeBackendInfo?.displayName ?: "?"}"
             )
             conv.sendMessageAsync(
-                Message.user(plan.prompt),
+                LiteRtMessages.prompt(plan),
                 callback,
                 maxOutputToken = streamingMaxOutputTokens(config),
                 thinkingConfig = thinkingConfig()
@@ -2019,7 +2032,7 @@ class LiteRtLmEngine @Inject constructor(
         conv: Conversation
     ): String = try {
         conv.sendMessage(
-            Message.user(plan.prompt),
+            LiteRtMessages.prompt(plan),
             maxOutputToken = streamingMaxOutputTokens(config),
             thinkingConfig = thinkingConfig()
         ).toString()
@@ -2033,7 +2046,7 @@ class LiteRtLmEngine @Inject constructor(
             }
             val (fresh, retryPrompt) = reseedAfterOverflow(eng, messages, config)
             fresh.sendMessage(
-                Message.user(retryPrompt),
+                retryPrompt,
                 maxOutputToken = streamingMaxOutputTokens(config),
                 thinkingConfig = thinkingConfig()
             ).toString()
@@ -2053,7 +2066,7 @@ class LiteRtLmEngine @Inject constructor(
         eng: Engine,
         messages: List<ChatPromptMessage>,
         config: GenerationConfig
-    ): Pair<Conversation, String> {
+    ): Pair<Conversation, Message> {
         // Re-plan with a tighter untrusted-data budget, keep only the newest
         // turns (sanitized to strict user/assistant alternation) and cap the
         // prompt itself: an oversized prompt (huge tool output) would
@@ -2061,17 +2074,26 @@ class LiteRtLmEngine @Inject constructor(
         val ctx = contextTokens()
         val plan = ChatTurnPlanner.plan(
             messages,
-            ChatTurnPlanner.budgetChars(ctx, ChatTurnPlanner.OVERFLOW_DATA_FRACTION)
+            ChatTurnPlanner.budgetChars(ctx, ChatTurnPlanner.OVERFLOW_DATA_FRACTION),
+            toolTurnLayout
         )
         val reseed = ChatTurnPlanner.overflowSeed(plan, CONTEXT_TRIM_KEEP_TURNS)
+        val promptCap = ChatTurnPlanner.budgetChars(ctx, ChatTurnPlanner.OVERFLOW_PROMPT_FRACTION)
+        // Branch U: native tool responses are capped one by one; when no
+        // tool-calling turn survived the trim they fall back to a user prompt.
+        val toolsKept = plan.promptTools.isNotEmpty() && reseed.isNotEmpty()
+        val promptTools = if (toolsKept) {
+            plan.promptTools.map { it.copy(content = ChatTurnPlanner.capPrompt(it.content, promptCap / plan.promptTools.size.coerceAtLeast(1))) }
+        } else {
+            emptyList()
+        }
         val prompt = ChatTurnPlanner.capPrompt(
-            plan.prompt,
-            ChatTurnPlanner.budgetChars(ctx, ChatTurnPlanner.OVERFLOW_PROMPT_FRACTION)
+            if (plan.promptTools.isNotEmpty() && !toolsKept) ChatTurnPlanner.toolResponsesAsUserPrompt(plan.promptTools) else plan.prompt,
+            promptCap
         )
         val sampler = conversationConfigForSampler(config)
         val initial = reseed.map { m ->
-            if (m.role == "assistant" || m.role == "model") Message.model(m.content)
-            else Message.user(m.content)
+            LiteRtMessages.seed(m)
         }
         val system = plan.systemInstruction
         val conversationConfig = if (system.isNullOrBlank()) {
@@ -2091,8 +2113,9 @@ class LiteRtLmEngine @Inject constructor(
             consumedTurns = reseed
             // Bookkeeping must describe what the session REALLY holds: the
             // trimmed seed and the capped prompt, not the full plan.
-            overflowPlanThisTurn = ChatTurnPlan(system, reseed, prompt)
-            checkNotNull(conversation) to prompt
+            val overflowPlan = ChatTurnPlan(system, reseed, prompt, promptTools = promptTools, layout = plan.layout)
+            overflowPlanThisTurn = overflowPlan
+            checkNotNull(conversation) to LiteRtMessages.prompt(overflowPlan)
         }
     }
 
@@ -2192,9 +2215,7 @@ class LiteRtLmEngine @Inject constructor(
      * (broken stop tokens / thinking loop) must never hold the UI forever.
      */
     private fun streamingMaxOutputTokens(config: GenerationConfig): Int =
-        config.maxTokens.takeIf { it > 0 && it < UNLIMITED_MAX_TOKENS_SENTINEL }
-            ?.coerceAtMost(STREAMING_MAX_OUTPUT_TOKENS)
-            ?: STREAMING_MAX_OUTPUT_TOKENS
+        clampMaxOutputTokens(config.maxTokens, contextTokens())
 
     /**
      * Decoder for one generation, honoring the caller's per-call
@@ -2521,8 +2542,7 @@ class LiteRtLmEngine @Inject constructor(
         // strict user/assistant alternation (leading assistant turns and
         // trailing user turns break LiteRT's chat template).
         val initial = seed.map { m ->
-            if (m.role == "assistant" || m.role == "model") Message.model(m.content)
-            else Message.user(m.content)
+            LiteRtMessages.seed(m)
         }
         val sampler = conversationConfigForSampler(config)
         val conversationConfig = if (system.isNullOrBlank()) {
@@ -2925,6 +2945,18 @@ peakProcessPssBytes = maxOf(peakProcessPssBytes, processPss)
     }
 
     companion object {
+        /**
+         * Branch U (step 5): the output cap was min(maxTokens, 8192) even after an
+         * auto-reload shrank the context to 4096 ("maxTokens=8192 nCtx=4096").
+         * The cap never exceeds the loaded context window.
+         */
+        internal fun clampMaxOutputTokens(maxTokens: Int, contextTokens: Int): Int {
+            val requested = maxTokens.takeIf { it > 0 && it < UNLIMITED_MAX_TOKENS_SENTINEL }
+                ?.coerceAtMost(STREAMING_MAX_OUTPUT_TOKENS)
+                ?: STREAMING_MAX_OUTPUT_TOKENS
+            return requested.coerceAtMost(contextTokens.coerceAtLeast(1))
+        }
+
         /**
          * The pinned LiteRT-LM Android runtime version (see
          * documentation/LOCAL_LLM_ARCHITECTURE.md).

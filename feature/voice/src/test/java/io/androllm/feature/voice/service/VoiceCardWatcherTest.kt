@@ -116,7 +116,7 @@ class VoiceCardWatcherTest {
     @Test
     fun `a voice-answerable card holds the turn but is not announced`() {
         val w = VoiceCardWatcher("turn-1")
-        val sms = card("s", "send_sms", 1)
+        val sms = card("s", "set_brightness", 1)
         assertThat(w.update(sms, emptyList(), 0)).isEmpty()
         assertThat(w.holdsTurn(0)).isTrue()
         assertThat(w.update(null, listOf(outcome(sms, true)), 5_000)).isEmpty()

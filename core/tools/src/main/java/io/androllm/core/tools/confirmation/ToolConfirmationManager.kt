@@ -60,7 +60,13 @@ data class PendingToolConfirmation(
      * Branch M: only an explicit tap on the card may approve it (risky UI
      * taps such as Send / Pay / Delete) — a spoken "yes" is never enough.
      */
-    val tapOnly: Boolean = false
+    val tapOnly: Boolean = false,
+    /**
+     * Branch U: the card exists only because the tool needs a runtime permission
+     * that is not granted yet ([requiredPermissions]); Approve opens the system
+     * permission dialog, then runs the tool.
+     */
+    val permissionPrompt: Boolean = false
 ) {
     /** Which surface raised the card (scopes [ToolConfirmationManager.cancelPending]). */
     val surface: ConfirmationSurface
@@ -238,6 +244,19 @@ class ToolConfirmationManager @Inject constructor() {
         cancelWhere { it.surface == surface }
     }
 
+    /**
+     * Branch U (step 5): denies only the cards with these ids (and only while they
+     * are still live) — a timed-out chat turn closes ITS cards, never a remote
+     * task's card raised meanwhile. Returns how many cards were denied.
+     */
+    fun cancelIds(ids: Collection<String>): Int {
+        var n = 0
+        for (id in ids) {
+            if (responses[id]?.complete(false) == true) n++
+        }
+        return n
+    }
+
     /** Denies every pending card regardless of origin. */
     fun cancelAllPending() {
         cancelWhere { true }
@@ -256,12 +275,38 @@ class ToolConfirmationManager @Inject constructor() {
         /** Outcomes kept in [recentOutcomes]. */
         const val OUTCOME_LOG_SIZE = 16
 
-        /** Tools whose confirmation may only be given by tapping the card. */
-        val TAP_ONLY_TOOLS: Set<String> = setOf("tesla_command", "whatsapp_reply", "glasses_show_text")
+        /**
+         * Tools whose confirmation may only be given by tapping the card.
+         *
+         * Branch U (step 5): every tool that talks to the outside world or destroys
+         * data is tap-only — a misheard spoken "yes" must never send an SMS, place a
+         * call, send an email, post a reply or delete something. Registry audit:
+         * send_sms, make_call, send_email (outward communication), whatsapp_reply,
+         * glasses_show_text (messaging / display to others), tesla_command (vehicle),
+         * note_delete (deletion), share_text (hands text to another app).
+         */
+        val TAP_ONLY_TOOLS: Set<String> = setOf(
+            "tesla_command", "whatsapp_reply", "glasses_show_text",
+            "send_sms", "make_call", "send_email", "note_delete", "share_text"
+        )
+
+        /**
+         * Branch U: tools registered later (MCP servers, plugins) whose NAME says they
+         * send, call, post, reply, forward, share, pay or delete are tap-only too.
+         */
+        private val OUTWARD_NAME = Regex(
+            "(^|[_.:-])(send|call|dial|post|publish|reply|forward|share|tweet|email|sms|message|" +
+                "delete|remove|erase|wipe|transfer|pay|purchase)(s|es|ed|ing)?([_.:-]|$)"
+        )
+
+        fun isTapOnlyToolName(toolName: String): Boolean {
+            val name = toolName.trim().lowercase()
+            return name in TAP_ONLY_TOOLS || OUTWARD_NAME.containsMatchIn(name)
+        }
 
         fun isTapOnly(confirmation: PendingToolConfirmation): Boolean =
             confirmation.remoteOrigin != null || confirmation.tapOnly ||
-                confirmation.toolName.trim().lowercase() in TAP_ONLY_TOOLS
+                isTapOnlyToolName(confirmation.toolName)
     }
 }
 

@@ -35,6 +35,7 @@ import io.androllm.core.tools.api.ToolEvent
 import io.androllm.core.tools.coordinator.ToolExecutionRecord
 import io.androllm.core.tools.coordinator.ToolRunCoordinator
 import io.androllm.core.tools.confirmation.PendingToolConfirmation
+import io.androllm.core.tools.confirmation.ConfirmationSurface
 import io.androllm.core.tools.confirmation.ToolConfirmationManager
 import io.androllm.core.tools.prompt.ToolPromptBuilder
 import io.androllm.core.tools.settings.AutomationSettingsStore
@@ -519,9 +520,23 @@ class ChatViewModel @Inject constructor(
     /** Mirrors the shared confirmation hub into the chat UI state. */
     private fun observeToolConfirmations() {
         viewModelScope.launch {
-            confirmationManager.pending.collect { _pendingToolConfirmation.value = it }
+            confirmationManager.pending.collect { card ->
+                _pendingToolConfirmation.value = card
+                // Branch U: remember which typed-chat cards this turn raised so a
+                // tool-loop timeout can deny exactly those.
+                if (card != null && card.surface == ConfirmationSurface.TYPED && chatTurnActive) {
+                    turnConfirmationIds += card.id
+                }
+            }
         }
     }
+
+    /** Branch U: ids of the confirmation cards raised by the current chat turn. */
+    private val turnConfirmationIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    /** Branch U: true for the whole of [generateFromHistory] (planning, tools, decode). */
+    @Volatile
+    private var chatTurnActive = false
 
     /** Approves/denies the pending high-risk tool action from the chat card. */
     fun confirmToolAction(id: String, approved: Boolean) {
@@ -670,6 +685,8 @@ class ChatViewModel @Inject constructor(
         // A new turn starts a clean tool-card list; the coordinator re-populates
         // it as it plans and executes (recomposition must never append twice).
         _toolEvents.value = emptyList()
+        turnConfirmationIds.clear()
+        chatTurnActive = true
         // Fresh commit guard for this turn (see [localTurnCommitted]).
         localTurnCommitted = false
         // Fresh plain-text retry budget for this turn (see [regeneratePlainText]).
@@ -723,20 +740,20 @@ class ChatViewModel @Inject constructor(
             // is even considered. Budget = context − reserved output − a
             // small history floor, in chars (~4 chars/token). The trimmer
             // below then reserves exactly what was rendered.
-            val reservedOutputTokens = _genConfig.value.maxTokens.coerceIn(
-                MIN_OUTPUT_RESERVE_TOKENS,
-                MAX_OUTPUT_RESERVE_TOKENS
-            )
-                // Never reserve more than a third of the real context: a
-                // default 65536 maxTokens clamps to MAX_OUTPUT_RESERVE_TOKENS
-                // (4096), which is the ENTIRE 4096-token container — leaving a
-                // zero system budget whose "0 = unlimited" semantics then
-                // renders the FULL tool list, overrunning both the context
-                // (Qwen3-0.6B's real 2048) and the model's sanity (the
-                // measured ~5.7K-char degradation breakpoint).
-                .coerceAtMost((contextLength / 3).coerceAtLeast(MIN_OUTPUT_RESERVE_TOKENS))
+            // Never reserve more than a third of the real context: a default
+            // 65536 maxTokens clamps to MAX_OUTPUT_RESERVE_TOKENS (4096), which
+            // is the ENTIRE 4096-token container — leaving a zero system budget
+            // whose "0 = unlimited" semantics then renders the FULL tool list.
+            // Branch U: maxTokens is first clamped to the context itself.
+            val reservedOutputTokens = localOutputReserve(_genConfig.value.maxTokens, contextLength)
+            // Branch U (step 5): the system block (instructions + tool list +
+            // native declarations) was budgeted against a 128-token history
+            // floor, so after an auto-reload to nCtx 4096 it ate the whole
+            // window and "да" lost the question it answered. The floor now
+            // covers the last user+assistant exchange plus the current prompt.
+            val historyFloorTokens = historyFloorTokens(history, contextLength)
             val systemCharsBudget = (
-                (contextLength - reservedOutputTokens - MIN_HISTORY_TOKENS)
+                (contextLength - reservedOutputTokens - historyFloorTokens)
                     .coerceAtLeast(0) * CHARS_PER_TOKEN_ESTIMATE
                 )
             val familyAdCapChars =
@@ -802,7 +819,9 @@ class ChatViewModel @Inject constructor(
                 history = history,
                 contextLength = contextLength,
                 reservedOutputTokens = reservedOutputTokens,
-                systemTokenOverhead = systemTokenOverhead
+                systemTokenOverhead = systemTokenOverhead,
+                // Branch U: the reserve may shrink to its floor to keep the last exchange.
+                minOutputTokens = MIN_OUTPUT_RESERVE_TOKENS
             )
             if (trimmedHistory.size != history.size) {
                 android.util.Log.w(
@@ -883,7 +902,12 @@ class ChatViewModel @Inject constructor(
                         TAG,
                         "Tool loop exceeded ${planBudgetMs}ms — committing a direct answer without tool results"
                     )
-                    confirmationManager.cancelPending()
+                    // Branch U (step 5): the turn is over — deny the cards IT raised
+                    // (an unanswered "Send SMS" card must not stay approvable after
+                    // the answer is shown) and close its tool cards.
+                    val denied = confirmationManager.cancelIds(turnConfirmationIds.toList())
+                    if (denied > 0) android.util.Log.w(TAG, "Tool loop timeout: denied $denied pending confirmation card(s) of this turn")
+                    finalizeRunningToolCards("Stopped: the tool step took too long.")
                     false
                 }
                 if (!looped) {
@@ -913,8 +937,17 @@ class ChatViewModel @Inject constructor(
             android.util.Log.e(TAG, "GENERATION FAILED — ${e.message}", e)
             appendErrorMessage("Local generation failed: ${e.message ?: e.javaClass.simpleName}")
         } finally {
+            // Branch U: a card still "Running…" when the local turn ends never
+            // finishes (the cloud path runs on its own job and closes its cards).
+            if (cloudJob?.isActive != true) finalizeRunningToolCards("Stopped before it finished.")
+            chatTurnActive = false
             _preparing.value = false
         }
+    }
+
+    /** Branch U: turns every RUNNING tool card of this turn into a terminal FAILED card. */
+    private fun finalizeRunningToolCards(reason: String) {
+        _toolEvents.value = closeRunningToolCards(_toolEvents.value, reason)
     }
 
     /**
@@ -1657,12 +1690,11 @@ class ChatViewModel @Inject constructor(
                     return true
                 }
                 toolsExecutedThisTurn = true
-                val assistantTurn = if (text.isNotBlank()) {
-                    listOf(ChatPromptMessage(role = "assistant", content = text))
-                } else {
-                    emptyList()
-                }
-                history = history + assistantTurn + toolCoordinator.buildLocalToolFeedback(records)
+                // Branch U (step 5): structured tool turns (assistant + tool_calls,
+                // then one tool message per result) instead of folding everything
+                // into the user turn — the engine renders Gemma 4's native
+                // tool-response format and Qwen's official <tool_response> layout.
+                history = history + toolCoordinator.buildToolTurns(text, records)
             }
             // Round cap reached: commit whatever the last round produced.
             val last = engineRepository.generationState.value
@@ -1750,7 +1782,12 @@ class ChatViewModel @Inject constructor(
         // No conversation id yet: a temporary key per ViewModel, never a
         // shared "owner:chat:" key.
         val key = if (id.isNotBlank()) "owner:chat:$id" else "owner:chat:tmp-$unsavedChatKey"
-        return _genConfig.value.copy(sessionKey = key, nativeTools = turnNativeTools)
+        // Branch U: never ask for more output than the loaded context holds
+        // (maxTokens 8192 with nCtx 4096 after an auto-reload).
+        val ctx = (engineRepository.engineState.value as? EngineState.Ready)?.model?.contextLength ?: 0
+        val gen = _genConfig.value
+        val maxTokens = if (ctx > 0) gen.maxTokens.coerceAtMost(ctx) else gen.maxTokens
+        return gen.copy(sessionKey = key, nativeTools = turnNativeTools, maxTokens = maxTokens)
     }
 
     private val unsavedChatKey: String = java.util.UUID.randomUUID().toString()
@@ -2257,6 +2294,38 @@ private fun ChatMessage.toCoreMessage(): Message = Message(
 )
 
 /** Branch Q (gate B1): the "SEND CLICK" line — length only unless debugTokenLogging. */
+/**
+ * Branch U: output tokens reserved for a turn — maxTokens clamped to the context,
+ * then to [256, 4096] and at most a third of the context.
+ */
+internal fun localOutputReserve(maxTokens: Int, contextLength: Int): Int =
+    maxTokens.coerceAtMost(contextLength.coerceAtLeast(1))
+        .coerceIn(256, 4096)
+        .coerceAtMost((contextLength / 3).coerceAtLeast(256))
+
+/**
+ * Branch U: tokens kept free for history when the system block is budgeted —
+ * the last user+assistant exchange plus the current prompt (at least 128, at
+ * most a quarter of the context).
+ */
+internal fun historyFloorTokens(history: List<ChatMessage>, contextLength: Int): Int {
+    val lastUser = history.indexOfLast { it.role == MessageRole.USER }
+    if (lastUser < 0) return 128
+    val tail = history.subList(0, lastUser + 1)
+        .let { msgs ->
+            val prevUser = msgs.dropLast(1).indexOfLast { it.role == MessageRole.USER }
+            if (prevUser >= 0) msgs.subList(prevUser, msgs.size) else msgs.takeLast(1)
+        }
+    val cost = tail.sumOf { ChatHistoryTrimmer.estimateTokens(it.content) }
+    return cost.coerceIn(128, (contextLength / 4).coerceAtLeast(128))
+}
+
+/** Branch U: RUNNING tool cards → FAILED with [reason]; others unchanged. */
+internal fun closeRunningToolCards(cards: List<ToolInvocationUi>, reason: String): List<ToolInvocationUi> =
+    cards.map {
+        if (it.status == ToolInvocationStatus.RUNNING) it.copy(status = ToolInvocationStatus.FAILED, error = reason) else it
+    }
+
 internal fun describeSendClickForLog(prompt: String, includeContent: Boolean): String =
     "SEND CLICK prompt=${ContentLog.text(prompt, 80, includeContent)} (${prompt.length} chars)"
 

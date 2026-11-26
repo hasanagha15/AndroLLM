@@ -85,11 +85,21 @@ fun ToolConfirmationCard(
                 style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.ledger.deskInk)
             )
             Text(
-                text = if (confirmation.requiredPermissions.isNotEmpty()) {
-                    "This action can't be undone. Tapping Approve will ask for the system " +
-                        "permission this tool needs, then run it. Deny to cancel."
+                text = when {
+                    // Branch U: a card raised only to obtain a missing runtime
+                    // permission (e.g. CAMERA for the flashlight).
+                    confirmation.permissionPrompt ->
+                        "This tool needs a system permission. Tap Approve to grant it in the " +
+                            "system dialog and run the action, or Deny to cancel."
+                    confirmation.requiredPermissions.isNotEmpty() ->
+                        "This action can't be undone. Tapping Approve will ask for the system " +
+                            "permission this tool needs, then run it. Deny to cancel."
+                    else -> "This action can't be undone. Tap Approve to continue or Deny to cancel."
+                } + if (io.androllm.core.tools.confirmation.ToolConfirmationManager.isTapOnly(confirmation)) {
+                    // Branch U (step 5): say so on the card — a spoken "yes" never approves it.
+                    " Only a tap approves this action; voice replies are ignored."
                 } else {
-                    "This action can't be undone. Tap Approve to continue or Deny to cancel."
+                    ""
                 },
                 style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.ledger.deskInk)
             )

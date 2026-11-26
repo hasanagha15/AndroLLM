@@ -90,4 +90,27 @@ class GenerationLoopGuardTest {
             assertFalse(guard.feed("   "))
         }
     }
+
+    @Test
+    fun `branch U - loop description never carries reply text unless content logging is on`() {
+        val guard = GenerationLoopGuard()
+        val phrase = "секретная фраза пользователя "
+        var i = 0
+        while (!guard.feed(phrase) && i++ < 500) { /* feed */ }
+        assertTrue(guard.isLooping)
+        val detail = guard.detail!!
+        assertTrue(detail, !detail.contains("секрет") && !detail.contains("фраза"))
+        val safe = guard.describe(includeContent = false)!!
+        assertTrue(safe, !safe.contains("секрет") && !safe.contains("фраза") && safe.contains("chars]"))
+        assertTrue(guard.describe(includeContent = true)!!.contains("фраза") || guard.describe(true)!!.contains("секрет"))
+    }
+
+    @Test
+    fun `branch U - identical fragment description is length-only`() {
+        val guard = GenerationLoopGuard()
+        repeat(GenerationLoopGuard.MAX_IDENTICAL_FRAGMENTS + 2) { guard.feed("приватно") }
+        assertTrue(guard.isLooping)
+        assertTrue(!guard.detail!!.contains("приватно"))
+        assertTrue(!guard.describe(false)!!.contains("приватно"))
+    }
 }

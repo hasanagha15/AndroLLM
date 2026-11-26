@@ -31,12 +31,29 @@ class GenerationLoopGuard {
     private var charsSinceScan = 0
     private var triggered = false
     private var triggerDetail: String? = null
+    /** Branch U: the repeated reply text, kept OUT of [detail] (see [describe]). */
+    private var triggerSample: String? = null
 
     /** True once a pathological loop has been detected (latched). */
     val isLooping: Boolean get() = triggered
 
-    /** Human-readable description of the detected loop (null until latched). */
+    /**
+     * Description of the detected loop (null until latched). Branch U (step 5):
+     * content-free — lengths and counts only, never reply text, so it is safe
+     * for logcat. Use [describe] to append the sample when the owner explicitly
+     * enabled content logging.
+     */
     val detail: String? get() = triggerDetail
+
+    /**
+     * [detail] plus the repeated text through [io.androllm.core.common.log.ContentLog]:
+     * "[N chars]" unless [includeContent] (engine: `config.debugTokenLogging`).
+     */
+    fun describe(includeContent: Boolean): String? {
+        val d = triggerDetail ?: return null
+        val sample = triggerSample ?: return d
+        return "$d: ${io.androllm.core.common.log.ContentLog.text(sample, 48, includeContent)}"
+    }
 
     /**
      * Feeds one raw generated fragment. Returns true the first time a loop
@@ -51,7 +68,7 @@ class GenerationLoopGuard {
         if (fragment == lastFragment && !isTrivialFragment(fragment)) {
             identicalRun++
             if (identicalRun >= MAX_IDENTICAL_FRAGMENTS) {
-                latch("identical fragment repeated $identicalRun times: '${fragment.take(32)}'")
+                latch("identical fragment (${fragment.length} chars) repeated $identicalRun times", fragment)
                 return true
             }
         } else {
@@ -92,7 +109,8 @@ class GenerationLoopGuard {
                 }
                 val coveredChars = repeats * unitLen
                 if (repeats >= MIN_UNIT_REPEATS && coveredChars >= MIN_LOOP_CHARS) {
-                    return "phrase '${unit.take(48)}' repeated $repeats times consecutively"
+                    triggerSample = unit
+                    return "phrase of $unitLen chars repeated $repeats times consecutively"
                 }
             }
             unitLen++
@@ -100,9 +118,10 @@ class GenerationLoopGuard {
         return null
     }
 
-    private fun latch(why: String) {
+    private fun latch(why: String, sample: String? = triggerSample) {
         triggered = true
         triggerDetail = why
+        triggerSample = sample
     }
 
     /**

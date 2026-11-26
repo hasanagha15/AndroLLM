@@ -163,7 +163,21 @@ class AppOpenActionTool @Inject constructor(
             return ToolResult.Failure("This assistant cannot open itself through the atlas.", retryable = false)
         }
         val extras = repository.currentSensitiveExtras()
-        val entry = repository.entry(pkg)?.let { SensitiveClassifier.effective(it, extras) }
+        // Branch U (step 5): models pass the app LABEL ("Settings", "Настройки")
+        // instead of the package. Resolve labels / known system aliases first.
+        val resolvedPkg = repository.entry(pkg)?.packageName
+            ?: AppLabelResolver.resolve(pkg, runCatching { repository.entries() }.getOrDefault(emptyList()).map { it.label to it.packageName })
+            ?: pkg
+        if (resolvedPkg == context.packageName) {
+            return ToolResult.Failure("This assistant cannot open itself through the atlas.", retryable = false)
+        }
+        val resolvedEntry = repository.entry(resolvedPkg)
+        if (resolvedEntry == null && resolvedPkg == AppLabelResolver.SETTINGS_PACKAGE && actionId.equals("open", ignoreCase = true)) {
+            // The system Settings app is not always indexed (not a regular launcher
+            // entry on every ROM): open it with the platform intent instead.
+            return openSystemSettings()
+        }
+        val entry = resolvedEntry?.let { SensitiveClassifier.effective(it, extras) }
             ?: return ToolResult.Failure(
                 "\"$pkg\" is not in the App Atlas (not installed, not launchable, or excluded in Settings). Call app_atlas_search first.",
                 retryable = false
@@ -191,16 +205,16 @@ class AppOpenActionTool @Inject constructor(
         if (!resolvable) {
             return ToolResult.Failure(
                 "${entry.label} no longer handles '${action.id}' (the app may have updated). Use action_id=open, then ui_read_screen.",
-                data = buildJsonObject { put("status", "not_resolvable"); put("package", pkg) }
+                data = buildJsonObject { put("status", "not_resolvable"); put("package", entry.packageName) }
             )
         }
         if (!ToolIntents.launch(context, intent)) {
             return ToolResult.Failure(
                 "The system blocked opening ${entry.label} (${action.id}). Try launch_app.",
-                data = buildJsonObject { put("status", "launch_blocked"); put("package", pkg) }
+                data = buildJsonObject { put("status", "launch_blocked"); put("package", entry.packageName) }
             )
         }
-        recorder.beginSession(pkg, entry.versionCode, query ?: action.title)
+        recorder.beginSession(entry.packageName, entry.versionCode, query ?: action.title)
 
         val hint = learnedHint(entry, action, query)
         val summary = buildString {
@@ -212,8 +226,27 @@ class AppOpenActionTool @Inject constructor(
             summary = summary,
             data = buildJsonObject {
                 put("status", "opened")
-                put("package", pkg)
+                put("package", entry.packageName)
                 put("action_id", action.id)
+            }
+        )
+    }
+
+    /** Branch U: platform fallback for the system Settings app ("open" only). */
+    private fun openSystemSettings(): ToolResult {
+        val intent = Intent(android.provider.Settings.ACTION_SETTINGS)
+        if (!ToolIntents.launch(context, intent)) {
+            return ToolResult.Failure(
+                "The system blocked opening Settings. Try launch_app.",
+                data = buildJsonObject { put("status", "launch_blocked"); put("package", AppLabelResolver.SETTINGS_PACKAGE) }
+            )
+        }
+        return ToolResult.Success(
+            summary = "Opened Settings.",
+            data = buildJsonObject {
+                put("status", "opened")
+                put("package", AppLabelResolver.SETTINGS_PACKAGE)
+                put("action_id", "open")
             }
         )
     }

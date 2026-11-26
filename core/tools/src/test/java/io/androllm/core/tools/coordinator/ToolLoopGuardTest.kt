@@ -54,12 +54,40 @@ class ToolLoopGuardTest {
     }
 
     @Test
-    fun `non-retryable failure disables the tool for the rest of the turn`() {
+    fun `non-retryable failure blocks only that exact call - a corrected retry may run`() {
+        // Step 5: app_open_action(package="Settings") failed "not in the App Atlas";
+        // the model searched and retried with the real package — the guard blocked it.
         val guard = ToolLoopGuard()
-        guard.record("get_battery", JsonObject(emptyMap()), failure(retryable = false))
-        // Even with fresh arguments, the tool is disabled.
-        assertThat(guard.canExecute("get_battery", JsonObject(emptyMap()))).isFalse()
-        assertThat(guard.isDisabled("get_battery")).isTrue()
+        val wrong = buildJsonObject { put("package", "Settings"); put("action_id", "open") }
+        val fixed = buildJsonObject { put("package", "com.android.settings"); put("action_id", "open") }
+        guard.record("app_open_action", wrong, failure(retryable = false))
+        guard.record("app_atlas_search", buildJsonObject { put("query", "settings") }, success())
+        assertThat(guard.canExecute("app_open_action", wrong)).isFalse()
+        assertThat(guard.canExecute("app_open_action", fixed)).isTrue()
+        assertThat(guard.isDisabled("app_open_action")).isFalse()
+    }
+
+    @Test
+    fun `argument-independent failures disable the whole tool`() {
+        val guard = ToolLoopGuard()
+        guard.record("send_sms", buildJsonObject { put("phone", "1") }, ToolResult.Failure("The user declined the action.", retryable = false))
+        assertThat(guard.canExecute("send_sms", buildJsonObject { put("phone", "2") })).isFalse()
+        val permission = ToolResult.Failure(
+            "camera permission missing",
+            data = buildJsonObject { put("status", "permission_denied") },
+            retryable = false
+        )
+        guard.record("set_flashlight", buildJsonObject { put("on", true) }, permission)
+        assertThat(guard.isDisabled("set_flashlight")).isTrue()
+    }
+
+    @Test
+    fun `second failed call of a tool with other arguments disables it`() {
+        val guard = ToolLoopGuard()
+        guard.record("app_open_action", buildJsonObject { put("package", "a") }, failure(retryable = false))
+        assertThat(guard.isDisabled("app_open_action")).isFalse()
+        guard.record("app_open_action", buildJsonObject { put("package", "b") }, failure(retryable = false))
+        assertThat(guard.isDisabled("app_open_action")).isTrue()
     }
 
     @Test

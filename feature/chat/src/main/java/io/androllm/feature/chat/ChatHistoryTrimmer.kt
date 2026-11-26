@@ -35,11 +35,26 @@ object ChatHistoryTrimmer {
      */
     fun estimateTokens(text: String): Int {
         var asciiChars = 0
+        var alphabeticChars = 0
         var wideChars = 0
         for (c in text) {
-            if (c.code < 0x80) asciiChars++ else wideChars++
+            when {
+                c.code < 0x80 -> asciiChars++
+                // Branch U (step 5): Cyrillic / Greek / Latin-extended / Armenian…
+                // are alphabetic scripts that the Gemma / Qwen tokenizers pack at
+                // ~2.5-4 chars per token. Charging 1 token per char (CJK rate)
+                // made a ~1 KB Russian system prompt cost ~1K tokens and, with
+                // nCtx 4096, trimmed a 3-message chat down to 1 message.
+                c.code < CJK_START -> alphabeticChars++
+                else -> wideChars++
+            }
         }
-        return max(1, ceil(asciiChars / CHARS_PER_TOKEN).toInt() + wideChars) + ROLE_OVERHEAD_TOKENS
+        return max(
+            1,
+            ceil(asciiChars / CHARS_PER_TOKEN).toInt() +
+                ceil(alphabeticChars / ALPHABETIC_CHARS_PER_TOKEN).toInt() +
+                wideChars
+        ) + ROLE_OVERHEAD_TOKENS
     }
 
     /**
@@ -61,7 +76,16 @@ object ChatHistoryTrimmer {
         history: List<ChatMessage>,
         contextLength: Int,
         reservedOutputTokens: Int,
-        systemTokenOverhead: Int = 0
+        systemTokenOverhead: Int = 0,
+        /**
+         * Branch U: the smallest output reserve the turn can live with. When the
+         * normal budget cannot hold it, the last user+assistant exchange before
+         * the current prompt is still kept as long as it (plus the prompt) fits
+         * `contextLength - systemTokenOverhead - minOutputTokens` — a short reply
+         * like "да" must never lose the question it answers. Default = no
+         * relaxation (the old behaviour).
+         */
+        minOutputTokens: Int = reservedOutputTokens
     ): List<ChatMessage> {
         if (history.isEmpty()) return emptyList()
 
@@ -70,7 +94,24 @@ object ChatHistoryTrimmer {
 
         val budget = (contextLength - reservedOutputTokens - systemTokenOverhead)
             .coerceAtLeast(0)
+        val greedy = greedyTrim(history, lastUserIdx, budget)
+        val exchange = lastExchange(history, lastUserIdx) ?: return greedy
+        if (greedy.size >= exchange.size) return greedy
+        val relaxedBudget = contextLength - systemTokenOverhead - minOutputTokens.coerceAtMost(reservedOutputTokens)
+        val exchangeCost = exchange.sumOf { estimateTokens(it.content) }
+        return if (exchangeCost <= relaxedBudget) exchange else greedy
+    }
 
+    /** prev user, prev assistant, current user — or null when there is no complete exchange. */
+    private fun lastExchange(history: List<ChatMessage>, lastUserIdx: Int): List<ChatMessage>? {
+        val prevAssistant = (lastUserIdx - 1 downTo 0).firstOrNull { history[it].role == MessageRole.ASSISTANT }
+            ?: return null
+        val prevUser = (prevAssistant - 1 downTo 0).firstOrNull { history[it].role == MessageRole.USER }
+            ?: return null
+        return listOf(history[prevUser], history[prevAssistant], history[lastUserIdx])
+    }
+
+    private fun greedyTrim(history: List<ChatMessage>, lastUserIdx: Int, budget: Int): List<ChatMessage> {
         // Budget exhausted before any history could fit: still keep the
         // current prompt — the engine clamps the prompt at nCtx.
         if (budget <= 0) return listOf(history[lastUserIdx])
@@ -98,5 +139,7 @@ object ChatHistoryTrimmer {
     }
 
     private const val CHARS_PER_TOKEN = 4.0
+    private const val ALPHABETIC_CHARS_PER_TOKEN = 2.0
+    private const val CJK_START = 0x2E80
     private const val ROLE_OVERHEAD_TOKENS = 4
 }

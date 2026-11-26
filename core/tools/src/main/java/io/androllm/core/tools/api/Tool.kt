@@ -29,4 +29,13 @@ interface Tool {
      * tesla_command) and run the call inside [io.androllm.core.tools.confirmation.RiskyActionApproval].
      */
     fun riskyAction(arguments: JsonObject): String? = null
+
+    /**
+     * Branch U: Android runtime permissions this tool needs that are NOT granted
+     * right now (empty = nothing missing). A non-empty list makes the executor
+     * raise a permission card first — Approve opens the system permission dialog
+     * (ChatScreen requests [io.androllm.core.tools.confirmation.PendingToolConfirmation.requiredPermissions])
+     * — instead of running the tool into a certain "permission missing" failure.
+     */
+    fun missingRuntimePermissions(): List<String> = emptyList()
 }

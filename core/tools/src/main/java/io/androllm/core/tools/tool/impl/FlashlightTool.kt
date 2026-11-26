@@ -43,15 +43,29 @@ class FlashlightTool @Inject constructor(
         category = ToolCategory.DEVICE
     )
 
+    /** Branch U: the executor raises a permission card while CAMERA is missing. */
+    override fun missingRuntimePermissions(): List<String> =
+        if (PermissionUtils.hasPermission(context, Manifest.permission.CAMERA)) emptyList()
+        else listOf(Manifest.permission.CAMERA)
+
     override suspend fun execute(arguments: JsonObject): ToolResult {
         val on = ToolArgs.bool(arguments, "on")
         if (!PermissionUtils.hasPermission(context, Manifest.permission.CAMERA)) {
-            return ToolResult.Failure("The camera permission is required for the flashlight — enable it in Android settings.")
+            // Branch U: deterministic — never retried, never re-routed.
+            return ToolResult.Failure(
+                "The camera permission is required for the flashlight — it was not granted.",
+                data = buildJsonObject { put("status", "permission_denied") },
+                retryable = false
+            )
         }
         return runCatching {
             val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val cameraId = firstFlashCamera(cm)
-                ?: return ToolResult.Failure("This device has no flashlight.")
+                ?: return ToolResult.Failure(
+                    "This device has no flashlight.",
+                    data = buildJsonObject { put("status", "unsupported") },
+                    retryable = false
+                )
             cm.setTorchMode(cameraId, on)
             ToolResult.Success(
                 summary = if (on) "Flashlight turned on." else "Flashlight turned off.",
@@ -61,7 +75,16 @@ class FlashlightTool @Inject constructor(
                 }
             )
         }.getOrElse {
-            ToolResult.Failure("Could not toggle the flashlight: ${it.message ?: it.javaClass.simpleName}")
+            if (it is SecurityException) {
+                ToolResult.Failure(
+                    "The camera permission is required for the flashlight — it was not granted.",
+                    data = buildJsonObject { put("status", "permission_denied") },
+                    retryable = false
+                )
+            } else {
+                // Camera busy (CameraAccessException) can clear up — a retry may help.
+                ToolResult.Failure("Could not toggle the flashlight: ${it.javaClass.simpleName}")
+            }
         }
     }
 

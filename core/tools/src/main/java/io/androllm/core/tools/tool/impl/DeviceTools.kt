@@ -438,27 +438,49 @@ class ClockTool @Inject constructor(
     )
 
     override suspend fun execute(arguments: JsonObject): ToolResult {
-        val showAlarms = Intent("android.intent.action.SHOW_ALARMS").apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Branch U (step 5): resolveActivity() found Samsung's SHOW_ALARMS handler,
+        // startActivity() then threw SecurityException (SET_ALARM permission was
+        // misnamed in the manifest) and the APP_CLOCK fallback never ran because
+        // it sat in the else branch of the resolve check. Each candidate is now
+        // tried in order until one actually STARTS.
+        val candidates: List<() -> Intent?> = listOf(
+            { Intent("android.intent.action.SHOW_ALARMS") },
+            { Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, "android.intent.category.APP_CLOCK") },
+            *KNOWN_CLOCK_PACKAGES.map { pkg -> { context.packageManager.getLaunchIntentForPackage(pkg) } }.toTypedArray()
+        )
+        val ok = ClockLauncher.firstThatStarts(candidates) { intent ->
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
         }
-        val ok = runCatching {
-            if (showAlarms.resolveActivity(context.packageManager) != null) {
-                context.startActivity(showAlarms)
-            } else {
-                context.startActivity(
-                    Intent(Intent.ACTION_MAIN).apply {
-                        addCategory("android.intent.category.APP_CLOCK")
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                )
-            }
-            true
-        }.getOrDefault(false)
         return if (ok) {
             ToolResult.Success("Opened the clock app.")
         } else {
-            ToolResult.Failure("Could not open the clock app.")
+            ToolResult.Failure(
+                "Could not open the clock app.",
+                data = buildJsonObject { put("status", "not_available") },
+                retryable = false
+            )
         }
+    }
+
+    companion object {
+        /** Clock apps opened by package when no intent filter matches (Samsung, Google, AOSP). */
+        val KNOWN_CLOCK_PACKAGES = listOf(
+            "com.sec.android.app.clockpackage",
+            "com.google.android.deskclock",
+            "com.android.deskclock"
+        )
+    }
+}
+
+/** Branch U: tries launch candidates in order; a throwing start (SecurityException, ActivityNotFound) moves on. */
+internal object ClockLauncher {
+    fun <T : Any> firstThatStarts(candidates: List<() -> T?>, start: (T) -> Unit): Boolean {
+        for (candidate in candidates) {
+            val target = runCatching { candidate() }.getOrNull() ?: continue
+            if (runCatching { start(target) }.isSuccess) return true
+        }
+        return false
     }
 }
 

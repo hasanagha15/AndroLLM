@@ -240,9 +240,10 @@ class ModelResourceGuard internal constructor(
         headCountKv: Int,
         keyLength: Int,
         backend: io.androllm.engine.models.BackendType,
-        mode: MemoryMode
+        mode: MemoryMode,
+        weightFraction: Double = 1.0
     ): Long {
-        val weights = MemoryEstimator.estimateWeightsMemory(fileSizeBytes)
+        val weights = MemoryEstimator.estimateResidentWeights(fileSizeBytes, weightFraction)
         val kv = MemoryEstimator.estimateKvCacheBytes(contextLength, blockCount, headCountKv, keyLength, fileSizeBytes)
         val scratch = MemoryEstimator.estimateComputeScratchForFraction(weights, mode.scratchFraction)
         val tok = MemoryEstimator.estimateTokenizerOverhead(mode.useCompactTokenizer)
@@ -376,7 +377,14 @@ class ModelResourceGuard internal constructor(
         headCountKv: Int = 0,
         keyLength: Int = 0,
         requestedBackend: io.androllm.engine.models.BackendType = io.androllm.engine.models.BackendType.CPU,
-        quantization: String? = null
+        quantization: String? = null,
+        /**
+         * Branch U: share of the file that becomes RESIDENT memory. 1.0 for ordinary
+         * models; lower for Gemma 3n/4 "E" models whose per-layer-embedding tables stay
+         * memory-mapped (clean, file-backed, reclaimable pages) — see
+         * [MemoryEstimator.residentWeightFraction].
+         */
+        weightFraction: Double = 1.0
     ): AggressiveFitResult {
         val requestedCtx = contextLength.coerceAtLeast(512)
         val category = MemoryEstimator.modelCategory(fileSizeBytes)
@@ -398,19 +406,19 @@ class ModelResourceGuard internal constructor(
         for (mode in listOf(MemoryMode.PERFORMANCE, MemoryMode.BALANCED)) {
             for (backend in backendOptions.take(1)) {
                 for (ctx in listOf(requestedCtx)) {
-                    val needed = footprintFor(fileSizeBytes, ctx, blockCount, headCountKv, keyLength, backend, mode)
+                    val needed = footprintFor(fileSizeBytes, ctx, blockCount, headCountKv, keyLength, backend, mode, weightFraction)
                     val budget = (availableBytes * mode.safetyFraction).toLong()
                     val headroom = budget - needed
                     attempted.add("ctx=$ctx backend=${backend.name} mode=${mode.label} need=${mb(needed)}MB")
                     if (!lowMemory && needed <= budget && headroom >= mode.minHeadroomBytes) {
-                        return successResult(fileSizeBytes, requestedCtx, ctx, requestedBackend, backend, needed, budget, mode, emptyList(), availableBytes)
+                        return successResult(fileSizeBytes, requestedCtx, ctx, requestedBackend, backend, needed, budget, mode, emptyList(), availableBytes, weightFraction)
                     }
                     if (lowMemory) {
                         // In lowMemory, require aggressive thresholds even for default mode — otherwise continue to aggressive loop
                         val aggressiveOk = needed <= (availableBytes * SAFETY_FRACTION_AGGRESSIVE).toLong() &&
                             ((availableBytes * SAFETY_FRACTION_AGGRESSIVE).toLong() - needed) >= MIN_HEADROOM_AGGRESSIVE
                         if (aggressiveOk) {
-                            return successResult(fileSizeBytes, requestedCtx, ctx, requestedBackend, backend, needed, (availableBytes * SAFETY_FRACTION_AGGRESSIVE).toLong(), MemoryMode.AGGRESSIVE_FIT, listOf("low-memory: aggressive budget applied"), availableBytes)
+                            return successResult(fileSizeBytes, requestedCtx, ctx, requestedBackend, backend, needed, (availableBytes * SAFETY_FRACTION_AGGRESSIVE).toLong(), MemoryMode.AGGRESSIVE_FIT, listOf("low-memory: aggressive budget applied"), availableBytes, weightFraction)
                         }
                     }
                 }
@@ -421,7 +429,7 @@ class ModelResourceGuard internal constructor(
         for (mode in modeLadder) {
             for (backend in backendOptions) {
                 for (ctx in ctxLadder) {
-                    val needed = footprintFor(fileSizeBytes, ctx, blockCount, headCountKv, keyLength, backend, mode)
+                    val needed = footprintFor(fileSizeBytes, ctx, blockCount, headCountKv, keyLength, backend, mode, weightFraction)
                     val budget = (availableBytes * mode.safetyFraction).toLong()
                     val headroom = budget - needed
                     attempted.add("ctx=$ctx backend=${backend.name} mode=${mode.label} need=${mb(needed)}MB")
@@ -431,7 +439,7 @@ class ModelResourceGuard internal constructor(
                     } else true
                     if (needed <= budget && headroom >= mode.minHeadroomBytes / 2 && lowMemOk) {
                         val reductions = buildReductions(requestedCtx, ctx, requestedBackend, backend, mode)
-                        return successResult(fileSizeBytes, requestedCtx, ctx, requestedBackend, backend, needed, budget, mode, reductions, availableBytes)
+                        return successResult(fileSizeBytes, requestedCtx, ctx, requestedBackend, backend, needed, budget, mode, reductions, availableBytes, weightFraction)
                     }
                 }
             }
@@ -441,7 +449,7 @@ class ModelResourceGuard internal constructor(
         val smallestCtx = ctxLadder.lastOrNull() ?: 1024
         val smallestBackend = backendOptions.lastOrNull() ?: io.androllm.engine.models.BackendType.CPU
         val smallestMode = MemoryMode.LOW_MEMORY
-        val smallestNeeded = footprintFor(fileSizeBytes, smallestCtx, blockCount, headCountKv, keyLength, smallestBackend, smallestMode)
+        val smallestNeeded = footprintFor(fileSizeBytes, smallestCtx, blockCount, headCountKv, keyLength, smallestBackend, smallestMode, weightFraction)
         val budget = (availableBytes * smallestMode.safetyFraction).toLong()
         val breakdown = BreakdownForDiagnostics(fileSizeBytes, smallestCtx, blockCount, headCountKv, keyLength, smallestBackend, smallestMode)
         val diag = MemoryFitDiagnostics(
@@ -451,9 +459,9 @@ class ModelResourceGuard internal constructor(
             effectiveContext = smallestCtx,
             requestedBackend = requestedBackend.name,
             effectiveBackend = smallestBackend.name,
-            estimatedWeightsBytes = MemoryEstimator.estimateWeightsMemory(fileSizeBytes),
+            estimatedWeightsBytes = MemoryEstimator.estimateResidentWeights(fileSizeBytes, weightFraction),
             estimatedKvBytes = MemoryEstimator.estimateKvCacheBytes(smallestCtx, blockCount, headCountKv, keyLength, fileSizeBytes),
-            estimatedScratchBytes = MemoryEstimator.estimateComputeScratchForFraction(MemoryEstimator.estimateWeightsMemory(fileSizeBytes), smallestMode.scratchFraction),
+            estimatedScratchBytes = MemoryEstimator.estimateComputeScratchForFraction(MemoryEstimator.estimateResidentWeights(fileSizeBytes, weightFraction), smallestMode.scratchFraction),
             estimatedTokenizerBytes = MemoryEstimator.estimateTokenizerOverhead(smallestMode.useCompactTokenizer),
             estimatedDelegateBytes = MemoryEstimator.estimateBackendOverhead(smallestBackend, true),
             estimatedTotalBytes = smallestNeeded,
@@ -581,9 +589,10 @@ class ModelResourceGuard internal constructor(
         budget: Long,
         mode: MemoryMode,
         extraReductions: List<String>,
-        available: Long
+        available: Long,
+        weightFraction: Double = 1.0
     ): AggressiveFitResult.Fit {
-        val weights = MemoryEstimator.estimateWeightsMemory(fileSizeBytes)
+        val weights = MemoryEstimator.estimateResidentWeights(fileSizeBytes, weightFraction)
         val kv = MemoryEstimator.estimateKvCacheBytes(effectiveCtx, 0, 0, 0, fileSizeBytes) // fallback geometry; caller may have geometry
         val scratch = MemoryEstimator.estimateComputeScratchForFraction(weights, mode.scratchFraction)
         val tok = MemoryEstimator.estimateTokenizerOverhead(mode.useCompactTokenizer)
