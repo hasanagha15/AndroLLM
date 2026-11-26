@@ -177,7 +177,7 @@ class JarvisPlaybookTaskHandlerTest {
     }
 
     @Test
-    fun `failure data keeps only machine fields; runner refusal under the mutex keeps its code`() = runTest {
+    fun `failure data keeps only machine fields and a runner refusal under the mutex keeps its code`() = runTest {
         put(PlaybookFixtures.searchPlaybook())
         result = ToolResult.Failure("Playbook stopped", buildJsonObject {
             put("status", "failed"); put("failed_step", 1); put("reason", "target_not_found"); put("secret_screen_text", "x")

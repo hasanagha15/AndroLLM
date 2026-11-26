@@ -112,7 +112,7 @@ class DataTaskTest {
         val cases = listOf("w1" to "denied", "w2" to "error", "w3" to "ok", "w4" to "accepted", "w5" to "bogus")
         for ((id, st) in cases) {
             val b = kotlinx.serialization.json.buildJsonObject { put("st", kotlinx.serialization.json.JsonPrimitive(st)) }
-            p.onPayload(JarvisProtocol.encodeTask(TestTasks.KEY, id, "", now, type = "playbook.run", body = b))
+            p.onPayload(JarvisProtocol.encodeTask(TestTasks.KEY, id, "", now, ttl = 60, type = "playbook.run", body = b))
         }
         runCurrent()
         fun final(id: String) = published.last { it.id == id }.status
