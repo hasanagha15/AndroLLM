@@ -65,6 +65,8 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
     testImplementation(libs.truth)
+    // Branch U it.2: AppOpenActionTool exclusion test (mocked repository / context).
+    testImplementation(libs.mockk)
     // Real XmlPullParser for the manifest / shortcut XML parser tests.
     testImplementation("net.sf.kxml:kxml2:2.3.0")
     // Branch N: runs the Room migration SQL against a real SQLite in AtlasMigrationTest.

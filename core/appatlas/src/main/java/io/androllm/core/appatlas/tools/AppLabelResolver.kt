@@ -16,6 +16,15 @@ object AppLabelResolver {
         "ayarlar", "parametrlər", "tənzimləmələr"
     )
 
+    /**
+     * Branch U it.2 (B2): the ACTION_SETTINGS fallback is allowed only for the
+     * system Settings package, the plain "open" action, and only when the owner
+     * did not exclude it from the App Atlas.
+     */
+    fun settingsFallbackAllowed(resolvedPkg: String, actionId: String, excluded: Set<String>): Boolean =
+        resolvedPkg == SETTINGS_PACKAGE && actionId.equals("open", ignoreCase = true) &&
+            excluded.none { it.trim().equals(SETTINGS_PACKAGE, ignoreCase = true) }
+
     fun resolve(input: String, labelsToPackages: List<Pair<String, String>>): String? {
         val key = normalize(input)
         if (key.isEmpty()) return null

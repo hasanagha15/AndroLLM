@@ -306,6 +306,10 @@ class DefaultEngineRepository @Inject constructor(
     override suspend fun unloadForMemoryPressure(): Result<Unit> = generationMutex.withLock {
         io.androllm.core.common.runCatching {
             if (!engine.isLoaded()) return@runCatching
+            // Branch U it.2 (Z7): pressure soon after a reduced-share load → full share next time.
+            if (io.androllm.engine.utils.ResidentShareMemory.onMemoryPressure(System.currentTimeMillis())) {
+                android.util.Log.w(TAG, "MEMORY PRESSURE soon after load — resident share reset to full for the next load")
+            }
             engine.unloadModel()
             _engineState.value = EngineState.Unloaded
             _memoryStats.value = null

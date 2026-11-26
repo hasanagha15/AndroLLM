@@ -466,6 +466,8 @@ Your request
 | **UI automation** | Drive any app via the accessibility service: tap, type, scroll, swipe, pinch, multi-step tasks — [details](documentation/agent/accessibility-automation.md) |
 | **Transparency** | Every call is trace-logged (Developer → Tool Debug); tools never run silently; retry-once on transient failures |
 
+> **Risk: confirmation mode "Never".** Setting confirmations to *Never* removes the approval card for **every** tool, including sending SMS, placing calls, sending email, deleting notes and MCP tools whose names send / post / delete / pay. Only risky UI taps (Send / Pay / Delete in another app) still ask, and remote (Jarvis) tasks are refused outright in this mode. Outward-communication tools are tap-only in the other modes: a spoken "yes" never approves them. Keep *High-risk* or *Always* unless you understand this.
+
 ---
 
 ## ☁️ Cloud Providers

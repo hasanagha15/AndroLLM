@@ -311,4 +311,36 @@ class ToolRunCoordinatorTest {
         assertThat(started).isEqualTo(terminal)
         assertThat(started).isEqualTo(1)
     }
+
+    @Test
+    fun `side-effecting tools are never retried automatically`() = runTest {
+        register(ToolSpec(name = "ui_run", description = "automation", cacheable = false))
+        var calls = 0
+        coEvery { executor.execute(any()) } answers {
+            calls++
+            ToolResult.Failure("The 'ui_run' tool timed out after 180s.", retryable = true)
+        }
+        coordinator().executeCalls(listOf(io.androllm.core.tools.api.ToolCall("c", "ui_run", buildJsonObject { })))
+        assertThat(calls).isEqualTo(1)
+    }
+
+    @Test
+    fun `guard keys on the canonical tool name`() = runTest {
+        val sms = mockk<Tool>()
+        every { sms.spec } returns ToolSpec(name = "send_sms", description = "sms", requiresConfirmation = true)
+        every { registry.get(any()) } answers {
+            if (firstArg<String>().trim().lowercase() == "send_sms") sms else null
+        }
+        var calls = 0
+        coEvery { executor.execute(any()) } answers {
+            calls++
+            ToolResult.Failure("The user declined the action.", retryable = false)
+        }
+        val guard = ToolLoopGuard()
+        val coord = coordinator()
+        coord.executeCalls(listOf(io.androllm.core.tools.api.ToolCall("a", "send_sms", buildJsonObject { put("phone", "1") })), guard = guard)
+        // Another casing after a decline must not raise a second card.
+        coord.executeCalls(listOf(io.androllm.core.tools.api.ToolCall("b", "Send_SMS", buildJsonObject { put("phone", "2") })), guard = guard)
+        assertThat(calls).isEqualTo(1)
+    }
 }

@@ -296,11 +296,26 @@ class ToolConfirmationManager @Inject constructor() {
          */
         private val OUTWARD_NAME = Regex(
             "(^|[_.:-])(send|call|dial|post|publish|reply|forward|share|tweet|email|sms|message|" +
-                "delete|remove|erase|wipe|transfer|pay|purchase)(s|es|ed|ing)?([_.:-]|$)"
+                "delete|remove|erase|wipe|trash|transfer|pay|purchase|buy|order|checkout|book|" +
+                "upload|unlock|invite)(s|es|ed|ing)?([_.:-]|$)"
         )
 
+        /** Branch U it.2 (B1): `postMessage` / `sendEmail` / `deleteFile` → `post_message` … */
+        private val CAMEL_BOUNDARY = Regex("([a-z0-9])([A-Z])")
+
+        /** Canonical form for the name rule: camelCase split, then lowercase. */
+        fun normalizeToolName(toolName: String): String =
+            toolName.trim().replace(CAMEL_BOUNDARY, "$1_$2").lowercase()
+
+        /**
+         * True when [toolName] is a listed tap-only tool or its name says it sends,
+         * calls, posts, deletes, pays, uploads… Branch U it.2 (B1): camelCase MCP
+         * names (`mcp_slack_postMessage`) are split before matching, and the
+         * executor RAISES a tap-only card for such a tool even when its spec does
+         * not ask for confirmation.
+         */
         fun isTapOnlyToolName(toolName: String): Boolean {
-            val name = toolName.trim().lowercase()
+            val name = normalizeToolName(toolName)
             return name in TAP_ONLY_TOOLS || OUTWARD_NAME.containsMatchIn(name)
         }
 

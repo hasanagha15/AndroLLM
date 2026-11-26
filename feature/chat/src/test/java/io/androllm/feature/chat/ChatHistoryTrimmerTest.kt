@@ -194,4 +194,12 @@ class ChatHistoryTrimmerTest {
         // ~2 chars/token (conservative vs real ~3) + overhead, far below 1 token/char.
         assertTrue("estimate=$estimate", estimate in 60..90)
     }
+
+    @Test
+    fun `other scripts are charged one token per char`() {
+        val hindi = "नमस्ते".repeat(10) // Devanagari, 60 chars
+        assertEquals(60 + 4, ChatHistoryTrimmer.estimateTokens(hindi))
+        val greek = "αβγδ".repeat(10) // 40 chars at ~2 chars/token
+        assertEquals(20 + 4, ChatHistoryTrimmer.estimateTokens(greek))
+    }
 }

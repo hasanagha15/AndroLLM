@@ -197,7 +197,7 @@ class ToolRunCoordinator @Inject constructor(
                 break
             }
             // Loop guard: never re-run an identical call, never run a tool at its cap, never run a disabled tool — skip instead of executing.
-            if (guard != null && !guard.canExecute(name, args)) {
+            if (guard != null && !guard.canExecute(canonicalName(name), args)) {
                 Timber.i("ToolRunCoordinator: guard blocked '$name' — skipping (total=${guard.totalCalls})")
                 continue
             }
@@ -208,7 +208,7 @@ class ToolRunCoordinator @Inject constructor(
             val startedAt = System.currentTimeMillis()
             val (result, fromCache, retryCount) = executeWithCacheAndRetry(toolCall, onEvent)
             val durationMs = System.currentTimeMillis() - startedAt
-            guard?.record(name, args, result)
+            guard?.record(canonicalName(name), args, result)
             // Tool Result Memory: store cloud output for next round's conditional / parameter filling
             storeToolResultMemory(name, result.summary)
 
@@ -353,7 +353,7 @@ class ToolRunCoordinator @Inject constructor(
                 results += ToolExecutionRecord(call, ToolResult.Failure("Tool '${call.name}' rejected: prompt injection detected.", retryable = false))
                 break
             }
-            if (guard != null && !guard.canExecute(call.name, call.arguments)) {
+            if (guard != null && !guard.canExecute(canonicalName(call.name), call.arguments)) {
                 Timber.i("ToolRunCoordinator: guard blocked '${call.name}' — skipping (total=${guard.totalCalls})")
                 continue
             }
@@ -398,7 +398,7 @@ class ToolRunCoordinator @Inject constructor(
                 }
             } else rawResult
             val durationMs = System.currentTimeMillis() - startedAt
-            guard?.record(call.name, call.arguments, result)
+            guard?.record(canonicalName(call.name), call.arguments, result)
             logger.logExecution(call.name, durationMs, result.isSuccess, if (result is ToolResult.Failure) result.summary else null)
             Timber.i(
                 "ToolRunCoordinator: local tool '%s' -> %s in %dms (retries=%d, cache=%s, output=%dB)",
@@ -449,7 +449,7 @@ class ToolRunCoordinator @Inject constructor(
                 if (v is ValidationResult.Invalid) {
                     return@async ToolExecutionRecord(call, ToolResult.Failure("Tool '${call.name}' rejected: ${v.firstError}", retryable = v.retryable))
                 }
-                if (guard != null && !guard.canExecute(call.name, call.arguments)) {
+                if (guard != null && !guard.canExecute(canonicalName(call.name), call.arguments)) {
                     return@async null // skipped
                 }
                 val argsText = call.arguments.entries.joinToString(", ") { (k, v) -> "$k=$v" }.take(200)
@@ -460,7 +460,7 @@ class ToolRunCoordinator @Inject constructor(
                 val result = if (summary != rawResult.summary) {
                     when (rawResult) { is ToolResult.Success -> rawResult.copy(summary = summary); is ToolResult.Failure -> rawResult.copy(summary = summary) }
                 } else rawResult
-                guard?.record(call.name, call.arguments, result)
+                guard?.record(canonicalName(call.name), call.arguments, result)
                 storeToolResultMemory(call.name, result.summary)
                 val durationMs = System.currentTimeMillis() - startedAt
                 logger.logExecution(call.name, durationMs, result.isSuccess, if (result is ToolResult.Failure) result.summary else null)
@@ -624,7 +624,7 @@ class ToolRunCoordinator @Inject constructor(
                 break
             }
             // ── Tool Confidence: verify tool exists, parameters available, permissions before execution (already validated, but double-check)
-            val fresh = calls.filter { loopGuard.canExecute(it.name, it.arguments) }
+            val fresh = calls.filter { loopGuard.canExecute(canonicalName(it.name), it.arguments) }
             if (fresh.isEmpty()) {
                 Timber.i("ToolRunCoordinator: planner re-proposed only blocked calls — stopping")
                 break
@@ -818,7 +818,11 @@ class ToolRunCoordinator @Inject constructor(
         // cannot fix (declined, settings-blocked).
         // Branch U: a failure that cannot succeed on a re-run (missing runtime
         // permission, unsupported hardware, declined) is never retried.
-        while (result is ToolResult.Failure && isRetryableFailure(result) && !requiresConfirmation &&
+        // Branch U it.2 (Z2): only READ-ONLY tools are retried automatically — a
+        // re-run of ui_run / ui_type / app_open_action / set_* could repeat a
+        // device action (an automation run twice).
+        val autoRetry = spec != null && isReadOnlyTool(spec)
+        while (result is ToolResult.Failure && isRetryableFailure(result) && !requiresConfirmation && autoRetry &&
             retries < TOOL_MAX_ATTEMPTS - 1
         ) {
             retries++

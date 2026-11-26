@@ -210,7 +210,13 @@ class ToolExecutor @Inject constructor(
         // Pay, Delete…, a submitting ui_type) ALWAYS asks with a tap-only card,
         // whatever the confirmation mode — like tesla_command.
         val risky = runCatching { tool.riskyAction(call.arguments) }.getOrNull()
-        val mustConfirm = risky != null || if (remote != null) {
+        // Branch U it.2 (B1): a tool whose NAME says it sends / posts / deletes /
+        // pays (MCP servers, plugins: McpRemoteTool has requiresConfirmation=false)
+        // always gets a card — tap-only by name — unless the owner explicitly chose
+        // "Never" (remote tasks are refused under "Never" above anyway).
+        val outwardByName = ToolConfirmationManager.isTapOnlyToolName(spec.name) &&
+            settings.confirmationMode != ConfirmationMode.NEVER
+        val mustConfirm = risky != null || outwardByName || if (remote != null) {
             // Never softer than the owner's own setting ("Always" is honoured).
             !RemoteToolPolicy.isAutoAllowed(spec) || settings.shouldConfirm(spec.requiresConfirmation)
         } else {

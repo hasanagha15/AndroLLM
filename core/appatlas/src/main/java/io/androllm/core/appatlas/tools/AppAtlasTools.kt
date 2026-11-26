@@ -172,7 +172,11 @@ class AppOpenActionTool @Inject constructor(
             return ToolResult.Failure("This assistant cannot open itself through the atlas.", retryable = false)
         }
         val resolvedEntry = repository.entry(resolvedPkg)
-        if (resolvedEntry == null && resolvedPkg == AppLabelResolver.SETTINGS_PACKAGE && actionId.equals("open", ignoreCase = true)) {
+        // Branch U it.2 (B2): the owner's exclusion wins over the Settings
+        // fallback (also for remote tasks): an excluded Settings app gets the
+        // usual "not in the App Atlas" refusal below.
+        val excluded = runCatching { repository.excludedPackages() }.getOrDefault(emptySet())
+        if (resolvedEntry == null && AppLabelResolver.settingsFallbackAllowed(resolvedPkg, actionId, excluded)) {
             // The system Settings app is not always indexed (not a regular launcher
             // entry on every ROM): open it with the platform intent instead.
             return openSystemSettings()

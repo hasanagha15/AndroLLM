@@ -45,7 +45,11 @@ object ChatHistoryTrimmer {
                 // ~2.5-4 chars per token. Charging 1 token per char (CJK rate)
                 // made a ~1 KB Russian system prompt cost ~1K tokens and, with
                 // nCtx 4096, trimmed a 3-message chat down to 1 message.
-                c.code < CJK_START -> alphabeticChars++
+                // Branch U it.2 (Z3): only Latin-extended, Greek, Cyrillic and
+                // Armenian (U+0080..U+058F). Other scripts (Devanagari, Thai,
+                // Georgian, Ethiopic, Khmer…) often cost >= 1 token per char in
+                // byte-level BPE, so they are charged like CJK.
+                c.code <= ALPHABETIC_END -> alphabeticChars++
                 else -> wideChars++
             }
         }
@@ -140,6 +144,6 @@ object ChatHistoryTrimmer {
 
     private const val CHARS_PER_TOKEN = 4.0
     private const val ALPHABETIC_CHARS_PER_TOKEN = 2.0
-    private const val CJK_START = 0x2E80
+    private const val ALPHABETIC_END = 0x058F
     private const val ROLE_OVERHEAD_TOKENS = 4
 }

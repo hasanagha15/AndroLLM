@@ -49,4 +49,10 @@ class PhoneFixesUTest {
         assertEquals(cards[1], closed[1])
         assertEquals(cards[2], closed[2])
     }
+
+    @Test
+    fun `system budget is never zero - zero would mean unlimited`() {
+        assertEquals(MIN_SYSTEM_BUDGET_CHARS, computeSystemCharsBudget(300, 256, 128))
+        assertEquals((4096 - 1365 - 200) * 4, computeSystemCharsBudget(4096, 1365, 200))
+    }
 }

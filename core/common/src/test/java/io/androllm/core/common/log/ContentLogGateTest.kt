@@ -18,10 +18,22 @@ class ContentLogGateTest {
 
     private val logCall = Regex("""(Timber(\.tag\([^)]*\))?\.[a-z]+\(|Log\.[diwev]\(|logger\.[diwev]\()""")
     private val vars = "(trimmed|prompt|text|content|transcript|sentence|cleaned|covered|normalized|reply|query|expr|loc|" +
-        "userMessage|modelOutput|finalResponse|goal|request|summary|argsString|arguments|output|utterance)"
+        "userMessage|modelOutput|finalResponse|goal|request|summary|argsString|arguments|output|utterance|" +
+        // Branch U it.2 (Z9): the step-5 loop-detector leak used these names.
+        "unit|fragment|sample|detail)"
     private val safe = """(?!\s*\.(length|size|id|first|isBlank|isEmpty|name)\b)"""
     private val interpolation = Regex("""\$\{?""" + vars + """\b""" + safe)
-    private val formatArg = Regex(""",\s*(\w+\.)?""" + vars + """\b""" + safe)
+    /** Branch U it.2 (Z9): `${guard.detail}` / `${x.sample}` — member access to a content-carrying property. */
+    private val memberContent = Regex("""\$\{\w+\.(detail|sample|fragment)\}""")
+    /**
+     * Format args: member access (`x.summary`) counts for the original names; the
+     * branch U names count only as bare variables (`unit`, `fragment`) — a
+     * `problem.detail` file-check reason is not conversation content.
+     */
+    private val formatArg = Regex(
+        """,\s*((\w+\.)?""" + vars.replace("|unit|fragment|sample|detail", "") +
+            """|(unit|fragment|sample|detail))\b""" + safe
+    )
     private val exempt = setOf("MemoryRepository.kt")
 
     private fun repoRoot(): File {
@@ -48,7 +60,9 @@ class ContentLogGateTest {
             val text = call.toString()
             if ("ContentLog" in text) continue
             val args = text.substring(text.lastIndexOf('"') + 1)
-            if (interpolation.containsMatchIn(text) || ("%s" in text && formatArg.containsMatchIn(args))) {
+            if (interpolation.containsMatchIn(text) || memberContent.containsMatchIn(text) ||
+                ("%s" in text && formatArg.containsMatchIn(args))
+            ) {
                 hits += "$name:${i + 1}: ${line.trim().take(160)}"
             }
         }
@@ -80,6 +94,23 @@ class ContentLogGateTest {
             android.util.Log.i(TAG, "SEND CLICK prompt=${'$'}{ContentLog.text(trimmed)} (${'$'}{trimmed.length} chars)")
             Timber.i("tool '${'$'}{call.name}' output=%dB", summary.length)
             Timber.i("MESSAGE CREATED id=${'$'}{userMessage.id}")
+        """.trimIndent()
+        assertTrue(scan("clean.kt", clean).isEmpty())
+    }
+
+    @Test
+    fun `the gate catches the step 5 loop-detector leak shapes`() {
+        val leaky = """
+            logger.w("chat loop detected: ${'$'}{loopGuard.detail} — terminating generation")
+            android.util.Log.w(TAG, "phrase '${'$'}{unit.take(48)}' repeated")
+            Timber.d("fragment ${'$'}fragment")
+            logger.i("sample=${'$'}{guard.sample}")
+        """.trimIndent()
+        assertTrue(scan("leaky.kt", leaky).size == 4)
+        val clean = """
+            logger.w("chat loop detected: ${'$'}{loopGuard.describe(config.debugTokenLogging)} — terminating")
+            logger.w("loop sample ${'$'}{ContentLog.text(sample, 48)}")
+            Timber.d("fragment chars=${'$'}{fragment.length}")
         """.trimIndent()
         assertTrue(scan("clean.kt", clean).isEmpty())
     }

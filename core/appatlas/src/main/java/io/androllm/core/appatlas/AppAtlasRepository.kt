@@ -59,6 +59,9 @@ class AppAtlasRepository @Inject constructor(
 
     val isEnabled: Boolean get() = settingsStore.current().enabled
 
+    /** Branch U it.2 (B2): packages the owner excluded are never opened by atlas tools. */
+    fun excludedPackages(): Set<String> = settingsStore.current().exclusions
+
     enum class Mode { INCREMENTAL, SWEEP, FULL }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

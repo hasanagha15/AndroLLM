@@ -752,10 +752,7 @@ class ChatViewModel @Inject constructor(
             // window and "да" lost the question it answered. The floor now
             // covers the last user+assistant exchange plus the current prompt.
             val historyFloorTokens = historyFloorTokens(history, contextLength)
-            val systemCharsBudget = (
-                (contextLength - reservedOutputTokens - historyFloorTokens)
-                    .coerceAtLeast(0) * CHARS_PER_TOKEN_ESTIMATE
-                )
+            val systemCharsBudget = computeSystemCharsBudget(contextLength, reservedOutputTokens, historyFloorTokens)
             val familyAdCapChars =
                 (engineRepository.engineState.value as? EngineState.Ready)
                     ?.model?.toolAdvertisementCapChars
@@ -2293,7 +2290,6 @@ private fun ChatMessage.toCoreMessage(): Message = Message(
     attachmentsJson = attachmentsJson
 )
 
-/** Branch Q (gate B1): the "SEND CLICK" line — length only unless debugTokenLogging. */
 /**
  * Branch U: output tokens reserved for a turn — maxTokens clamped to the context,
  * then to [256, 4096] and at most a third of the context.
@@ -2302,6 +2298,17 @@ internal fun localOutputReserve(maxTokens: Int, contextLength: Int): Int =
     maxTokens.coerceAtMost(contextLength.coerceAtLeast(1))
         .coerceIn(256, 4096)
         .coerceAtMost((contextLength / 3).coerceAtLeast(256))
+
+/**
+ * Branch U it.2 (Z4): char budget of the system block. Never 0 — downstream 0
+ * means "unlimited" (the full tool list) — so a tiny context gets a small floor.
+ */
+internal fun computeSystemCharsBudget(contextLength: Int, reservedOutputTokens: Int, historyFloorTokens: Int): Int =
+    ((contextLength - reservedOutputTokens - historyFloorTokens).coerceAtLeast(0) * 4)
+        .coerceAtLeast(MIN_SYSTEM_BUDGET_CHARS)
+
+/** Branch U it.2: smallest system-block budget (chars), enough for instructions + a short tool header. */
+internal const val MIN_SYSTEM_BUDGET_CHARS = 512
 
 /**
  * Branch U: tokens kept free for history when the system block is budgeted —
@@ -2326,6 +2333,7 @@ internal fun closeRunningToolCards(cards: List<ToolInvocationUi>, reason: String
         if (it.status == ToolInvocationStatus.RUNNING) it.copy(status = ToolInvocationStatus.FAILED, error = reason) else it
     }
 
+/** Branch Q (gate B1): the "SEND CLICK" line — length only unless debugTokenLogging. */
 internal fun describeSendClickForLog(prompt: String, includeContent: Boolean): String =
     "SEND CLICK prompt=${ContentLog.text(prompt, 80, includeContent)} (${prompt.length} chars)"
 

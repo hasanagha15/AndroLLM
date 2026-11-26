@@ -256,6 +256,12 @@ class LiteRtLmEngine @Inject constructor(
     @Volatile
     private var lastFitDiagnostics: io.androllm.engine.utils.MemoryFitDiagnostics? = null
 
+    /** Branch U it.2 (Z7): resident-weight share used by the current / last load. */
+    @Volatile
+    private var loadWeightFraction: Double = 1.0
+    @Volatile
+    private var loadShareKey: String = ""
+
     /** Effective context chosen by aggressive-fit (null = no reduction). */
     @Volatile
     private var fitEffectiveContext: Int? = null
@@ -431,6 +437,14 @@ class LiteRtLmEngine @Inject constructor(
                 // Branch P: no double count — availMem already excludes this
                 // process; the previous interpreter was released just above.
                 val availableBefore = resourceGuard.availableRamBytes()
+                // Branch U it.2 (Z7): estimated resident share, unless a previous load
+                // of this file showed it was too optimistic (PSS / pressure / OOM).
+                io.androllm.engine.utils.ResidentShareMemory.attach(context)
+                loadShareKey = file.name
+                loadWeightFraction = io.androllm.engine.utils.ResidentShareMemory.effectiveFraction(
+                    file.name,
+                    io.androllm.engine.utils.MemoryEstimator.residentWeightFraction(model.name, model.parameters)
+                )
                 val lowMemBefore = resourceGuard.isSystemLowMemory()
                 val fitResult = resourceGuard.attemptAggressiveFit(
                     fileSizeBytes = file.length(),
@@ -439,7 +453,7 @@ class LiteRtLmEngine @Inject constructor(
                     lowMemory = lowMemBefore,
                     requestedBackend = footprintBackend,
                     // Branch U: PLE tables of Gemma "E" models stay mmapped (reclaimable).
-                    weightFraction = io.androllm.engine.utils.MemoryEstimator.residentWeightFraction(model.name, model.parameters)
+                    weightFraction = loadWeightFraction
                 )
                 // Surface detailed diagnostics for UI / logs (see MemoryFitDiagnostics)
                 lastFitDiagnostics = when (fitResult) {
@@ -868,10 +882,25 @@ class LiteRtLmEngine @Inject constructor(
             )
             // Release transient warmup buffers early — spec: free transient buffers as early as possible
             runCatching { System.gc() }
+            // Branch U it.2 (Z7): measured PSS against the estimate; a reduced share
+            // that proved too optimistic falls back to the full share next time.
+            runCatching {
+                val pss = android.os.Debug.getPss() * 1024L
+                val estimate = lastFitDiagnostics?.estimatedTotalBytes ?: 0L
+                val over = io.androllm.engine.utils.ResidentShareMemory.afterLoad(
+                    loadShareKey, loadWeightFraction, pss, estimate, System.currentTimeMillis()
+                )
+                logger.i(
+                    "MEM AFTER LOAD: pss=${pss / 1_048_576}MB estimate=${estimate / 1_048_576}MB " +
+                        "share=$loadWeightFraction${if (over) " — PSS above estimate, full share from the next load" else ""}"
+                )
+            }
             loadedModel!!
             } catch (e: Throwable) {
                 // Crash safety: catch OOM/allocation failures, clean partial allocations, reset state.
                 if (e is OutOfMemoryError || e.message?.contains("out of memory", ignoreCase = true) == true) {
+                    // Branch U it.2 (Z7): the next load uses the full resident share.
+                    io.androllm.engine.utils.ResidentShareMemory.onLoadOom(loadShareKey, loadWeightFraction)
                     EngineCrashGuard.recordCrash("load_oom", "", e)
                     logger.e("LOAD OOM — releasing buffers and failing cleanly: ${e.message}")
                     runCatching { BufferPool.clear() }
