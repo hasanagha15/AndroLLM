@@ -3,12 +3,14 @@ package io.androllm.core.appatlas.update
 import com.google.common.truth.Truth.assertThat
 import io.androllm.core.appatlas.model.AppAtlasEntry
 import io.androllm.core.appatlas.playbook.MemoryPlaybookStore
+import io.androllm.core.appatlas.playbook.FailureKind
 import io.androllm.core.appatlas.playbook.PlaybookCatalog
 import io.androllm.core.appatlas.playbook.PlaybookFixtures
 import io.androllm.core.appatlas.playbook.PlaybookFixtures.PKG
 import io.androllm.core.appatlas.playbook.PlaybookPolicy
 import io.androllm.core.appatlas.playbook.PlaybookRepository
 import io.androllm.core.appatlas.playbook.PlaybookStatus
+import io.androllm.core.appatlas.playbook.StepFailure
 import io.androllm.core.appatlas.playbook.StoredPlaybook
 import io.androllm.core.tools.remote.JarvisEventSink
 import kotlinx.coroutines.test.runTest
@@ -132,7 +134,7 @@ class AppUpdateWatcherTest {
         val restarted = AppUpdateTracker(apps, state) { now }
         apps.queried.clear()
         assertThat(restarted.checkChanged()).isEmpty()
-        assertThat(apps.queried).containsExactly(2)
+        assertThat(apps.queried.first()).isEqualTo(2)
 
         apps.change(PKG, 152)
         val changes = restarted.checkChanged()
@@ -225,7 +227,7 @@ class AppUpdateWatcherTest {
         repo.recordSuccess(id, verified = false) // remote or unconfirmed run
         assertThat(store.items[id]!!.isAppUpdatedStale).isTrue()
 
-        repo.recordSuccess(id, verified = true)
+        repo.recordSuccess(id, verified = true, healVersion = 151)
         val healed = store.items[id]!!
         assertThat(healed.status).isEqualTo(PlaybookStatus.OK)
         assertThat(healed.staleReason).isNull()
@@ -298,6 +300,145 @@ class AppUpdateWatcherTest {
         assertThat(sink.events).hasSize(1)
     }
 
+    // ── iteration 2 (Opus gate R1) ──────────────────────────────────────────
+
+    @Test
+    fun `B1 - atlas flag is read through the store-backed lookup when the cache is empty`() = runTest {
+        // Atlas state: in-memory cache not loaded yet (fresh WorkManager process), flag only in the store.
+        val cache = emptyMap<String, AppAtlasEntry>()
+        val db = mapOf(PAY to AppAtlasEntry(packageName = PAY, label = "Example Links", versionCode = 4, sensitive = true))
+        var loads = 0
+        val entry: suspend (String) -> AppAtlasEntry? = { pkg -> cache[pkg] ?: db[pkg].also { loads++ } }
+        assertThat(AppUpdateHandler.sensitivity(PAY, atlasEntry = entry, installedLabel = { "Example Links" }, extras = { emptySet() })).isTrue()
+        assertThat(loads).isEqualTo(1)
+
+        // Wired into the handler: the package gets no stale mark, no relearn, sensitive=true.
+        val p = PlaybookFixtures.searchPlaybook().copy(id = "$PAY/search", packageName = PAY)
+        store.items[p.id] = StoredPlaybook(p, source = PlaybookRepository.SOURCE_FILE)
+        val h = AppUpdateHandler(repo, { AppUpdateHandler.sensitivity(it, entry, { "Example Links" }, { emptySet() }) }, sink)
+        val out = h.handleOne(AppChange(PAY, 4, 5, AppChange.Kind.UPDATED, now))!!
+        assertThat(out.sensitive).isTrue()
+        assertThat(out.playbooksMarked).isEqualTo(0)
+        assertThat(store.items[p.id]!!.status).isEqualTo(PlaybookStatus.OK)
+        assertThat(repo.pullRelearn(markDelivered = false)).isEmpty()
+        assertThat(sink.events.single().second["sensitive"]!!.jsonPrimitive.boolean).isTrue()
+    }
+
+    @Test
+    fun `B1 - an atlas lookup failure is fail-closed and retried, not committed`() = runTest {
+        storePlaybooks()
+        var atlasDown = true
+        val h = AppUpdateHandler(repo, { pkg ->
+            AppUpdateHandler.sensitivity(pkg, { if (atlasDown) error("db") else null }, { "Example Video" }, { emptySet() })
+        }, sink)
+        tracker.checkChanged()
+        apps.change(PKG, 151)
+
+        assertThat(tracker.checkChanged { h.handleOne(it) != null }).isEmpty()
+        assertThat(store.items.values.none { it.isAppUpdatedStale }).isTrue()
+        assertThat(sink.events).isEmpty()
+        assertThat(state.known()[PKG]).isEqualTo(150L) // not committed
+        assertThat(state.sequence).isEqualTo(0)
+
+        atlasDown = false
+        assertThat(tracker.checkChanged { h.handleOne(it) != null }).hasSize(1)
+        assertThat(store.items.values.all { it.isAppUpdatedStale }).isTrue()
+        assertThat(state.known()[PKG]).isEqualTo(151L)
+        assertThat(state.sequence).isEqualTo(1)
+    }
+
+    @Test
+    fun `R-a - a failed stale mark is retried by the next check`() = runTest {
+        tracker.checkChanged()
+        apps.change(PKG, 151)
+        var fail = true
+        assertThat(tracker.onPackageEvent(PKG) { !fail }).isEmpty()
+        assertThat(state.known()[PKG]).isEqualTo(150L)
+        fail = false
+        assertThat(tracker.checkChanged { !fail }.map { it.newVersionCode }).containsExactly(151L)
+        assertThat(state.known()[PKG]).isEqualTo(151L)
+    }
+
+    @Test
+    fun `R-c - boot count unknown but the counter restarted below our sequence`() = runTest {
+        apps.boot = -1
+        tracker.checkChanged()
+        apps.change(PKG, 151)
+        apps.change(PKG, 152)
+        apps.change(PKG, 153)
+        tracker.checkChanged()
+        assertThat(state.sequence).isEqualTo(3)
+        // Reboot without BOOT_COUNT: the PackageManager counter is back to 1.
+        apps.seq = 0
+        apps.changedLog.clear()
+        apps.change(PKG, 160)
+        assertThat(tracker.checkChanged().map { it.newVersionCode }).containsExactly(160L)
+        assertThat(state.sequence).isEqualTo(1)
+    }
+
+    @Test
+    fun `B3 - a strict-run mismatch keeps the app_updated mark and the atlas sync does not clear it`() = runTest {
+        storePlaybooks()
+        val id = "$PKG/search"
+        handler.handle(listOf(AppChange(PKG, 150, 151, AppChange.Kind.UPDATED, now)))
+
+        // playbook_run (strict) before the atlas synced: the runner passes the atlas' OLD version 150.
+        repo.recordMismatch(id, 150, StepFailure(1, "tap", FailureKind.TARGET_NOT_FOUND))
+        val after = store.items[id]!!
+        assertThat(after.isAppUpdatedStale).isTrue()
+        assertThat(after.flaggedVersion).isEqualTo(151L)
+        assertThat(after.failCount).isEqualTo(1)
+        // The mismatch details replace the app_updated record of the NEW version.
+        val r = repo.pullRelearn(markDelivered = false).single { it.playbookId == id }
+        assertThat(r.versionCode).isEqualTo(151L)
+        assertThat(r.reason).isEqualTo("target_not_found")
+
+        // Then the atlas sync of 151 (in range 100..200): still stale, not routable.
+        repo.onAppVersion(PKG, 151)
+        val synced = store.items[id]!!
+        assertThat(synced.isAppUpdatedStale).isTrue()
+        assertThat(PlaybookCatalog.isRoutable(synced, AppAtlasEntry(packageName = PKG, label = "Example Video", versionCode = 151), emptySet())).isFalse()
+    }
+
+    @Test
+    fun `R-h - a verified run heals only the mark it started on`() = runTest {
+        storePlaybooks()
+        val id = "$PKG/search"
+        // Run started on an unmarked snapshot (healVersion = null); the watcher marked it meanwhile.
+        handler.handle(listOf(AppChange(PKG, 150, 151, AppChange.Kind.UPDATED, now)))
+        repo.recordSuccess(id, verified = true, healVersion = null)
+        assertThat(store.items[id]!!.isAppUpdatedStale).isTrue()
+        // Snapshot marked for 151, but a newer update (152) landed during the run.
+        handler.handle(listOf(AppChange(PKG, 151, 152, AppChange.Kind.UPDATED, now)))
+        repo.recordSuccess(id, verified = true, healVersion = 151)
+        assertThat(store.items[id]!!.isAppUpdatedStale).isTrue()
+        assertThat(store.items[id]!!.flaggedVersion).isEqualTo(152L)
+        repo.recordSuccess(id, verified = true, healVersion = 152)
+        assertThat(store.items[id]!!.status).isEqualTo(PlaybookStatus.OK)
+    }
+
+    @Test
+    fun `R-i - healing beyond versionMax extends the learned range and a re-sync keeps it`() = runTest {
+        val json = PlaybookFixtures.bundleJson(PlaybookFixtures.VALID_PLAYBOOK_JSON) // versionMax 200
+        val id = "com.example.video/search"
+        repo.importJson(json, PlaybookRepository.SOURCE_JARVIS, null)
+        repo.recordSuccess(id, verified = true)
+        handler.handle(listOf(AppChange(PKG, 200, 250, AppChange.Kind.UPDATED, now)))
+        repo.recordSuccess(id, verified = true, healVersion = 250)
+
+        val healed = store.items[id]!!
+        assertThat(healed.playbook.versionMax).isEqualTo(250L)
+        assertThat(PlaybookPolicy.effectiveStatus(healed, 250)).isEqualTo(PlaybookStatus.OK)
+        assertThat(PlaybookCatalog.isRoutable(healed, AppAtlasEntry(packageName = PKG, label = "Example Video", versionCode = 250), emptySet())).isTrue()
+
+        // Jarvis re-sends the same playbook (range 100..200): state, trust and the earned range stay.
+        repo.importJson(json, PlaybookRepository.SOURCE_JARVIS, null)
+        val resynced = store.items[id]!!
+        assertThat(resynced.playbook.versionMax).isEqualTo(250L)
+        assertThat(resynced.verifiedCount).isEqualTo(healed.verifiedCount)
+        assertThat(resynced.status).isEqualTo(PlaybookStatus.OK)
+    }
+
     @Test
     fun `logs carry package name, kind and numbers only`() = runTest {
         val lines = mutableListOf<String>()
@@ -322,5 +463,6 @@ class AppUpdateWatcherTest {
 
     private companion object {
         const val BANK = "com.example.bank"
+        const val PAY = "com.example.links"
     }
 }

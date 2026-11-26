@@ -43,18 +43,40 @@ import timber.log.Timber
  *   + one relearn request each; removed → nothing to mark;
  * - every change is published as `apps.changed` (when a link sink exists).
  * Logs carry the package name, kind and numbers only.
+ *
+ * Gate R1: when the sensitivity lookup or the stale mark fails, [handleOne]
+ * returns null — nothing is marked or published and the tracker does not
+ * commit the change, so the next check retries it (fail closed, nothing lost).
  */
 class AppUpdateHandler(
     private val playbooks: PlaybookRepository,
+    /** true / false; throws when it cannot be decided now. */
     private val isSensitive: suspend (String) -> Boolean,
     private val sink: JarvisEventSink?
 ) {
     data class Outcome(val change: AppChange, val sensitive: Boolean, val playbooksMarked: Int)
 
-    suspend fun handle(changes: List<AppChange>): List<Outcome> = changes.map { c ->
-        val sensitive = runCatching { isSensitive(c.packageName) }.getOrDefault(true)
+    /** Tests / simple callers: every change, failures dropped. */
+    suspend fun handle(changes: List<AppChange>): List<Outcome> = changes.mapNotNull { handleOne(it) }
+
+    suspend fun handleOne(c: AppChange): Outcome? {
+        val sensitive = try {
+            isSensitive(c.packageName)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.w("AppUpdate: sensitivity unknown for %s (%s), retry later", c.packageName, e.javaClass.simpleName)
+            return null
+        }
         val marked = if (!sensitive && c.newVersionCode != null) {
-            runCatching { playbooks.onAppUpdated(c.packageName, c.newVersionCode) }.getOrDefault(0)
+            try {
+                playbooks.onAppUpdated(c.packageName, c.newVersionCode)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Timber.w("AppUpdate: stale mark failed for %s (%s), retry later", c.packageName, e.javaClass.simpleName)
+                return null
+            }
         } else {
             0
         }
@@ -64,7 +86,27 @@ class AppUpdateHandler(
             "AppUpdate: %s %s v%d -> v%d, sensitive=%b, playbooks marked stale: %d",
             c.kind.wire, c.packageName, c.oldVersionCode ?: -1L, c.newVersionCode ?: -1L, sensitive, marked
         )
-        Outcome(c, sensitive, marked)
+        return Outcome(c, sensitive, marked)
+    }
+
+    companion object {
+        /**
+         * Gate R1 B1: the atlas flag comes from [atlasEntry] (`AppAtlasRepository.entry`,
+         * which loads the store when the in-memory cache is still empty — at start-up, in
+         * every WorkManager run in a fresh process, for a new package), never from the
+         * cache alone. A failing lookup throws (→ not handled now, retried).
+         */
+        suspend fun sensitivity(
+            pkg: String,
+            atlasEntry: suspend (String) -> io.androllm.core.appatlas.model.AppAtlasEntry?,
+            installedLabel: (String) -> String?,
+            extras: suspend () -> Set<String>
+        ): Boolean {
+            val entry = atlasEntry(pkg)
+            if (entry?.sensitive == true) return true
+            val label = runCatching { installedLabel(pkg) }.getOrNull() ?: entry?.label.orEmpty()
+            return SensitiveClassifier.reason(pkg, label, extras()) != null
+        }
     }
 }
 
@@ -143,11 +185,10 @@ class AppUpdateWatcher @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val tracker = AppUpdateTracker(AndroidInstalledApps(context, source), PrefsAppUpdateState(context))
     private val handler = AppUpdateHandler(playbooks, ::isSensitive, sink.orElse(null))
-    @Volatile private var started = false
+    private val started = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun start() {
-        if (started) return
-        started = true
+        if (!started.compareAndSet(false, true)) return
         registerReceiver()
         schedulePeriodicCheck()
         scope.launch { checkNow() }
@@ -159,22 +200,22 @@ class AppUpdateWatcher @Inject constructor(
             tracker.reset()
             return
         }
-        runCatching { handler.handle(tracker.checkChanged()) }
+        runCatching { tracker.checkChanged { handler.handleOne(it) != null } }
             .onFailure { Timber.w("AppUpdate: check failed (%s)", it.javaClass.simpleName) }
     }
 
     private suspend fun onPackageEvent(pkg: String) {
         if (!atlas.isEnabled) return
-        runCatching { handler.handle(tracker.onPackageEvent(pkg)) }
+        runCatching { tracker.onPackageEvent(pkg) { handler.handleOne(it) != null } }
             .onFailure { Timber.w("AppUpdate: package event failed (%s)", it.javaClass.simpleName) }
     }
 
-    private suspend fun isSensitive(pkg: String): Boolean {
-        val entry = atlas.cachedEntry(pkg)
-        if (entry?.sensitive == true) return true
-        val label = runCatching { source.basics(pkg)?.label }.getOrNull() ?: entry?.label.orEmpty()
-        return SensitiveClassifier.reason(pkg, label, playbooks.extras()) != null
-    }
+    private suspend fun isSensitive(pkg: String): Boolean = AppUpdateHandler.sensitivity(
+        pkg,
+        atlasEntry = { atlas.entry(it) },
+        installedLabel = { source.basics(it)?.label },
+        extras = { playbooks.extras() }
+    )
 
     private fun registerReceiver() {
         val filter = IntentFilter().apply {

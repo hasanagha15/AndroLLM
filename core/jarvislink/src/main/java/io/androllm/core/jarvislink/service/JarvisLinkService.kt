@@ -83,6 +83,8 @@ class JarvisLinkService : Service() {
         val settings = settingsStore.current()
         if (!settings.enabled || !settings.isComplete) {
             Timber.i("JarvisLink: disabled or incomplete settings — stopping service")
+            // Gate R1 B2: a disabled link keeps no pending phone events.
+            if (!settings.enabled) eventOutbox.discardAllAsync()
             stopSelf()
             return START_NOT_STICKY
         }

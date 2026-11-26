@@ -56,13 +56,13 @@ class JarvisEventTest {
     }
 
     /**
-     * Contract with the deployed pi-brain subscriber (R2 `apps_changed_sub.py`, decoder `event-v2`):
-     * this envelope was produced there with Python `cryptography` (HKDF info `event-v2`, AAD
+     * Contract with the deployed Jarvis-host subscriber (R2 `apps_changed_sub.py`, decoder `event-v2`):
+     * this envelope was produced on the Jarvis host with Python `cryptography` (HKDF info `event-v2`, AAD
      * `androllm/v2/event`, test key, nonce 00..0b). The phone must produce exactly these bytes
      * and decode them.
      */
     @Test
-    fun `cross-language vector - identical to the pi-brain event-v2 encoder`() {
+    fun `cross-language vector - identical to the Jarvis-host event-v2 encoder`() {
         val vector = "{\"v\":2,\"kind\":\"event\",\"n\":\"AAECAwQFBgcICQoL\",\"c\":\"" +
             "G4sLCIYM3bsmnm1mUK9WmZNCZrAuzhgR1cqP/n9ZpACI8/26YHRhoMHmUJORiVtxMzlmZRK3AmcHDhkAPx8a3OqNe3hNmptQVtihiUhS" +
             "ScnjjVs0CRNAVbt89cu2biHyGxOKKQaEdI9wH4ymvIeBMKh5o6fBvjm7HBgv7PZrYdLyuYUG3WIhUZgxml0ZUIb4x2DhAsAiMxfin/FQ" +
@@ -71,7 +71,7 @@ class JarvisEventTest {
             put("pkg", "com.example.video"); put("oldVc", 150); put("newVc", 151)
             put("kind", "updated"); put("ts", 1_795_000_000_000L); put("sensitive", false)
         }
-        val ours = JarvisProtocol.encodeEvent("ev-1", "apps.changed", vectorBody, 1_795_000_000_000L, KEY, nonce = ByteArray(12) { it.toByte() })
+        val ours = JarvisProtocol.encodeEventWithNonce("ev-1", "apps.changed", vectorBody, 1_795_000_000_000L, KEY, nonce = ByteArray(12) { it.toByte() })
         assertThat(ours.toString(Charsets.UTF_8)).isEqualTo(vector)
         val e = JarvisProtocol.decodeEvent(vector.toByteArray(Charsets.UTF_8), KEY)!!
         assertThat(e.type).isEqualTo("apps.changed")
@@ -80,8 +80,11 @@ class JarvisEventTest {
 
     private class MemoryStorage : OutboxStorage {
         var events: List<PendingEvent> = emptyList()
+        var identity: String? = null
         override fun load() = events
         override fun save(events: List<PendingEvent>) { this.events = events }
+        override fun loadIdentity() = identity
+        override fun saveIdentity(identity: String?) { this.identity = identity }
     }
 
     @Test
@@ -120,6 +123,54 @@ class JarvisEventTest {
         t += 2_000
         assertThat(outbox.pending()).isEmpty()
         assertThat(outbox.add("Bad Type!", body)).isNull()
+    }
+
+    @Test
+    fun `B2 - turning the link off deletes the pending queue (flush and publish)`() = runTest {
+        val storage = MemoryStorage()
+        var enabled = true
+        var n = 0
+        val sink = JarvisEventOutbox(EventOutbox(storage, newId = { "ev-${++n}" }), linkEnabled = { enabled }, signingKey = { KEY })
+        // Queued while enabled but not connected (no publisher attached).
+        val outbox = EventOutbox(storage, newId = { "ev-${++n}" })
+        outbox.add("apps.changed", body, sink.identity())
+        outbox.add("apps.changed", body, sink.identity())
+        assertThat(storage.events).hasSize(2)
+
+        enabled = false
+        sink.flushNow()
+        assertThat(storage.events).isEmpty()
+        assertThat(storage.identity).isNull()
+
+        outbox.add("apps.changed", body, sink.identity())
+        sink.discardAll() // the service / controller path when the link is disabled
+        assertThat(storage.events).isEmpty()
+    }
+
+    @Test
+    fun `B2 - events queued for another broker or key are dropped, not sent to the new one`() = runTest {
+        val storage = MemoryStorage()
+        var n = 0
+        val outbox = EventOutbox(storage, newId = { "ev-${++n}" })
+        val oldId = JarvisEventOutbox.identityOf("broker-a:1883:phone", KEY)
+        outbox.add("apps.changed", body, oldId)
+        outbox.add("apps.changed", body, oldId)
+
+        val sent = mutableListOf<String>()
+        val newKey = ByteArray(32) { 9 }
+        val newId = JarvisEventOutbox.identityOf("broker-a:1883:phone", newKey)
+        assertThat(newId).isNotEqualTo(oldId)
+        assertThat(JarvisEventOutbox.identityOf("broker-b:1883:phone", KEY)).isNotEqualTo(oldId)
+        assertThat(outbox.flush(newKey, newId) { sent += "x" }).isEqualTo(0)
+        assertThat(sent).isEmpty()
+        assertThat(storage.events).isEmpty()
+        // The fingerprint never contains the key itself.
+        assertThat(storage.identity).isEqualTo(newId)
+        assertThat(storage.identity!!.length).isEqualTo(24)
+
+        // Same identity: delivered as usual.
+        outbox.add("apps.changed", body, newId)
+        assertThat(outbox.flush(newKey, newId) { sent += "x" }).isEqualTo(1)
     }
 
     @Test

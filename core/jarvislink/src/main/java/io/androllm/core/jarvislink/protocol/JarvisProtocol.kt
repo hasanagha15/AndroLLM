@@ -262,10 +262,15 @@ object JarvisProtocol {
      * never be replayed as a task or taken for a result). [body] carries ids /
      * package names / numbers only.
      */
-    fun encodeEvent(
-        id: String, type: String, body: JsonObject, ts: Long, master: ByteArray,
-        /** Tests only (cross-language vector); null = a fresh random nonce. */
-        nonce: ByteArray? = null
+    fun encodeEvent(id: String, type: String, body: JsonObject, ts: Long, master: ByteArray): ByteArray =
+        encodeEventWithNonce(id, type, body, ts, master, nonce = null)
+
+    /**
+     * Gate R1 R-j: a fixed nonce exists for the cross-language test vector only
+     * (a repeated nonce breaks GCM) — internal to this module, never public API.
+     */
+    internal fun encodeEventWithNonce(
+        id: String, type: String, body: JsonObject, ts: Long, master: ByteArray, nonce: ByteArray?
     ): ByteArray {
         require(isValidEventId(id)) { "malformed event id" }
         require(isValidEventType(type)) { "malformed event type" }

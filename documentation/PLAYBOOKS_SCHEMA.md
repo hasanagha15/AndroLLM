@@ -194,12 +194,16 @@ inner      {"id":"ev-<ms>-<hex12>","type":"apps.changed","body":{…},"ts":<ms>}
 | `ts` | long | ms since epoch, when the phone saw the change |
 | `sensitive` | bool | protected app: report only — never pull, decode or crawl it |
 
-- Queued only while the link is enabled in Settings (off → dropped). The outbox
+- Queued only while the link is enabled in Settings. The outbox
   (SharedPreferences `jarvis_event_outbox`, excluded from backup) keeps ≤ 200 events,
   ≤ 7 days, oldest first; it is flushed on connect and after each new event, and a
   failed publish stops the flush (retried on the next connect).
+- Turning the link off **deletes** the pending queue (Settings toggle, the service
+  stopping because the link is disabled, any publish / flush while off). Events queued
+  for another broker host / port / user or another key are dropped, never sent to the
+  new one (the outbox stores a truncated SHA-256 fingerprint of target + key, not the key).
 - Receivers dedup by `id` (redelivery) and by `pkg` + `newVc` (the design's relearn queue).
-- Consumer (branch R2, pi-brain `apps_changed_sub.py`, decoder `event-v2`) maps `kind`
+- Consumer (branch R2, Jarvis host `apps_changed_sub.py`, decoder `event-v2`) maps `kind`
   `added` / `updated` / `removed` to `ADDED` / `REPLACED` / `REMOVED` and appends the change
   to the relearn queue. It re-checks sensitivity on its side (fail closed), so `sensitive`
   is advisory. Its legacy fallback (a result-key envelope on `jarvis/phone/result` carrying
@@ -245,12 +249,21 @@ core/appatlas `update/`), within seconds, with zero network:
   records a baseline;
 - dedup by package + versionCode: one update is handled once, however many
   broadcasts / polls see it. "Installed" means launchable, as in the atlas;
-- off while the App Atlas is off (the baseline is then forgotten).
+- a change is committed (last seen versionCode, sequence) only **after** it was
+  handled; when the sensitivity lookup or the stale mark fails, nothing is marked
+  or published and the next check retries it. Changes are handled one at a time;
+- if `BOOT_COUNT` is unavailable, a PackageManager counter below the stored sequence
+  is also treated as a reboot;
+- off while the App Atlas is off (the baseline is then forgotten): updates during that
+  time are not marked; after re-enabling, only the atlas sync's range check applies to
+  them. An update caught by the very first broadcast before any baseline (first start
+  of this version only) is part of the baseline and is not marked.
 
 Per change:
 
 1. **Protected package** (`SensitiveAppGuard` list, the owner's list, the atlas
-   heuristic / flag): reported to Jarvis with `"sensitive": true` — nothing else (no
+   heuristic / flag — the flag is read through the atlas store, not only its in-memory
+   cache, which is empty at start-up and in a fresh WorkManager process): reported to Jarvis with `"sensitive": true` — nothing else (no
    stale mark, no relearn request, no pull, no crawl).
 2. Otherwise, installed or updated: **every** playbook of the package becomes
    `STALE` with `staleReason = "app_updated"` and `flaggedVersion` = the new versionCode
@@ -260,8 +273,14 @@ Per change:
    (once per version). `verifiedCount` is kept; the status alone keeps the fast path off.
    - `playbook_run` still replays the playbook strict (weighted locators often still find
      the element under a new id). A success with the postcondition seen on an **owner**
-     run (not a Jarvis turn, gate Q N2) clears the mark → `OK` (self-heal). A mismatch
-     makes it stale for that version in the branch N sense (ui_run fallback).
+     run (not a Jarvis turn, gate Q N2) that **started on the marked playbook for that
+     same version** clears the mark → `OK` (self-heal), and the learned range
+     (`versionMin`..`versionMax`) grows to include that version, so the fast path returns.
+     A later re-sync of the same playbook without that extension counts as unchanged
+     (state, trust and the earned range are kept).
+   - A mismatch during such a strict run keeps the mark (reason and the watcher's
+     version); only the counters change and the relearn request of that version is
+     replaced by the mismatch details.
    - The atlas sync never clears the mark; an unchanged `playbooks.sync` re-import keeps
      it, a changed playbook starts `OK` with `verifiedCount = 0` as before.
 3. An `apps.changed` event goes to Jarvis (below). Logs carry package name, kind and

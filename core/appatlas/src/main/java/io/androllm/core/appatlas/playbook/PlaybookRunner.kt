@@ -99,7 +99,12 @@ class PlaybookRunner(
         if (r.success) {
             // Branch Q: a success with the postcondition seen makes the playbook fast-path trusted —
             // only on the owner's own runs (gate Q N2): a remote (Jarvis) playbook_run never earns trust.
-            repository.recordSuccess(p.id, verified = r.hasPostcondition && r.verified && currentRemoteOrigin() == null)
+            repository.recordSuccess(
+                p.id,
+                verified = r.hasPostcondition && r.verified && currentRemoteOrigin() == null,
+                // Gate R-h: heal only the app-update mark this run started on.
+                healVersion = sp.flaggedVersion.takeIf { sp.isAppUpdatedStale }
+            )
             if (r.hasPostcondition && !r.verified) repository.recordUnverified(p.id, version)
             Timber.i("Playbooks: %s ok in %d ms (verified=%s)", p.id, r.elapsedMs, r.verified)
             return ToolResult.Success(

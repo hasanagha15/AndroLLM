@@ -28,10 +28,13 @@ class JarvisLinkStatus @Inject constructor() {
 @Singleton
 class JarvisLinkController @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val settingsStore: JarvisLinkSettingsStore
+    private val settingsStore: JarvisLinkSettingsStore,
+    // Branch R1 (gate B2): pending phone events are deleted when the link is turned off.
+    private val eventOutbox: io.androllm.core.jarvislink.events.JarvisEventOutbox
 ) {
     fun sync() {
         val s = settingsStore.current()
+        if (!s.enabled) eventOutbox.discardAllAsync()
         if (s.enabled && s.isComplete) start() else stop()
     }
 

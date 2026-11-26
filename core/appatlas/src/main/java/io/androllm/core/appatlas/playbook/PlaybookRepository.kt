@@ -67,10 +67,31 @@ object PlaybookPolicy {
 
     /**
      * Branch R1 (design §2.3): a verified run of the OWNER (postcondition seen,
-     * not a remote turn) heals an app-update stale mark — back to OK.
+     * not a remote turn) heals an app-update stale mark — back to OK — and the
+     * learned range grows to that version (gate R-i: otherwise a version above
+     * `versionMax` would stay unverified and the fast path would not return).
+     * Gate R-h: only when the run started on a snapshot that was marked for the
+     * SAME version ([healVersion]); a mark set during the run is kept.
      */
-    fun afterVerifiedRun(sp: StoredPlaybook): StoredPlaybook =
-        if (sp.isAppUpdatedStale) sp.copy(status = PlaybookStatus.OK, flaggedVersion = null, staleReason = null) else sp
+    fun afterVerifiedRun(sp: StoredPlaybook, healVersion: Long?): StoredPlaybook {
+        if (!sp.isAppUpdatedStale || healVersion == null || sp.flaggedVersion != healVersion) return sp
+        val p = sp.playbook
+        return sp.copy(
+            playbook = p.copy(versionMin = minOf(p.versionMin, healVersion), versionMax = maxOf(p.versionMax, healVersion)),
+            status = PlaybookStatus.OK, flaggedVersion = null, staleReason = null
+        )
+    }
+
+    /**
+     * Branch R1: an import of [incoming] over [prev] counts as "unchanged" also
+     * when it only lacks a range extension earned on this device (R-i) —
+     * a re-sync of the same playbook must not drop the state or the trust.
+     */
+    fun sameIgnoringEarnedRange(prev: Playbook, incoming: Playbook): Boolean =
+        prev == incoming || (
+            prev.versionMin <= incoming.versionMin && prev.versionMax >= incoming.versionMax &&
+                prev == incoming.copy(versionMin = prev.versionMin, versionMax = prev.versionMax)
+            )
 }
 
 /**
@@ -123,9 +144,9 @@ class PlaybookRepository(
             store.upsert(accepted.map { p ->
                 val prev = existing[p.id]
                 // Gate N (P6): an unchanged playbook keeps its STALE / UNVERIFIED state.
-                val same = prev != null && prev.playbook == p
+                val same = prev != null && PlaybookPolicy.sameIgnoringEarnedRange(prev.playbook, p)
                 StoredPlaybook(
-                    playbook = p,
+                    playbook = if (same) prev!!.playbook else p,
                     status = if (same) prev!!.status else PlaybookStatus.OK,
                     flaggedVersion = if (same) prev!!.flaggedVersion else null,
                     // Branch R1: an unchanged re-import keeps the app-update stale mark too.
@@ -166,14 +187,18 @@ class PlaybookRepository(
     suspend fun get(id: String): StoredPlaybook? = all().firstOrNull { it.playbook.id == id }
 
     /** Successful run: counters only. */
-    suspend fun recordSuccess(id: String, verified: Boolean = false) = update(id) {
+    /**
+     * Successful run: counters; [verified] (owner run, postcondition seen) may heal an
+     * app-update stale mark when the run's snapshot was marked for [healVersion] (R1).
+     */
+    suspend fun recordSuccess(id: String, verified: Boolean = false, healVersion: Long? = null) = update(id) {
         val counted = it.copy(
             successCount = it.successCount + 1,
             verifiedCount = it.verifiedCount + if (verified) 1 else 0,
             lastRunAt = clock()
         )
         // Branch R1: self-heal after an app update (owner-verified runs only — the caller decides).
-        if (verified) PlaybookPolicy.afterVerifiedRun(counted) else counted
+        if (verified) PlaybookPolicy.afterVerifiedRun(counted, healVersion) else counted
     }
 
     /**
@@ -183,13 +208,20 @@ class PlaybookRepository(
     suspend fun recordMismatch(id: String, versionCode: Long, failure: StepFailure) {
         val sp = get(id) ?: return
         update(id) {
-            it.copy(
-                status = PlaybookStatus.STALE, flaggedVersion = versionCode, staleReason = null,
-                failCount = it.failCount + 1, lastRunAt = clock()
-            )
+            if (it.isAppUpdatedStale) {
+                // Gate R1 B3: keep the watcher's mark (reason + new version). [versionCode] may still be
+                // the atlas' OLD version; overwriting would let the next atlas sync clear the mark.
+                it.copy(failCount = it.failCount + 1, lastRunAt = clock())
+            } else {
+                it.copy(
+                    status = PlaybookStatus.STALE, flaggedVersion = versionCode, staleReason = null,
+                    failCount = it.failCount + 1, lastRunAt = clock()
+                )
+            }
         }
+        val relearnVersion = if (sp.isAppUpdatedStale) sp.flaggedVersion ?: versionCode else versionCode
         // A mismatch is new information: it replaces a pending / delivered record of the same version.
-        queueRelearn(sp.playbook, versionCode, failure.stepIndex, failure.kind.wire, replace = true)
+        queueRelearn(sp.playbook, relearnVersion, failure.stepIndex, failure.kind.wire, replace = true)
     }
 
     /** Non-mismatch failure (declined, blocked, action failed): counters only. */

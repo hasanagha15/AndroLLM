@@ -74,7 +74,14 @@ interface AppUpdateState {
  *   the 15-minute poll after the receiver already saw it, a restart).
  * - The sequence number is persisted; after a reboot (boot count changed)
  *   it restarts at 0, as PackageManager's does.
- * - The very first run only records a baseline (no burst of "added").
+ * - The very first run only records a baseline (no burst of "added"). An
+ *   update seen by the very first broadcast before any baseline is part of
+ *   that baseline (not reported) — only on the first start of R1.
+ * - Committed after processing (gate R1 R-a): `known[pkg]` advances only when
+ *   [checkChanged] / [onPackageEvent]'s `handle` returned true for the change,
+ *   and the sequence only when every change was handled — a failed stale
+ *   mark or a process death in between is retried by the next check.
+ *   `handle` runs under the tracker's lock, so changes are processed in order.
  */
 class AppUpdateTracker(
     private val apps: InstalledApps,
@@ -83,35 +90,44 @@ class AppUpdateTracker(
 ) {
     private val mutex = Mutex()
 
-    /** Start-up and the periodic job: everything changed since the persisted sequence. */
-    suspend fun checkChanged(): List<AppChange> = mutex.withLock {
+    /**
+     * Start-up and the periodic job: everything changed since the persisted
+     * sequence. Returns the changes that were handled (committed).
+     */
+    suspend fun checkChanged(handle: suspend (AppChange) -> Boolean = { true }): List<AppChange> = mutex.withLock {
         val boot = apps.bootCount()
         if (state.sequence < 0) {
             baselineLocked(boot)
             return@withLock emptyList()
         }
-        var seq = state.sequence
-        if (boot != state.bootCount) {
-            seq = 0 // the device rebooted: PackageManager's counter started again
-            state.bootCount = boot
+        val rebooted = boot != state.bootCount
+        // The device rebooted: PackageManager's counter started again.
+        val seq = if (rebooted) 0 else state.sequence
+        var token = apps.changedSince(seq)
+        if (token == null && seq > 0) {
+            // Gate R-c: BOOT_COUNT unavailable (-1 both times) but the counter restarted below our sequence.
+            apps.changedSince(0)?.takeIf { it.first < seq }?.let { token = it }
         }
-        val token = apps.changedSince(seq) ?: run {
-            if (seq != state.sequence) state.sequence = seq
+        val t = token
+        if (t == null) {
+            if (rebooted || seq != state.sequence) commitSequence(seq, boot)
             return@withLock emptyList()
         }
-        val changes = reconcileLocked(token.second)
-        state.sequence = token.first // after the known map: a crash in between only re-checks (dedup)
-        changes
+        val (done, allOk) = processLocked(t.second, handle)
+        // Gate R-b: boot count and sequence are written together, after the changes were committed.
+        if (allOk) commitSequence(t.first, boot)
+        done
     }
 
-    /** A PACKAGE_ADDED / REPLACED / REMOVED broadcast for [packageName]. */
-    suspend fun onPackageEvent(packageName: String): List<AppChange> = mutex.withLock {
-        if (state.sequence < 0) {
-            baselineLocked(apps.bootCount())
-            return@withLock emptyList()
+    /** A PACKAGE_ADDED / REPLACED / REMOVED broadcast for [packageName]. Returns the handled changes. */
+    suspend fun onPackageEvent(packageName: String, handle: suspend (AppChange) -> Boolean = { true }): List<AppChange> =
+        mutex.withLock {
+            if (state.sequence < 0) {
+                baselineLocked(apps.bootCount())
+                return@withLock emptyList()
+            }
+            processLocked(listOf(packageName), handle).first
         }
-        reconcileLocked(listOf(packageName))
-    }
 
     /** Forget everything (atlas turned off): the next check records a fresh baseline. */
     suspend fun reset() = mutex.withLock {
@@ -119,34 +135,54 @@ class AppUpdateTracker(
         state.sequence = -1
     }
 
-    private fun baselineLocked(boot: Int) {
-        state.saveKnown(apps.snapshot() - apps.ownPackage)
+    private fun commitSequence(seq: Int, boot: Int) {
+        state.sequence = seq
         state.bootCount = boot
-        state.sequence = apps.changedSince(0)?.first ?: 0
     }
 
-    private fun reconcileLocked(packages: Collection<String>): List<AppChange> {
+    private fun baselineLocked(boot: Int) {
+        state.saveKnown(apps.snapshot() - apps.ownPackage)
+        commitSequence(apps.changedSince(0)?.first ?: 0, boot)
+    }
+
+    private suspend fun processLocked(
+        packages: Collection<String>,
+        handle: suspend (AppChange) -> Boolean
+    ): Pair<List<AppChange>, Boolean> {
         val known = state.known().toMutableMap()
         val now = clock()
-        val out = mutableListOf<AppChange>()
+        val done = mutableListOf<AppChange>()
+        var allOk = true
         for (pkg in packages.toSet()) {
             if (pkg == apps.ownPackage || !PACKAGE_RE.matches(pkg)) continue
             val old = known[pkg]
             val new = apps.versionOf(pkg)
-            if (old == new) continue // dedup: this pkg + versionCode was already reported
+            if (old == new) continue // dedup: this pkg + versionCode was already handled
             val kind = when {
                 old == null -> AppChange.Kind.ADDED
                 new == null -> AppChange.Kind.REMOVED
                 else -> AppChange.Kind.UPDATED
             }
+            val change = AppChange(pkg, old, new, kind, now)
+            val ok = try {
+                handle(change)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                false
+            }
+            if (!ok) {
+                allOk = false
+                continue // not committed: the next check sees it again
+            }
             if (new == null) known.remove(pkg) else known[pkg] = new
-            out += AppChange(pkg, old, new, kind, now)
+            state.saveKnown(known) // per change: a later crash keeps what was already handled
+            done += change
         }
-        if (out.isNotEmpty()) state.saveKnown(known)
-        return out
+        return done to allOk
     }
 
     companion object {
-        private val PACKAGE_RE = Regex("^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+$")
+        private val PACKAGE_RE = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")
     }
 }
