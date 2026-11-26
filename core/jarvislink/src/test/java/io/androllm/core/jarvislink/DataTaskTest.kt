@@ -107,6 +107,7 @@ class DataTaskTest {
             tracker = RemoteTaskTracker(),
             signingKey = { TestTasks.KEY },
             clock = { now },
+            queueCapacity = 8,
             dataHandlers = setOf(handler)
         ).also { it.start(backgroundScope) }
         val cases = listOf("w1" to "denied", "w2" to "error", "w3" to "ok", "w4" to "accepted", "w5" to "bogus")
